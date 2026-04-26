@@ -41,6 +41,15 @@ export default async function GroupDetailPage({
 
   const addWallet = addWalletAction.bind(null, id);
 
+  const tradesPopulated = (dashboard.recentTrades?.trades.length ?? 0) > 0;
+  const visibleWarnings = dashboard.warnings.flatMap((w) => {
+    if (w.toLowerCase().includes("trades fetch")) {
+      if (tradesPopulated) return [];
+      return ["Some trade data could not be refreshed. Wait ~60 seconds and refresh."];
+    }
+    return [w];
+  });
+
   return (
     <div className="space-y-8">
       <div>
@@ -55,11 +64,11 @@ export default async function GroupDetailPage({
         </div>
       </div>
 
-      {dashboard.warnings.length > 0 && (
+      {visibleWarnings.length > 0 && (
         <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           <div className="font-medium">Warnings</div>
           <ul className="mt-1 list-inside list-disc space-y-0.5">
-            {dashboard.warnings.map((w, i) => (
+            {visibleWarnings.map((w, i) => (
               <li key={i}>{w}</li>
             ))}
           </ul>
