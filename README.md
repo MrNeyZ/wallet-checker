@@ -162,6 +162,40 @@ curl "http://localhost:3000/api/groups/$GID/token-summary?perWalletLimit=50&minU
 curl http://localhost:3000/api/groups/$GID/portfolio-summary
 ```
 
+## Web UI
+
+A minimal Next.js dashboard lives in [web/](web). It calls the backend via server components — no client-side keys, no CORS.
+
+```bash
+cd web
+cp .env.example .env       # BACKEND_URL=http://localhost:3000 by default
+npm install
+npm run dev                # http://localhost:3001
+```
+
+Pages:
+- `/groups` — list groups, create new, jump to detail
+- `/groups/[id]` — wallets management + 4 dashboard sections (PnL overview, Portfolio, Token activity, Recent trades)
+
+Override the backend URL with `BACKEND_URL=http://other:port npm run dev`. The app does not need its own auth — it inherits whatever the backend does (currently none).
+
+## Smoke test
+
+A bash script at [scripts/smoke-test.sh](scripts/smoke-test.sh) exercises the basic wiring end-to-end: `/health`, address validation, group CRUD, group overview, group dashboard. Uses only `curl` and `grep` — no `jq` required.
+
+```bash
+# against the default dev server
+./scripts/smoke-test.sh
+
+# against a different host/port
+BASE_URL=http://localhost:4000 ./scripts/smoke-test.sh
+
+# against a different test wallet
+WALLET=<base58-address> ./scripts/smoke-test.sh
+```
+
+The script prints per-assertion `PASS`/`FAIL` lines and exits non-zero if anything fails. It creates a uniquely-named group (`smoke-test-<unix-ts>`) on each run, so groups accumulate in `data/groups.json` over time — wipe the file if that bothers you.
+
 ## Project layout
 
 ```
