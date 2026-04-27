@@ -1,15 +1,20 @@
 import Link from "next/link";
-import { api } from "@/lib/api";
+import { api, type SystemStatus } from "@/lib/api";
 import { createGroupAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
 export default async function GroupsPage() {
   let groups: Awaited<ReturnType<typeof api.listGroups>>["groups"] = [];
+  let status: SystemStatus | null = null;
   let error: string | null = null;
   try {
-    const res = await api.listGroups();
-    groups = res.groups;
+    const [g, s] = await Promise.all([
+      api.listGroups(),
+      api.getStatus().catch(() => null),
+    ]);
+    groups = g.groups;
+    status = s;
   } catch (err) {
     error = err instanceof Error ? err.message : "Failed to load";
   }
@@ -23,6 +28,8 @@ export default async function GroupsPage() {
           <code className="text-xs">data/groups.json</code> on the backend.
         </p>
       </section>
+
+      <SystemStatusSection status={status} />
 
       <section>
         <h2 className="mb-3 text-sm font-medium uppercase tracking-wider text-zinc-500">
@@ -79,6 +86,51 @@ export default async function GroupsPage() {
           </ul>
         )}
       </section>
+    </div>
+  );
+}
+
+function SystemStatusSection({ status }: { status: SystemStatus | null }) {
+  return (
+    <section>
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-sm font-medium uppercase tracking-wider text-zinc-500">
+          System status
+        </h2>
+        {status && (
+          <span className="text-xs text-zinc-400">
+            {status.pollers.runningCount} poller
+            {status.pollers.runningCount === 1 ? "" : "s"} running
+          </span>
+        )}
+      </div>
+      {!status ? (
+        <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Backend status unavailable.
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 rounded border border-zinc-200 bg-white p-4 sm:grid-cols-4">
+          <StatusItem label="SolanaTracker" on={status.env.solanaTrackerConfigured} />
+          <StatusItem label="Helius" on={status.env.heliusConfigured} />
+          <StatusItem label="Telegram" on={status.env.telegramConfigured} />
+          <StatusItem label="API auth" on={status.env.appAuthEnabled} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function StatusItem({ label, on }: { label: string; on: boolean }) {
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <span
+        className={`inline-block h-2 w-2 rounded-full ${
+          on ? "bg-green-500" : "bg-zinc-300"
+        }`}
+        aria-hidden
+      />
+      <span className="font-medium">{label}</span>
+      <span className="text-xs text-zinc-500">{on ? "configured" : "not configured"}</span>
     </div>
   );
 }

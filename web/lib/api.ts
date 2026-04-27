@@ -158,7 +158,20 @@ export interface GroupTradesFilters {
   perWalletLimit?: number;
 }
 
+export interface SystemStatus {
+  ok: boolean;
+  env: {
+    solanaTrackerConfigured: boolean;
+    heliusConfigured: boolean;
+    telegramConfigured: boolean;
+    appAuthEnabled: boolean;
+  };
+  pollers: { runningCount: number };
+  dataFiles: { groups: boolean; alerts: boolean; alertSent: boolean };
+}
+
 export const api = {
+  getStatus: () => request<SystemStatus>("/api/status"),
   listGroups: () => request<{ groups: Group[] }>("/api/groups"),
   createGroup: (name: string) =>
     request<Group>("/api/groups", { method: "POST", body: JSON.stringify({ name }) }),

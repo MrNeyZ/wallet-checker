@@ -5,6 +5,7 @@ import walletRouter from "./routes/wallet.js";
 import walletsRouter from "./routes/wallets.js";
 import groupsRouter from "./routes/groups.js";
 import testRouter from "./routes/test.js";
+import statusRouter from "./routes/status.js";
 import { apiKeyAuth } from "./middleware/auth.js";
 
 const app = express();
@@ -17,6 +18,7 @@ app.use("/api/wallet", walletRouter);
 app.use("/api/wallets", walletsRouter);
 app.use("/api/groups", groupsRouter);
 app.use("/api/test", testRouter);
+app.use("/api/status", statusRouter);
 
 app.listen(env.PORT, () => {
   console.log(`Server listening on http://localhost:${env.PORT}`);

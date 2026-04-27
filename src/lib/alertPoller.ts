@@ -13,6 +13,10 @@ export function isPolling(groupId: string): boolean {
   return pollers.has(groupId);
 }
 
+export function getRunningPollerCount(): number {
+  return pollers.size;
+}
+
 export function getPollerStatus(groupId: string): { running: boolean; intervalMs: number | null } {
   const entry = pollers.get(groupId);
   return entry
