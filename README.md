@@ -1,57 +1,77 @@
 # wallet-checker
 
-Solana Wallet Ops backend for scanning wallets, tracking cleanup opportunities, building unsigned cleanup transactions, and aggregating PnL / trade / portfolio data across groups of wallets via SolanaTracker.
+Solana wallet ops backend + minimal dashboard for scanning wallets, tracking cleanup opportunities, building unsigned cleanup transactions, and aggregating PnL / trades / portfolio across wallet groups. Includes server-side alert rules with Telegram delivery and persistent dedup.
 
-The server is a thin Express + TypeScript app. SolanaTracker is the primary data provider for PnL, trades, and portfolio. SPL data (token accounts, classification, CloseAccount transaction building) goes through `@solana/web3.js` and `@solana/spl-token` directly. There is no database yet — group state is persisted to a local JSON file.
+The server is a thin Express + TypeScript app. SPL data (token accounts, classification, CloseAccount transaction building) goes through `@solana/web3.js` and `@solana/spl-token` directly. There is no database — group state and alert state are persisted to local JSON files.
 
-## Setup
+## Providers
 
-Requirements: Node.js 20+ and a SolanaTracker API key.
+| Provider | Used for |
+|---|---|
+| **SolanaTracker** | wallet PnL, wallet trades, alert rule matching |
+| **Helius** | wallet portfolio / balances |
+| **Telegram** | alert notification delivery |
+
+## Local run
+
+Two processes — backend on `:3002`, frontend on `:3003`.
 
 ```bash
-cp .env.example .env
-# edit .env to set SOLANATRACKER_API_KEY (and optionally SOLANA_RPC_URL)
-
+# 1. backend (repo root)
+cp .env.example .env       # fill in API keys
 npm install
-npm run dev    # tsx watch on src/index.ts
+npm run dev                # tsx watch on http://localhost:3002
+
+# 2. frontend (separate terminal)
+cd web
+cp .env.example .env       # BACKEND_URL=http://localhost:3002
+npm install
+npm run dev                # http://localhost:3003
 ```
 
-Build and run a production-style start:
-
-```bash
-npm run build
-npm start
-```
+Production-style start for the backend: `npm run build && npm start`.
 
 ## Environment variables
 
-All variables are validated by zod at startup ([src/config/env.ts](src/config/env.ts)). Invalid config exits the process.
+Backend env validated by zod at startup ([src/config/env.ts](src/config/env.ts)). Invalid config exits the process; missing optional keys disable specific features but the server still boots.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `PORT` | no | `3000` | HTTP listen port |
+| `PORT` | no | `3002` | HTTP listen port |
 | `NODE_ENV` | no | `development` | one of `development \| production \| test` |
-| `SOLANA_RPC_URL` | no | `https://api.mainnet-beta.solana.com` | Solana JSON-RPC endpoint for token-account scans |
+| `SOLANA_RPC_URL` | no | mainnet-beta | Solana JSON-RPC endpoint for SPL token-account scans |
 | `SOLANA_CLUSTER` | no | `mainnet-beta` | one of `mainnet-beta \| devnet \| testnet` |
-| `SOLANATRACKER_API_KEY` | required for PnL/trades/portfolio endpoints | — | sent as `x-api-key` to `https://data.solanatracker.io` |
+| `SOLANATRACKER_API_KEY` | for PnL/trades/alerts | — | sent as `x-api-key` to `https://data.solanatracker.io` |
+| `HELIUS_API_KEY` | for portfolio | — | sent as `api-key` query param to `https://api.helius.xyz` |
+| `TELEGRAM_BOT_TOKEN` | for alert delivery | — | from BotFather |
+| `TELEGRAM_CHAT_ID` | for alert delivery | — | numeric chat id where alerts are posted |
 
-If `SOLANATRACKER_API_KEY` is unset, PnL/trades/portfolio routes return `503` with a clear error. The server still boots.
+Frontend env (`web/.env`):
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `BACKEND_URL` | no | `http://localhost:3002` | base URL for server-side API calls |
+
+When a key is unset, the affected route returns `503` cleanly with a self-explanatory message and the rest of the app keeps working.
 
 ## Persistence
 
-In-memory state survives restarts via:
-- `data/groups.json` — group definitions and wallet membership (synchronous write after every mutation; loaded once at startup; corrupt JSON → console warning, start empty).
+In-process state survives restarts via local JSON files under `data/` (auto-created, gitignored):
 
-Caches are in-process Maps (cleared on restart):
+- `data/groups.json` — group definitions and wallet membership.
+- `data/alerts.json` — server-side alert rules.
+- `data/alert-sent.json` — `(ruleId, tx)` pairs already pushed to Telegram (cross-request dedup).
+
+All files use sync writes after every mutation; load once at startup; corrupt JSON → console warning + start empty.
+
+In-memory caches (cleared on restart, never persist failures):
 - PnL: 5 min per wallet
 - Portfolio: 5 min per wallet
 - Trades: 60 s per `(wallet, cursor, limit)` tuple
 
-Failed responses are never cached.
-
 ## API
 
-Base URL: `http://localhost:3000`. All bodies are JSON.
+Base URL: `http://localhost:3002`. All bodies are JSON.
 
 ### Health
 
@@ -59,171 +79,150 @@ Base URL: `http://localhost:3000`. All bodies are JSON.
 |---|---|---|
 | GET | `/health` | returns `{ ok: true }` |
 
-```bash
-curl http://localhost:3000/health
-```
-
 ### Wallet cleanup
-
-Scans SPL Token + Token-2022 accounts for a single wallet and builds an unsigned transaction that closes empty accounts.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/wallet/:address/cleanup-scan` | classifies token accounts: empty / fungible / NFT / unknown; reports reclaimable rent |
-| GET | `/api/wallet/:address/burn-candidates` | non-SOL fungible token accounts that could later be burned + closed; carries `riskLevel:"unknown"` and `burnRecommended:false` (burn flow not implemented) |
-| POST | `/api/wallet/:address/close-empty-tx` | builds a legacy `Transaction` with up to 10 `CloseAccount` instructions; returns base64-serialized **unsigned** tx with `recentBlockhash` and `feePayer` set; signing is client-side |
-
-```bash
-# scan a wallet
-curl http://localhost:3000/api/wallet/F7BDq8YsYs69JsMxJJhARTTTZNcKu5h2GohLbe8cYQwE/cleanup-scan
-
-# burn candidates (informational only)
-curl http://localhost:3000/api/wallet/F7BDq8YsYs69JsMxJJhARTTTZNcKu5h2GohLbe8cYQwE/burn-candidates
-
-# build close-empty unsigned tx
-curl -X POST http://localhost:3000/api/wallet/F7BDq8YsYs69JsMxJJhARTTTZNcKu5h2GohLbe8cYQwE/close-empty-tx
-```
-
-The close-empty endpoint defends in depth: only accounts with `amount === "0"` and `owner === wallet` are included; NFT/fungible/unknown buckets cannot leak in.
+| GET | `/api/wallet/:address/cleanup-scan` | classifies SPL + Token-2022 accounts: empty / fungible / NFT / unknown; reports reclaimable rent |
+| GET | `/api/wallet/:address/burn-candidates` | non-SOL fungible accounts (informational only — burn flow not implemented) |
+| POST | `/api/wallet/:address/close-empty-tx` | builds an unsigned legacy `Transaction` with up to 10 `CloseAccount` instructions; returns base64 |
 
 ### Wallet PnL / trades (SolanaTracker)
 
-Single-wallet endpoints proxy SolanaTracker with caching, normalization, and clean error mapping (missing key → 503; provider 4xx/5xx → 502 with `providerStatus`).
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/wallet/:address/pnl` | provider `data` + normalized `summary` (`totalPnlUsd, realizedPnlUsd, unrealizedPnlUsd, winRate, totalTrades, tokensCount`) |
+| GET | `/api/wallet/:address/trades?cursor=&limit=` | swap feed; `limit` 1..100 default 50 |
+| POST | `/api/wallets/pnl` | batch (max 50 wallets, concurrency 5) |
+
+### Groups
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/wallet/:address/pnl` | passes through provider `data` plus a normalized `summary { totalPnlUsd, realizedPnlUsd, unrealizedPnlUsd, winRate, totalTrades, tokensCount }`, defensive against shape changes |
-| GET | `/api/wallet/:address/trades?cursor=&limit=` | recent swaps; `limit` 1..100 default 50; cursor-paginated via provider |
-| POST | `/api/wallets/pnl` | batch PnL (max 50 wallets, concurrency 5) |
-
-```bash
-# single PnL (cached 5 min)
-curl http://localhost:3000/api/wallet/F7BDq8YsYs69JsMxJJhARTTTZNcKu5h2GohLbe8cYQwE/pnl
-
-# trades (cached 60 s per cursor+limit)
-curl "http://localhost:3000/api/wallet/F7BDq8YsYs69JsMxJJhARTTTZNcKu5h2GohLbe8cYQwE/trades?limit=10"
-
-# batch PnL
-curl -X POST -H "Content-Type: application/json" \
-  -d '{"wallets":["F7BDq8YsYs69JsMxJJhARTTTZNcKu5h2GohLbe8cYQwE","vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"]}' \
-  http://localhost:3000/api/wallets/pnl
-```
-
-### Groups (CRUD)
-
-In-memory groups with file-backed persistence. Wallet addresses validated via `@solana/web3.js` `PublicKey`.
-
-| Method | Path | Notes |
-|---|---|---|
-| POST | `/api/groups` | body `{ "name": string }`; returns 201 |
-| GET | `/api/groups` | list all groups |
-| POST | `/api/groups/:groupId/wallets` | body `{ "wallet": string, "label"?: string }`; 409 on duplicate, 404 on missing group |
-| GET | `/api/groups/:groupId/wallets` | list wallets in a group |
-| DELETE | `/api/groups/:groupId/wallets/:wallet` | 204 on success, 404 on either missing |
-
-```bash
-# create group
-GID=$(curl -s -X POST -H "Content-Type: application/json" \
-  -d '{"name":"Whales"}' http://localhost:3000/api/groups | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
-
-# add wallet
-curl -X POST -H "Content-Type: application/json" \
-  -d '{"wallet":"F7BDq8YsYs69JsMxJJhARTTTZNcKu5h2GohLbe8cYQwE","label":"trader"}' \
-  http://localhost:3000/api/groups/$GID/wallets
-
-# remove wallet
-curl -X DELETE http://localhost:3000/api/groups/$GID/wallets/F7BDq8YsYs69JsMxJJhARTTTZNcKu5h2GohLbe8cYQwE
-```
+| POST | `/api/groups` | `{ "name": string }` |
+| GET | `/api/groups` | list |
+| POST | `/api/groups/:groupId/wallets` | `{ "wallet": string, "label"?: string }` |
+| GET | `/api/groups/:groupId/wallets` | list |
+| DELETE | `/api/groups/:groupId/wallets/:wallet` | 204 on success |
 
 ### Group analytics
 
-All group analytics endpoints fan out to SolanaTracker with **concurrency 5** and per-wallet error isolation: a single failed wallet never fails the whole request — it shows up in `failedWallets` (or `warnings` on the dashboard).
+All group analytics endpoints fan out at concurrency 5 with per-wallet error isolation; failures land in `failedWallets[]` (or `warnings[]` on the dashboard).
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/groups/:groupId/overview` | PnL overview; sums non-null normalized summary fields across wallets; results sorted by `totalPnlUsd` desc (numeric first, null next, failed last) |
-| GET | `/api/groups/:groupId/pnl` | raw per-wallet PnL data + normalized summary |
-| GET | `/api/groups/:groupId/trades?limit=&perWalletLimit=&minUsd=&program=&side=&token=` | merged trade feed, sorted by time desc, sliced to `limit`. Filters: USD floor, DEX program, buy/sell side (heuristic on quote mints WSOL/USDC/USDT), token by mint/symbol/name |
-| GET | `/api/groups/:groupId/token-summary?perWalletLimit=&minUsd=` | per-token activity summary (buys/sells counts and USD totals, net USD, contributing wallets); sorted by `\|netUsd\|` desc |
-| GET | `/api/groups/:groupId/portfolio-summary` | current holdings aggregated across the group via SolanaTracker `/wallet/{wallet}`; per-token totals + per-wallet breakdown; sorted by `totalValueUsd` desc |
-| GET | `/api/groups/:groupId/dashboard` | unified compact view: `pnlOverview`, `portfolioSummary`, `tokenActivitySummary`, `recentTrades`, plus `warnings[]`. Trades fetched once per wallet (`perWalletLimit=50`) and reused for both `tokenActivitySummary` and `recentTrades` (top 20). |
+| GET | `/api/groups/:groupId/overview` | PnL summary; sums non-null fields; results sorted by `totalPnlUsd` desc |
+| GET | `/api/groups/:groupId/pnl` | raw per-wallet PnL data |
+| GET | `/api/groups/:groupId/trades?limit=&perWalletLimit=&minUsd=&program=&side=&token=` | merged trade feed |
+| GET | `/api/groups/:groupId/token-summary?perWalletLimit=&minUsd=` | per-token activity (buys/sells/net USD) |
+| GET | `/api/groups/:groupId/portfolio-summary` | aggregated holdings via Helius; spam filter applied; surfaces `filteredTokensCount` |
+| GET | `/api/groups/:groupId/dashboard` | unified compact view: PnL overview + portfolio summary + token activity + recent trades + warnings |
 
-```bash
-# group dashboard (compact, 5 sections)
-curl http://localhost:3000/api/groups/$GID/dashboard
+### Alerts
 
-# group trades — recent jupiter buys ≥ $15
-curl "http://localhost:3000/api/groups/$GID/trades?limit=20&perWalletLimit=20&program=jupiter&side=buy&minUsd=15"
+Server-side rules persisted to `data/alerts.json`; matches checked against recent trades via SolanaTracker; Telegram delivery with cross-request dedup via `data/alert-sent.json`.
 
-# group token activity — top tokens by |netUsd|
-curl "http://localhost:3000/api/groups/$GID/token-summary?perWalletLimit=50&minUsd=10"
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/groups/:groupId/alerts` | create rule (`name, minUsd, token?, side?, program?, enabled?`) |
+| GET | `/api/groups/:groupId/alerts` | list rules |
+| PATCH | `/api/groups/:groupId/alerts/:alertId` | partial update |
+| DELETE | `/api/groups/:groupId/alerts/:alertId` | 204 |
+| POST | `/api/groups/:groupId/alerts/evaluate` | manual evaluation; body `{ perWalletLimit? }` (default 20, range 5..100). Returns matches; sends Telegram for un-deduped matches |
+| POST | `/api/groups/:groupId/alerts/start` | start in-memory poller (`{ intervalMs? }`, default 60000, range 5000..3600000) |
+| POST | `/api/groups/:groupId/alerts/stop` | stop poller |
+| GET | `/api/groups/:groupId/alerts/status` | `{ running, intervalMs }` |
 
-# group portfolio — aggregated holdings
-curl http://localhost:3000/api/groups/$GID/portfolio-summary
-```
+### Telegram test
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/test/telegram` | `{ "message": string }` — sends a test message to the configured chat |
+
+## Alert workflow
+
+End-to-end flow for getting Telegram alerts on group activity:
+
+1. **Create a rule** — define matching criteria for a group:
+   ```bash
+   curl -X POST -H "Content-Type: application/json" \
+     -d '{"name":"Big jupiter buys","minUsd":50,"program":"jupiter","side":"buy"}' \
+     http://localhost:3002/api/groups/$GID/alerts
+   ```
+   Or click **Add rule** in the **Server alerts** section of the group page.
+
+2. **Evaluate now** (one-shot) — to verify the rule and warm the dedup file:
+   ```bash
+   curl -X POST http://localhost:3002/api/groups/$GID/alerts/evaluate
+   ```
+   Or click **Evaluate now**. Telegram messages fire for matches that aren't already in `data/alert-sent.json`.
+
+3. **Start the monitor** (continuous) — runs `evaluate` every `intervalMs`:
+   ```bash
+   curl -X POST -H "Content-Type: application/json" \
+     -d '{"intervalMs":60000}' http://localhost:3002/api/groups/$GID/alerts/start
+   ```
+   Or use the **Start monitor** button in the **Alert monitor** section. Status is visible at `GET /alerts/status`. Stop with `POST /alerts/stop`.
+
+4. **Dedup** — every successful Telegram send appends a `${ruleId}|${tx}` key to `data/alert-sent.json`. Subsequent ticks skip already-sent matches but still return them in API responses, so polling is idempotent. Failed sends do **not** mark as sent — they retry next tick.
 
 ## Web UI
 
-A minimal Next.js dashboard lives in [web/](web). It calls the backend via server components — no client-side keys, no CORS.
-
-```bash
-cd web
-cp .env.example .env       # BACKEND_URL=http://localhost:3000 by default
-npm install
-npm run dev                # http://localhost:3001
-```
+Minimal Next.js (App Router) dashboard in [web/](web). Server components fetch directly from the backend — no client-side keys, no CORS.
 
 Pages:
-- `/groups` — list groups, create new, jump to detail
-- `/groups/[id]` — wallets management + 4 dashboard sections (PnL overview, Portfolio, Token activity, Recent trades)
-
-Override the backend URL with `BACKEND_URL=http://other:port npm run dev`. The app does not need its own auth — it inherits whatever the backend does (currently none).
+- `/groups` — list groups, create new
+- `/groups/[id]` — wallets management, alert monitor, server alerts CRUD, PnL overview, portfolio summary (with spam-filter indicator), token activity, recent trades (with filters), local-preview alerts
 
 ## Smoke test
 
-A bash script at [scripts/smoke-test.sh](scripts/smoke-test.sh) exercises the basic wiring end-to-end: `/health`, address validation, group CRUD, group overview, group dashboard. Uses only `curl` and `grep` — no `jq` required.
+[scripts/smoke-test.sh](scripts/smoke-test.sh) exercises basic wiring (health, address validation, group CRUD, overview, dashboard). Pure bash + `curl` + `grep`, no `jq`.
 
 ```bash
-# against the default dev server
 ./scripts/smoke-test.sh
-
-# against a different host/port
-BASE_URL=http://localhost:4000 ./scripts/smoke-test.sh
-
-# against a different test wallet
-WALLET=<base58-address> ./scripts/smoke-test.sh
+BASE_URL=http://localhost:3002 WALLET=<base58> ./scripts/smoke-test.sh
 ```
-
-The script prints per-assertion `PASS`/`FAIL` lines and exits non-zero if anything fails. It creates a uniquely-named group (`smoke-test-<unix-ts>`) on each run, so groups accumulate in `data/groups.json` over time — wipe the file if that bothers you.
 
 ## Project layout
 
 ```
 src/
-├── index.ts                              # Express bootstrap
-├── config/env.ts                         # zod env validation
+├── index.ts                                # Express bootstrap
+├── config/env.ts                           # zod env validation
 ├── lib/
-│   ├── solana.ts                         # shared Connection
-│   ├── scanner.ts                        # SPL + Token-2022 scanner / classifier
-│   ├── txBuilder.ts                      # CloseAccount tx builder (max 10 ix)
-│   ├── groupsStore.ts                    # in-memory groups + JSON persistence
-│   └── concurrency.ts                    # runWithConcurrency helper
+│   ├── solana.ts                           # shared @solana/web3.js Connection
+│   ├── scanner.ts                          # SPL + Token-2022 scanner / classifier
+│   ├── txBuilder.ts                        # CloseAccount tx builder (≤10 ix)
+│   ├── groupsStore.ts                      # groups + JSON persistence
+│   ├── alertsStore.ts                      # alert rules + JSON persistence
+│   ├── alertSentStore.ts                   # cross-request alert dedup
+│   ├── alertPoller.ts                      # in-memory setInterval poller
+│   └── concurrency.ts                      # runWithConcurrency helper
 ├── routes/
 │   ├── health.ts
-│   ├── wallet.ts                         # /api/wallet/:address/...
-│   ├── wallets.ts                        # /api/wallets/pnl (batch)
-│   └── groups.ts                         # /api/groups/...
+│   ├── wallet.ts                           # /api/wallet/:address/...
+│   ├── wallets.ts                          # /api/wallets/pnl batch
+│   ├── groups.ts                           # /api/groups/...
+│   └── test.ts                             # /api/test/telegram
 └── services/
-    ├── pnl/solanaTrackerProvider.ts      # /pnl/{wallet} + 5-min cache + summary
-    ├── pnl/normalizePnl.ts               # defensive PnL summary normalizer
-    ├── trades/solanaTrackerTrades.ts     # /wallet/{wallet}/trades + 60s cache
-    ├── portfolio/solanaTrackerPortfolio.ts  # /wallet/{wallet} holdings + 5-min cache
-    └── groups/                           # group analytics (PnL, trades, portfolio, dashboard)
+    ├── pnl/solanaTrackerProvider.ts        # /pnl/{wallet} + 5-min cache + summary
+    ├── pnl/normalizePnl.ts                 # defensive PnL summary normalizer
+    ├── trades/solanaTrackerTrades.ts       # /wallet/{wallet}/trades + 60 s cache
+    ├── portfolio/solanaTrackerPortfolio.ts # Helius /v1/wallet/{addr}/balances + 5-min cache
+    ├── notifications/telegram.ts           # Telegram sendMessage with HTML + dedup support
+    └── groups/                             # group analytics + alert evaluator + dashboard
+
+web/
+├── app/groups/                             # /groups + /groups/[id]
+├── lib/api.ts                              # typed backend client
+└── lib/format.ts
 ```
 
-## What's not built
+## Known limitations
 
-- No burn / send / sign transactions yet. `close-empty-tx` returns an unsigned tx; the client signs and submits.
-- No database. Groups persist to JSON, caches do not persist at all.
-- No frontend.
-- No Helius, no manual transaction parsing.
+- **SolanaTracker rate limits** — free-tier limits are tight. Heavy parallel calls hit 429s; cache layers (PnL 5 min, trades 60 s) absorb most of this, and polling defaults are tuned conservatively (`perWalletLimit=20`, 60-second tick), but a busy 100-wallet group on a free tier will still see partial failures surfaced as `failedWallets`.
+- **Polling is in-memory** — `setInterval` per group, no persistence of running state. Restarting the backend stops all pollers; the operator must re-`POST /alerts/start`.
+- **Local JSON files for state** — groups, alert rules, and dedup keys all live as flat JSON in `data/`. Concurrent processes would race on writes; this is a single-instance dev/MVP setup. Migration to Postgres/Redis is a future task.
+- **Portfolio spam filter is heuristic** — based on substring matches (`reward`, `claim`, `airdrop`, `.io`) and a value-based outlier rule (`valueUsd > 1000` for non-quote tokens). Will produce false positives for legitimately named tokens and false negatives for novel airdrop patterns. Original raw response is preserved at the provider level; filtering applies only at the group aggregation layer.
+- **No auth / no multi-tenancy** — single-user, local dev. Backend trusts every caller; frontend has no login.
+- **No burn / send / sign** — `close-empty-tx` returns an unsigned tx; signing happens client-side outside this app.
