@@ -53,6 +53,7 @@ Frontend env (`web/.env`):
 |---|---|---|---|
 | `BACKEND_URL` | no | `http://localhost:3002` | base URL for server-side API calls |
 | `BACKEND_APP_API_KEY` | only if backend has `APP_API_KEY` set | — | sent as `x-app-key` on every backend call from the Next server |
+| `WEB_PASSWORD` | no | — | when set, all UI routes require login at `/login`. The submitted password is hashed (SHA-256) and stored in an `httpOnly`, `sameSite=lax`, secure-in-production cookie `wallet_checker_session` (1-week expiry). Unset = auth disabled (local dev). Logout button appears in the header only when this is set |
 
 When a key is unset, the affected route returns `503` cleanly with a self-explanatory message and the rest of the app keeps working.
 
@@ -204,6 +205,160 @@ pm2 restart ecosystem.config.cjs
 ```
 
 PM2 must be installed globally (`npm i -g pm2`) and `.env` files in repo root and `web/` must be populated. Ports come from the `env` block in the ecosystem config; the apps' `npm start` scripts also pin the same defaults, so running them outside PM2 still works.
+
+## Deploy on VPS (Ubuntu + PM2 + Nginx)
+
+End-to-end deployment to a single Ubuntu host. No Docker, no orchestrator, no DB.
+
+### 1. Install Node.js
+
+Pick one. nvm is simpler if you want to control the Node version per-shell:
+
+```bash
+# nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+source ~/.bashrc
+nvm install 20
+
+# or apt (Ubuntu 22.04+)
+sudo apt update
+sudo apt install -y nodejs npm
+node --version    # expect v20+
+```
+
+### 2. Install PM2
+
+```bash
+sudo npm i -g pm2
+pm2 --version
+```
+
+### 3. Clone the repo
+
+```bash
+git clone <your-fork-url> wallet-checker
+cd wallet-checker
+```
+
+### 4. Configure environment
+
+Backend (`./.env`):
+
+```bash
+cp .env.example .env
+# edit .env and set:
+#   APP_API_KEY=<random secret>            # protect API
+#   SOLANATRACKER_API_KEY=...
+#   HELIUS_API_KEY=...
+#   TELEGRAM_BOT_TOKEN=...
+#   TELEGRAM_CHAT_ID=...
+```
+
+Frontend (`./web/.env`):
+
+```bash
+cp web/.env.example web/.env
+# edit web/.env and set:
+#   BACKEND_URL=http://localhost:3002
+#   BACKEND_APP_API_KEY=<same as backend APP_API_KEY>
+#   WEB_PASSWORD=<dashboard password>      # protect UI
+```
+
+The two API-key vars **must match** — the frontend forwards `BACKEND_APP_API_KEY` as `x-app-key` to the backend, which compares it to `APP_API_KEY`.
+
+### 5. Install + build
+
+```bash
+npm install
+npm run build
+cd web && npm install && npm run build && cd ..
+```
+
+### 6. Start with PM2
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 save                              # persist process list across reboot
+pm2 startup                           # generate the systemd unit; follow the printed sudo line
+pm2 logs                              # tail combined logs
+pm2 status                            # current state
+```
+
+Both apps now run:
+- `wallet-checker-backend` on port **3002**
+- `wallet-checker-web` on port **3003**
+
+### 7. Nginx reverse proxy (optional)
+
+Expose only the frontend publicly; route `/api/*` to the backend on the same domain so the browser never sees port 3002.
+
+`/etc/nginx/sites-available/wallet-checker`:
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.example.com;
+
+    # API: proxy /api/* to backend
+    location /api/ {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # Backend health (for external monitors)
+    location = /health {
+        proxy_pass http://127.0.0.1:3002/health;
+    }
+
+    # Everything else: frontend
+    location / {
+        proxy_pass http://127.0.0.1:3003;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+Enable + reload:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/wallet-checker /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+For HTTPS, run `sudo certbot --nginx -d your-domain.example.com` (one-time) to get a Let's Encrypt certificate; certbot rewrites the server block automatically.
+
+If you front the API via Nginx, point the frontend at the public URL too so server-side fetches use the proxy:
+
+```bash
+# in web/.env
+BACKEND_URL=https://your-domain.example.com
+```
+
+(Set this only if your Nginx proxies `/api/` to the backend; with a separate API host, point `BACKEND_URL` to that host instead.)
+
+### 8. Updating
+
+```bash
+cd wallet-checker
+git pull
+npm install && npm run build
+cd web && npm install && npm run build && cd ..
+pm2 restart ecosystem.config.cjs
+```
+
+State files in `data/` and any backups in `backups/` are preserved across deploys.
 
 ## Backup and restore
 

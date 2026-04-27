@@ -1,6 +1,7 @@
 import "./globals.css";
 import Link from "next/link";
 import type { Metadata } from "next";
+import { logoutAction } from "./login/actions";
 
 export const metadata: Metadata = {
   title: "Wallet Checker",
@@ -8,6 +9,7 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const authEnabled = Boolean(process.env.WEB_PASSWORD);
   return (
     <html lang="en">
       <body>
@@ -16,10 +18,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/groups" className="text-lg font-semibold tracking-tight">
               wallet-checker
             </Link>
-            <nav className="text-sm text-zinc-600">
+            <nav className="flex items-center gap-4 text-sm text-zinc-600">
               <Link href="/groups" className="hover:text-zinc-900">
                 Groups
               </Link>
+              {authEnabled && (
+                <form action={logoutAction}>
+                  <button
+                    type="submit"
+                    className="text-zinc-600 hover:text-zinc-900"
+                  >
+                    Logout
+                  </button>
+                </form>
+              )}
             </nav>
           </header>
           <main>{children}</main>
