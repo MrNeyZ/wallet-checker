@@ -8,6 +8,7 @@ const envSchema = z.object({
   SOLANA_CLUSTER: z
     .enum(["mainnet-beta", "devnet", "testnet"])
     .default("mainnet-beta"),
+  APP_API_KEY: z.string().optional(),
   SOLANATRACKER_API_KEY: z.string().optional(),
   HELIUS_API_KEY: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),

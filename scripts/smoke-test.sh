@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Smoke test for wallet-checker. Exits non-zero on any failure.
-# Usage: BASE_URL=http://localhost:3000 ./scripts/smoke-test.sh
+# Usage: BASE_URL=http://localhost:3002 ./scripts/smoke-test.sh
 
 set -u
-BASE_URL="${BASE_URL:-http://localhost:3000}"
+BASE_URL="${BASE_URL:-http://localhost:3002}"
 WALLET="${WALLET:-F7BDq8YsYs69JsMxJJhARTTTZNcKu5h2GohLbe8cYQwE}"
 
 PASS=0
@@ -15,37 +15,50 @@ green() { printf "\033[32m%s\033[0m" "$1"; }
 ok()   { green "  PASS"; echo " — $1"; PASS=$((PASS+1)); }
 fail() { red   "  FAIL"; echo " — $1"; FAIL=$((FAIL+1)); }
 
+# Run a curl call and split body/status using a sentinel-newline pattern.
+# Sets globals: SMOKE_BODY, SMOKE_STATUS.
+do_curl() {
+  local method="$1" url="$2" data="${3:-}"
+  local response
+  if [ -n "$data" ]; then
+    response=$(curl -s -w "\n%{http_code}" -X "$method" \
+      -H "Content-Type: application/json" -d "$data" "$url" || true)
+  else
+    response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" || true)
+  fi
+  SMOKE_BODY=$(printf "%s" "$response" | sed '$d')
+  SMOKE_STATUS=$(printf "%s" "$response" | tail -n1)
+}
+
 # expect_status NAME EXPECTED_CODE METHOD URL [DATA]
 expect_status() {
   local name="$1" expected="$2" method="$3" url="$4" data="${5:-}"
-  local code
-  if [ -n "$data" ]; then
-    code=$(curl -s -o /tmp/smoke_body -w "%{http_code}" -X "$method" \
-      -H "Content-Type: application/json" -d "$data" "$url")
-  else
-    code=$(curl -s -o /tmp/smoke_body -w "%{http_code}" -X "$method" "$url")
+  do_curl "$method" "$url" "$data"
+  if [ "$SMOKE_STATUS" = "000" ]; then
+    fail "$name — server unreachable at $url"
+    return
   fi
-  if [ "$code" = "$expected" ]; then
-    ok "$name (HTTP $code)"
+  if [ "$SMOKE_STATUS" = "$expected" ]; then
+    ok "$name (HTTP $SMOKE_STATUS)"
   else
-    fail "$name expected HTTP $expected, got $code"
-    echo "    body: $(head -c 200 /tmp/smoke_body)"
+    fail "$name expected HTTP $expected, got $SMOKE_STATUS"
+    echo "    body: $(printf "%s" "$SMOKE_BODY" | head -c 200)"
   fi
 }
 
 # expect_body_contains NAME METHOD URL EXPECTED_SUBSTRING [DATA]
 expect_body_contains() {
   local name="$1" method="$2" url="$3" needle="$4" data="${5:-}"
-  if [ -n "$data" ]; then
-    curl -s -o /tmp/smoke_body -X "$method" -H "Content-Type: application/json" -d "$data" "$url"
-  else
-    curl -s -o /tmp/smoke_body -X "$method" "$url"
+  do_curl "$method" "$url" "$data"
+  if [ "$SMOKE_STATUS" = "000" ]; then
+    fail "$name — server unreachable at $url"
+    return
   fi
-  if grep -q "$needle" /tmp/smoke_body; then
+  if printf "%s" "$SMOKE_BODY" | grep -q "$needle"; then
     ok "$name (body contains '$needle')"
   else
     fail "$name body missing '$needle'"
-    echo "    body: $(head -c 200 /tmp/smoke_body)"
+    echo "    body: $(printf "%s" "$SMOKE_BODY" | head -c 200)"
   fi
 }
 
@@ -53,6 +66,15 @@ echo "=== wallet-checker smoke test ==="
 echo "BASE_URL=$BASE_URL"
 echo "WALLET=$WALLET"
 echo
+
+# Reachability probe — fail fast with a clear message if the server is down,
+# rather than emitting a wall of curl failures.
+do_curl GET "$BASE_URL/health"
+if [ "$SMOKE_STATUS" = "000" ]; then
+  red "ABORT"; echo " — Server unreachable at $BASE_URL"
+  echo "Hint: start the backend with 'npm run dev' (root) or check BASE_URL."
+  exit 2
+fi
 
 echo "[1] health"
 expect_status "GET /health returns 200" 200 GET "$BASE_URL/health"
@@ -69,18 +91,18 @@ TS=$(date +%s)
 GROUP_NAME="smoke-test-$TS"
 CREATE_BODY="{\"name\":\"$GROUP_NAME\"}"
 
-curl -s -o /tmp/smoke_body -X POST -H "Content-Type: application/json" \
-  -d "$CREATE_BODY" "$BASE_URL/api/groups" > /dev/null
+do_curl POST "$BASE_URL/api/groups" "$CREATE_BODY"
 
-# extract id without jq: pull the first UUID-looking value
-GID=$(grep -oE '"id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"' /tmp/smoke_body \
+# extract id without jq: pull the first UUID-looking value from the response body
+GID=$(printf "%s" "$SMOKE_BODY" \
+  | grep -oE '"id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"' \
   | head -n1 | sed 's/.*"\([0-9a-f-]*\)"/\1/')
 
 if [ -n "$GID" ]; then
   ok "POST /api/groups created group $GID"
 else
   fail "POST /api/groups did not return a UUID id"
-  echo "    body: $(head -c 200 /tmp/smoke_body)"
+  echo "    body: $(printf "%s" "$SMOKE_BODY" | head -c 200)"
   echo
   echo "Result: $PASS passed, $FAIL failed"
   exit 1

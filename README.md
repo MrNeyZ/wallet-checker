@@ -41,6 +41,7 @@ Backend env validated by zod at startup ([src/config/env.ts](src/config/env.ts))
 | `NODE_ENV` | no | `development` | one of `development \| production \| test` |
 | `SOLANA_RPC_URL` | no | mainnet-beta | Solana JSON-RPC endpoint for SPL token-account scans |
 | `SOLANA_CLUSTER` | no | `mainnet-beta` | one of `mainnet-beta \| devnet \| testnet` |
+| `APP_API_KEY` | no | — | when set, all routes except `GET /health` require `x-app-key: <APP_API_KEY>` and return `401 {"error":"Unauthorized"}` otherwise. Unset = auth disabled (local dev) |
 | `SOLANATRACKER_API_KEY` | for PnL/trades/alerts | — | sent as `x-api-key` to `https://data.solanatracker.io` |
 | `HELIUS_API_KEY` | for portfolio | — | sent as `api-key` query param to `https://api.helius.xyz` |
 | `TELEGRAM_BOT_TOKEN` | for alert delivery | — | from BotFather |
@@ -51,6 +52,7 @@ Frontend env (`web/.env`):
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `BACKEND_URL` | no | `http://localhost:3002` | base URL for server-side API calls |
+| `BACKEND_APP_API_KEY` | only if backend has `APP_API_KEY` set | — | sent as `x-app-key` on every backend call from the Next server |
 
 When a key is unset, the affected route returns `503` cleanly with a self-explanatory message and the rest of the app keeps working.
 
@@ -173,6 +175,53 @@ Minimal Next.js (App Router) dashboard in [web/](web). Server components fetch d
 Pages:
 - `/groups` — list groups, create new
 - `/groups/[id]` — wallets management, alert monitor, server alerts CRUD, PnL overview, portfolio summary (with spam-filter indicator), token activity, recent trades (with filters), local-preview alerts
+
+## Production run (PM2)
+
+[`ecosystem.config.cjs`](ecosystem.config.cjs) defines two PM2 apps: `wallet-checker-backend` (root, port 3002) and `wallet-checker-web` (`./web`, port 3003). Both wrap `npm run start`.
+
+```bash
+# build both projects
+npm run build
+cd web && npm run build && cd ..
+
+# start both via PM2
+pm2 start ecosystem.config.cjs
+
+# persist the running process list across reboots
+pm2 save
+
+# follow combined logs
+pm2 logs
+
+# follow just the backend / web
+pm2 logs wallet-checker-backend
+pm2 logs wallet-checker-web
+
+# stop / restart
+pm2 stop ecosystem.config.cjs
+pm2 restart ecosystem.config.cjs
+```
+
+PM2 must be installed globally (`npm i -g pm2`) and `.env` files in repo root and `web/` must be populated. Ports come from the `env` block in the ecosystem config; the apps' `npm start` scripts also pin the same defaults, so running them outside PM2 still works.
+
+## Backup and restore
+
+State files (`data/groups.json`, `data/alerts.json`, `data/alert-sent.json`) are local JSON. Two scripts handle export/import as timestamped tarballs under `backups/` (gitignored):
+
+```bash
+# create a snapshot of current state
+./scripts/export-data.sh
+# → backups/wallet-checker-<YYYYMMDD-HHMMSS>.tar.gz
+
+# restore from a backup file (snapshots current state first into backups/pre-import-<ts>.tar.gz)
+./scripts/import-data.sh backups/wallet-checker-20260101-120000.tar.gz
+
+# list available backups
+ls -1t backups/*.tar.gz
+```
+
+Import is reversible: the script always snapshots the current state to `backups/pre-import-<timestamp>.tar.gz` before extracting, so a bad restore can be rolled back. The export skips files that don't exist, so a partial state still tars cleanly.
 
 ## Smoke test
 

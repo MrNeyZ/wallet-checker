@@ -5,10 +5,12 @@ import walletRouter from "./routes/wallet.js";
 import walletsRouter from "./routes/wallets.js";
 import groupsRouter from "./routes/groups.js";
 import testRouter from "./routes/test.js";
+import { apiKeyAuth } from "./middleware/auth.js";
 
 const app = express();
 
 app.use(express.json());
+app.use(apiKeyAuth);
 
 app.use("/health", healthRouter);
 app.use("/api/wallet", walletRouter);

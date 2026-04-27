@@ -1,10 +1,16 @@
 export const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:3000";
+const BACKEND_APP_API_KEY = process.env.BACKEND_APP_API_KEY;
+
+function authHeaders(): Record<string, string> {
+  return BACKEND_APP_API_KEY ? { "x-app-key": BACKEND_APP_API_KEY } : {};
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BACKEND_URL}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
       ...(init?.headers ?? {}),
     },
     cache: "no-store",
@@ -184,6 +190,7 @@ export const api = {
     fetch(`${BACKEND_URL}/api/groups/${groupId}/wallets/${wallet}`, {
       method: "DELETE",
       cache: "no-store",
+      headers: authHeaders(),
     }).then((res) => {
       if (!res.ok) throw new Error(`Backend ${res.status}`);
     }),
@@ -207,6 +214,7 @@ export const api = {
     fetch(`${BACKEND_URL}/api/groups/${groupId}/alerts/${alertId}`, {
       method: "DELETE",
       cache: "no-store",
+      headers: authHeaders(),
     }).then((res) => {
       if (!res.ok) throw new Error(`Backend ${res.status}`);
     }),
