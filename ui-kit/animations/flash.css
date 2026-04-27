@@ -1,0 +1,76 @@
+/* Live-feed feedback animations. The point of these is to make the feed feel
+ * alive without distracting — short flashes that decay, never something that
+ * loops aggressively. */
+
+/* Pulsing green status dot. Use next to a "Live" / "Connected" label. */
+@keyframes ui-live-dot {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(0.85); }
+}
+
+.ui-live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #10B981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  animation: 2s ease-in-out infinite ui-live-dot;
+}
+
+.ui-live-dot--red {
+  background: #EF4444;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+}
+
+.ui-live-dot--amber {
+  background: #F59E0B;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+}
+
+/* Row flash — apply to a row when a new buy / sell event arrives. The
+ * animation is one-shot (no `infinite`), background fades to transparent. */
+@keyframes ui-flash-green {
+  0%   { background: rgba(16, 185, 129, 0.20); }
+  100% { background: transparent; }
+}
+@keyframes ui-flash-red {
+  0%   { background: rgba(239, 68, 68, 0.20); }
+  100% { background: transparent; }
+}
+
+.ui-flash-green { animation: 1.2s ease-out ui-flash-green; }
+.ui-flash-red   { animation: 1.2s ease-out ui-flash-red; }
+
+/* Skeleton loader — shimmer across a placeholder block.
+ * Apply to any rectangle while data is loading. */
+@keyframes ui-skeleton-sweep {
+  from { background-position: -200% 0; }
+  to   { background-position:  200% 0; }
+}
+
+.ui-skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.10) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: 1.5s linear infinite ui-skeleton-sweep;
+  border-radius: 0.375rem;
+}
+
+/* Quick number flash — for value updates inside a cell.
+ * Less heavy than full-row flash; just tints the text briefly. */
+@keyframes ui-tint-up {
+  0%   { color: #10B981; }
+  100% { color: inherit; }
+}
+@keyframes ui-tint-down {
+  0%   { color: #EF4444; }
+  100% { color: inherit; }
+}
+
+.ui-tint-up   { animation: 0.8s ease-out ui-tint-up; }
+.ui-tint-down { animation: 0.8s ease-out ui-tint-down; }

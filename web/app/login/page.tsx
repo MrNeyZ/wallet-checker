@@ -15,10 +15,14 @@ export default async function LoginPage({
   const sp = await searchParams;
   const next = sp.next ?? "/groups";
   return (
-    <div className="mx-auto max-w-sm space-y-4 py-12">
-      <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
-      <p className="text-sm text-zinc-600">
-        Enter the dashboard password configured via <code className="text-xs">WEB_PASSWORD</code>.
+    <div className="mx-auto max-w-sm space-y-4 py-12 ui-fade-in">
+      <h1 className="text-xl font-semibold tracking-tight text-white">Sign in</h1>
+      <p className="text-sm text-neutral-400">
+        Enter the dashboard password configured via{" "}
+        <code className="rounded bg-neutral-900 px-1 py-0.5 text-xs text-neutral-300">
+          WEB_PASSWORD
+        </code>
+        .
       </p>
       <LoginForm next={next} action={loginAction} />
     </div>

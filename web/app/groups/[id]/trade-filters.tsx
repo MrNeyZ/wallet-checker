@@ -1,6 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { Card } from "@/ui-kit/components/Card";
+import { SectionHeader } from "@/ui-kit/components/SectionHeader";
+import { btnPrimary, btnSecondary } from "@/lib/buttonStyles";
 
 export interface TradeFilterValues {
   minUsd?: string;
@@ -41,13 +44,11 @@ export function TradeFilters({
 
   return (
     <section>
-      <div className="mb-3 flex items-baseline justify-between">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-zinc-500">
-          Trade filters
-        </h2>
-        <span className="text-xs text-zinc-400">{hasAny ? "filters active" : "optional"}</span>
+      <div className="mb-2 flex items-baseline justify-between">
+        <SectionHeader className="mb-0">Trade filters</SectionHeader>
+        <span className="text-[11px] text-neutral-500">{hasAny ? "filters active" : "optional"}</span>
       </div>
-      <div className="rounded border border-zinc-200 bg-white p-4">
+      <Card className="p-2.5">
         <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-2">
           <Field label="Min USD">
             <input
@@ -57,7 +58,7 @@ export function TradeFilters({
               name="minUsd"
               defaultValue={filters.minUsd ?? ""}
               placeholder="50"
-              className="w-32 rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+              className={inputClass + " w-32"}
             />
           </Field>
           <Field label="Token">
@@ -66,14 +67,14 @@ export function TradeFilters({
               name="token"
               defaultValue={filters.token ?? ""}
               placeholder="symbol / name / mint"
-              className="w-56 rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+              className={inputClass + " w-56"}
             />
           </Field>
           <Field label="Side">
             <select
               name="side"
               defaultValue={filters.side ?? ""}
-              className="rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+              className={inputClass}
             >
               <option value="">All</option>
               <option value="buy">Buy</option>
@@ -86,33 +87,29 @@ export function TradeFilters({
               name="program"
               defaultValue={filters.program ?? ""}
               placeholder="jupiter"
-              className="w-40 rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+              className={inputClass + " w-40"}
             />
           </Field>
           <div className="flex gap-2 pb-[1px]">
-            <button
-              type="submit"
-              className="rounded bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
-            >
+            <button type="submit" className={btnPrimary}>
               Apply
             </button>
-            <button
-              type="button"
-              onClick={handleReset}
-              className="rounded border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-            >
+            <button type="button" onClick={handleReset} className={btnSecondary}>
               Reset
             </button>
           </div>
         </form>
-      </div>
+      </Card>
     </section>
   );
 }
 
+const inputClass =
+  "rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-white placeholder:text-neutral-500 transition-colors duration-100 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30";
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col text-xs uppercase tracking-wider text-zinc-500">
+    <label className="flex flex-col text-[10px] uppercase tracking-wider text-neutral-500">
       {label}
       <div className="mt-1">{children}</div>
     </label>

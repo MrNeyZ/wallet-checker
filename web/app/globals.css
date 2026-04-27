@@ -2,6 +2,21 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-zinc-50 text-zinc-900 antialiased;
+@import "../ui-kit/animations/transitions.css";
+@import "../ui-kit/animations/flash.css";
+
+html, body {
+  background: #0A0A0B;
+  color: #FAFAFA;
 }
+
+body {
+  @apply antialiased;
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* Slim scrollbar for dense tables. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #27272A; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #3F3F46; }

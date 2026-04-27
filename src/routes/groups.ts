@@ -16,6 +16,9 @@ import {
 } from "../services/groups/groupTrades.js";
 import { buildPortfolioSummary } from "../services/groups/groupPortfolio.js";
 import { buildGroupDashboard } from "../services/groups/groupDashboard.js";
+import { buildGroupLpPositions } from "../services/groups/groupLp.js";
+import { buildGroupAirdrops } from "../services/groups/groupAirdrops.js";
+import { env } from "../config/env.js";
 import {
   createAlert,
   deleteAlert,
@@ -182,6 +185,43 @@ router.get("/:groupId/token-summary", async (req, res) => {
     perWalletLimit,
     tokens,
     failedWallets,
+  });
+});
+
+router.get("/:groupId/airdrops", async (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  if (!env.DROPS_BOT_API_KEY) {
+    return res.status(503).json({ error: "DROPS_BOT_API_KEY is not configured" });
+  }
+
+  const result = await buildGroupAirdrops(group);
+  res.json({
+    groupId: group.id,
+    groupName: group.name,
+    walletsCount: group.wallets.length,
+    totalAirdropsCount: result.totalAirdropsCount,
+    totalValueUsd: result.totalValueUsd,
+    unknownValueWallets: result.unknownValueWallets,
+    wallets: result.wallets,
+    failedWallets: result.failedWallets,
+  });
+});
+
+router.get("/:groupId/lp-positions", async (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+
+  const lp = await buildGroupLpPositions(group);
+  res.json({
+    groupId: group.id,
+    groupName: group.name,
+    walletsCount: group.wallets.length,
+    totalPositions: lp.totalPositions,
+    totalValueUsd: lp.totalValueUsd,
+    totalUnclaimedFeesUsd: lp.totalUnclaimedFeesUsd,
+    positions: lp.positions,
+    failedWallets: lp.failedWallets,
   });
 });
 

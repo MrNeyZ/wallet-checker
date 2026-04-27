@@ -118,6 +118,148 @@ export interface Dashboard {
   warnings: string[];
 }
 
+export interface OverviewResponse {
+  groupId: string;
+  groupName: string;
+  walletsCount: number;
+  ok: number;
+  failed: number;
+  totals: PnlSummary;
+  results: OverviewResultItem[];
+}
+
+export interface PortfolioResponse {
+  groupId: string;
+  groupName: string;
+  walletsCount: number;
+  totalUsd: number;
+  totalSol: number;
+  tokens: PortfolioToken[];
+  filteredTokensCount?: number;
+  failedWallets: { wallet: string; label: string | null; error: string }[];
+}
+
+export interface TokenActivityResponse {
+  groupId: string;
+  groupName: string;
+  walletsCount: number;
+  perWalletLimit: number;
+  tokens: ActivityToken[];
+  failedWallets: { wallet: string; label: string | null; error: string }[];
+}
+
+export interface ScannedTokenAccount {
+  tokenAccount: string;
+  mint: string;
+  owner: string;
+  amount: string;
+  decimals: number;
+  lamports: number;
+  estimatedReclaimSol: number;
+  programId: string;
+}
+
+export interface CleanupScanResult {
+  wallet: string;
+  totals: { tokenAccounts: number; estimatedReclaimSol: number };
+  emptyTokenAccounts: ScannedTokenAccount[];
+  fungibleTokenAccounts: ScannedTokenAccount[];
+  nftTokenAccounts: ScannedTokenAccount[];
+  unknownTokenAccounts: ScannedTokenAccount[];
+}
+
+export interface BurnCandidate {
+  tokenAccount: string;
+  mint: string;
+  owner: string;
+  amount: string;
+  uiAmount: number;
+  decimals: number;
+  lamports: number;
+  programId: string;
+  estimatedReclaimSolAfterBurnAndClose: number;
+  symbol: string | null;
+  name: string | null;
+  riskLevel: "unknown" | string;
+  burnRecommended: boolean;
+  reason: string;
+}
+
+export interface BurnCandidatesResult {
+  wallet: string;
+  count: number;
+  totalEstimatedReclaimSol: number;
+  candidates: BurnCandidate[];
+  warning: string;
+}
+
+export interface AirdropWalletItem {
+  wallet: string;
+  label: string | null;
+  airdropsCount: number;
+  totalValueUsd: number;
+  totalValueUsdFormatted: string | null;
+  isUnknownUsdValue: boolean;
+  addressUrl: string | null;
+}
+
+export interface GroupAirdropsResponse {
+  groupId: string;
+  groupName: string;
+  walletsCount: number;
+  totalAirdropsCount: number;
+  totalValueUsd: number;
+  unknownValueWallets: number;
+  wallets: AirdropWalletItem[];
+  failedWallets: { wallet: string; label: string | null; error: string }[];
+}
+
+export type AirdropsState =
+  | { state: "configured"; data: GroupAirdropsResponse }
+  | { state: "not_configured" }
+  | { state: "error"; message: string };
+
+export interface LpTokenLeg {
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  icon: string | null;
+  decimals: number | null;
+}
+
+export interface LpPosition {
+  wallet: string;
+  label: string | null;
+  protocol: "meteora_dlmm";
+  poolAddress: string;
+  positionAddress: string;
+  pairName: string | null;
+  tokenX: LpTokenLeg;
+  tokenY: LpTokenLeg;
+  valueUsd: number;
+  unclaimedFeesUsd: number;
+  totalDepositsUsd: number;
+  totalWithdrawsUsd: number;
+  totalClaimedFeesUsd: number;
+  unrealizedPnlUsd: number;
+  unrealizedPnlPct: number;
+  lowerBinId: number | null;
+  upperBinId: number | null;
+  activeBinId: number | null;
+  createdAt: number | null;
+}
+
+export interface GroupLpResponse {
+  groupId: string;
+  groupName: string;
+  walletsCount: number;
+  totalPositions: number;
+  totalValueUsd: number;
+  totalUnclaimedFeesUsd: number;
+  positions: LpPosition[];
+  failedWallets: { wallet: string; label: string | null; error: string }[];
+}
+
 export interface AlertRule {
   id: string;
   groupId: string;
@@ -177,6 +319,12 @@ export const api = {
     request<Group>("/api/groups", { method: "POST", body: JSON.stringify({ name }) }),
   getDashboard: (groupId: string) =>
     request<Dashboard>(`/api/groups/${groupId}/dashboard`),
+  getOverview: (groupId: string) =>
+    request<OverviewResponse>(`/api/groups/${groupId}/overview`),
+  getPortfolioSummary: (groupId: string) =>
+    request<PortfolioResponse>(`/api/groups/${groupId}/portfolio-summary`),
+  getTokenSummary: (groupId: string) =>
+    request<TokenActivityResponse>(`/api/groups/${groupId}/token-summary`),
   getGroupWallets: (groupId: string) =>
     request<{ groupId: string; wallets: GroupWallet[] }>(`/api/groups/${groupId}/wallets`),
   getGroupTrades: (groupId: string, filters: GroupTradesFilters) => {
@@ -207,6 +355,25 @@ export const api = {
     }).then((res) => {
       if (!res.ok) throw new Error(`Backend ${res.status}`);
     }),
+  getCleanupScan: (wallet: string) =>
+    request<CleanupScanResult>(`/api/wallet/${wallet}/cleanup-scan`),
+  getBurnCandidates: (wallet: string) =>
+    request<BurnCandidatesResult>(`/api/wallet/${wallet}/burn-candidates`),
+  getGroupLpPositions: (groupId: string) =>
+    request<GroupLpResponse>(`/api/groups/${groupId}/lp-positions`),
+  getGroupAirdrops: async (groupId: string): Promise<AirdropsState> => {
+    const res = await fetch(`${BACKEND_URL}/api/groups/${groupId}/airdrops`, {
+      headers: { ...authHeaders() },
+      cache: "no-store",
+    });
+    if (res.status === 503) return { state: "not_configured" };
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { state: "error", message: `Backend ${res.status}: ${body.slice(0, 200)}` };
+    }
+    const data = (await res.json()) as GroupAirdropsResponse;
+    return { state: "configured", data };
+  },
   listAlertRules: (groupId: string) =>
     request<{ groupId: string; alerts: AlertRule[] }>(`/api/groups/${groupId}/alerts`),
   createAlertRule: (groupId: string, input: CreateAlertRuleInput) =>

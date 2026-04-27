@@ -113,6 +113,112 @@ export async function deleteAlertRuleAction(
   }
 }
 
+export async function scanCleanupAction(
+  wallet: string,
+): Promise<
+  | {
+      ok: true;
+      scan: import("@/lib/api").CleanupScanResult;
+      burn: import("@/lib/api").BurnCandidatesResult;
+    }
+  | { ok: false; error: string }
+> {
+  try {
+    const [scan, burn] = await Promise.all([
+      api.getCleanupScan(wallet),
+      api.getBurnCandidates(wallet),
+    ]);
+    return { ok: true, scan, burn };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Scan failed" };
+  }
+}
+
+export async function loadOverviewAction(
+  groupId: string,
+): Promise<
+  | { ok: true; data: import("@/lib/api").OverviewResponse }
+  | { ok: false; error: string }
+> {
+  try {
+    const data = await api.getOverview(groupId);
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load" };
+  }
+}
+
+export async function loadPortfolioAction(
+  groupId: string,
+): Promise<
+  | { ok: true; data: import("@/lib/api").PortfolioResponse }
+  | { ok: false; error: string }
+> {
+  try {
+    const data = await api.getPortfolioSummary(groupId);
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load" };
+  }
+}
+
+export async function loadLpAction(
+  groupId: string,
+): Promise<
+  | { ok: true; data: import("@/lib/api").GroupLpResponse }
+  | { ok: false; error: string }
+> {
+  try {
+    const data = await api.getGroupLpPositions(groupId);
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load" };
+  }
+}
+
+export async function loadAirdropsAction(
+  groupId: string,
+): Promise<
+  | { ok: true; data: import("@/lib/api").AirdropsState }
+  | { ok: false; error: string }
+> {
+  try {
+    const data = await api.getGroupAirdrops(groupId);
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load" };
+  }
+}
+
+export async function loadTokenSummaryAction(
+  groupId: string,
+): Promise<
+  | { ok: true; data: import("@/lib/api").TokenActivityResponse }
+  | { ok: false; error: string }
+> {
+  try {
+    const data = await api.getTokenSummary(groupId);
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load" };
+  }
+}
+
+export async function loadTradesAction(
+  groupId: string,
+  filters: import("@/lib/api").GroupTradesFilters,
+): Promise<
+  | { ok: true; data: import("@/lib/api").GroupTradesResponse }
+  | { ok: false; error: string }
+> {
+  try {
+    const data = await api.getGroupTrades(groupId, filters);
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to load" };
+  }
+}
+
 export async function evaluateAlertsAction(
   groupId: string,
 ): Promise<{ ok: boolean; matches?: number; error?: string }> {

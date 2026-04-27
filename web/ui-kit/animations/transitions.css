@@ -1,0 +1,48 @@
+/* Generic enter animations. Apply via class on any element.
+ *
+ * Easing: cubic-bezier(.22, 1, .36, 1) — a "soft out" curve. Feels brisk at
+ * the start and decelerates smoothly. Standard pick for UI transitions.
+ *
+ * Durations are short on purpose: 300–600ms. Anything slower starts feeling
+ * sluggish in a data-dense dashboard.
+ */
+
+@keyframes ui-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes ui-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ui-slide-down {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ui-pop {
+  0%   { transform: scale(0.95); opacity: 0; }
+  50%  { transform: scale(1.04); opacity: 1; }
+  100% { transform: scale(1);    opacity: 1; }
+}
+
+.ui-fade-in   { animation: 0.3s ease-out ui-fade-in both; }
+.ui-slide-up  { animation: 0.4s cubic-bezier(.22, 1, .36, 1) ui-slide-up both; }
+.ui-slide-down{ animation: 0.4s cubic-bezier(.22, 1, .36, 1) ui-slide-down both; }
+.ui-pop       { animation: 0.3s cubic-bezier(.22, 1, .36, 1) ui-pop both; }
+
+/* Stagger helper — apply to a parent and children animate in sequence.
+ * Children must use one of the .ui-* animation classes. Caps at 10 children
+ * to keep output bounded. */
+.ui-stagger > *:nth-child(1)  { animation-delay: 0.00s; }
+.ui-stagger > *:nth-child(2)  { animation-delay: 0.05s; }
+.ui-stagger > *:nth-child(3)  { animation-delay: 0.10s; }
+.ui-stagger > *:nth-child(4)  { animation-delay: 0.15s; }
+.ui-stagger > *:nth-child(5)  { animation-delay: 0.20s; }
+.ui-stagger > *:nth-child(6)  { animation-delay: 0.25s; }
+.ui-stagger > *:nth-child(7)  { animation-delay: 0.30s; }
+.ui-stagger > *:nth-child(8)  { animation-delay: 0.35s; }
+.ui-stagger > *:nth-child(9)  { animation-delay: 0.40s; }
+.ui-stagger > *:nth-child(10) { animation-delay: 0.45s; }

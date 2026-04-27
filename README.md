@@ -360,6 +360,25 @@ pm2 restart ecosystem.config.cjs
 
 State files in `data/` and any backups in `backups/` are preserved across deploys.
 
+## Preflight before deploy
+
+[`scripts/preflight.sh`](scripts/preflight.sh) runs a battery of safety checks before pushing to GitHub or deploying to a VPS. Pure bash + `git` + `npm`.
+
+```bash
+./scripts/preflight.sh
+```
+
+Checks performed:
+
+1. **Env files** — `.env` and `web/.env` exist.
+2. **Env templates** — `.env.example` and `web/.env.example` exist; every key declared in the template is also present in the actual env file (catches drift after a new variable is added to a template).
+3. **Gitignore coverage** — `.env`, `web/.env`, `data/`, `backups/` are all ignored. Secrets and state will not be pushed accidentally.
+4. **Deploy config warnings** — non-fatal warnings if `APP_API_KEY` or `WEB_PASSWORD` are empty (open API or open UI), or if `APP_API_KEY` (.env) doesn't match `BACKEND_APP_API_KEY` (web/.env).
+5. **Builds** — `npm run build` succeeds in both root and `web/`.
+6. **Smoke test** — runs `scripts/smoke-test.sh` against `BASE_URL` (default `http://localhost:3002`).
+
+Exit code `0` only when every check passes (warnings allowed). Run this before `git push` and before any `pm2 restart` on a VPS.
+
 ## Backup and restore
 
 State files (`data/groups.json`, `data/alerts.json`, `data/alert-sent.json`) are local JSON. Two scripts handle export/import as timestamped tarballs under `backups/` (gitignored):

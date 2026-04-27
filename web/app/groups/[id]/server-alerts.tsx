@@ -8,6 +8,10 @@ import {
   evaluateAlertsAction,
   toggleAlertRuleAction,
 } from "../actions";
+import { Card } from "@/ui-kit/components/Card";
+import { SectionHeader } from "@/ui-kit/components/SectionHeader";
+import { Badge } from "@/ui-kit/components/Badge";
+import { btnPrimary, btnSecondary, btnDangerLink, btnLink } from "@/lib/buttonStyles";
 
 export function ServerAlerts({
   groupId,
@@ -64,19 +68,17 @@ export function ServerAlerts({
 
   return (
     <section>
-      <div className="mb-3 flex items-baseline justify-between">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-zinc-500">
-          Server alerts
-        </h2>
-        <span className="text-xs text-zinc-400">
-          persisted · evaluated server-side · sends Telegram
+      <div className="mb-2 flex items-baseline justify-between">
+        <SectionHeader className="mb-0">Server alerts</SectionHeader>
+        <span className="text-[11px] text-neutral-500">
+          persisted · sends Telegram
         </span>
       </div>
 
-      <div className="rounded border border-zinc-200 bg-white p-4">
+      <Card className="p-2.5">
         <form
           action={handleCreate}
-          className="flex flex-wrap items-end gap-2 border-b border-zinc-100 pb-4"
+          className="flex flex-wrap items-end gap-2 border-b border-neutral-800 pb-2"
         >
           <Field label="Name">
             <input
@@ -84,7 +86,7 @@ export function ServerAlerts({
               required
               maxLength={100}
               placeholder="Big jupiter buys"
-              className="w-56 rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+              className={inputClass + " w-56"}
             />
           </Field>
           <Field label="Min USD">
@@ -95,22 +97,18 @@ export function ServerAlerts({
               min="0"
               required
               placeholder="50"
-              className="w-28 rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+              className={inputClass + " w-28"}
             />
           </Field>
           <Field label="Token">
             <input
               name="token"
               placeholder="optional"
-              className="w-40 rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+              className={inputClass + " w-40"}
             />
           </Field>
           <Field label="Side">
-            <select
-              name="side"
-              defaultValue=""
-              className="rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
-            >
+            <select name="side" defaultValue="" className={inputClass}>
               <option value="">All</option>
               <option value="buy">Buy</option>
               <option value="sell">Sell</option>
@@ -120,26 +118,27 @@ export function ServerAlerts({
             <input
               name="program"
               placeholder="optional"
-              className="w-32 rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+              className={inputClass + " w-32"}
             />
           </Field>
-          <label className="flex items-center gap-2 pb-[10px] text-xs text-zinc-700">
-            <input type="checkbox" name="enabled" defaultChecked className="h-4 w-4" />
+          <label className="flex items-center gap-2 pb-[10px] text-xs text-neutral-300">
+            <input
+              type="checkbox"
+              name="enabled"
+              defaultChecked
+              className="h-4 w-4 rounded border-neutral-700 bg-neutral-900 text-violet-500 focus:ring-violet-500/30"
+            />
             enabled
           </label>
           <div className="flex gap-2 pb-[1px]">
-            <button
-              type="submit"
-              disabled={pending}
-              className="rounded bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50"
-            >
+            <button type="submit" disabled={pending} className={btnPrimary}>
               Add rule
             </button>
             <button
               type="button"
               onClick={handleEvaluate}
               disabled={pending}
-              className="rounded border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+              className={btnSecondary}
             >
               Evaluate now
             </button>
@@ -147,21 +146,21 @@ export function ServerAlerts({
         </form>
 
         {error && (
-          <div className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <div className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
             {error}
           </div>
         )}
         {info && !error && (
-          <div className="mt-3 rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
+          <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
             {info}
           </div>
         )}
 
         {rules.length === 0 ? (
-          <p className="mt-4 text-xs text-zinc-500">No server-side rules yet.</p>
+          <p className="mt-4 text-xs text-neutral-500">No server-side rules yet.</p>
         ) : (
-          <table className="mt-4 w-full text-sm">
-            <thead className="text-left text-xs uppercase tracking-wider text-zinc-500">
+          <table className="mt-3 w-full text-sm">
+            <thead className="text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-300">
               <tr>
                 <th className="py-1">Name</th>
                 <th>Min USD</th>
@@ -173,36 +172,38 @@ export function ServerAlerts({
                 <th></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-100">
+            <tbody className="divide-y divide-neutral-800">
               {rules.map((r) => (
-                <tr key={r.id}>
-                  <td className="py-2">
-                    <div className="font-medium">{r.name}</div>
-                    <div className="font-mono text-xs text-zinc-400">{r.id.slice(0, 8)}…</div>
+                <tr key={r.id} className="transition-colors duration-100 hover:bg-neutral-800/60">
+                  <td className="py-1">
+                    <div className="font-semibold text-white">{r.name}</div>
+                    <div className="font-mono text-xs text-neutral-400">{r.id.slice(0, 8)}…</div>
                   </td>
-                  <td>${r.minUsd.toFixed(2)}</td>
-                  <td>{r.token ?? <span className="text-zinc-400">—</span>}</td>
-                  <td>{r.side ?? <span className="text-zinc-400">any</span>}</td>
-                  <td>{r.program ?? <span className="text-zinc-400">any</span>}</td>
-                  <td className="whitespace-nowrap text-xs text-zinc-500">
+                  <td className="font-semibold text-white tabular-nums">${r.minUsd.toFixed(2)}</td>
+                  <td className="font-medium text-white">
+                    {r.token ?? <span className="font-normal text-neutral-500">—</span>}
+                  </td>
+                  <td className="font-medium text-white">
+                    {r.side ?? <span className="font-normal text-neutral-500">any</span>}
+                  </td>
+                  <td className="font-medium text-white">
+                    {r.program ?? <span className="font-normal text-neutral-500">any</span>}
+                  </td>
+                  <td className="whitespace-nowrap text-xs text-neutral-300">
                     {new Date(r.createdAt).toISOString().slice(0, 10)}
                   </td>
                   <td>
-                    <span
-                      className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${
-                        r.enabled ? "bg-green-100 text-green-800" : "bg-zinc-100 text-zinc-600"
-                      }`}
-                    >
+                    <Badge variant={r.enabled ? "buy" : "neutral"}>
                       {r.enabled ? "Enabled" : "Disabled"}
-                    </span>
+                    </Badge>
                   </td>
                   <td>
-                    <div className="flex gap-2 text-xs">
+                    <div className="flex gap-3">
                       <button
                         type="button"
                         onClick={() => handleToggle(r.id, !r.enabled)}
                         disabled={pending}
-                        className="text-zinc-700 hover:underline disabled:opacity-50"
+                        className={btnLink}
                       >
                         {r.enabled ? "Disable" : "Enable"}
                       </button>
@@ -210,7 +211,7 @@ export function ServerAlerts({
                         type="button"
                         onClick={() => handleDelete(r.id)}
                         disabled={pending}
-                        className="text-red-600 hover:underline disabled:opacity-50"
+                        className={btnDangerLink}
                       >
                         Delete
                       </button>
@@ -221,14 +222,17 @@ export function ServerAlerts({
             </tbody>
           </table>
         )}
-      </div>
+      </Card>
     </section>
   );
 }
 
+const inputClass =
+  "rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-white placeholder:text-neutral-500 transition-colors duration-100 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30";
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col text-xs uppercase tracking-wider text-zinc-500">
+    <label className="flex flex-col text-[10px] uppercase tracking-wider text-neutral-500">
       {label}
       <div className="mt-1">{children}</div>
     </label>

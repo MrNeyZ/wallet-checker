@@ -2,6 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { startAlertsAction, stopAlertsAction } from "../actions";
+import { Card } from "@/ui-kit/components/Card";
+import { SectionHeader } from "@/ui-kit/components/SectionHeader";
+import { btnPrimaryEmerald, btnSecondary } from "@/lib/buttonStyles";
 
 interface Status {
   running: boolean;
@@ -45,32 +48,31 @@ export function AlertMonitor({
 
   return (
     <section>
-      <div className="mb-3 flex items-baseline justify-between">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-zinc-500">
-          Alert monitor
-        </h2>
-        <span className="text-xs text-zinc-400">
-          server-side polling · Telegram dedup via alert-sent.json
+      <div className="mb-2 flex items-baseline justify-between">
+        <SectionHeader className="mb-0">Alert monitor</SectionHeader>
+        <span className="text-[11px] text-neutral-500">
+          polling · Telegram dedup
         </span>
       </div>
-      <div className="rounded border border-zinc-200 bg-white p-4">
+      <Card className="p-2.5">
         <div className="flex items-center gap-3 text-sm">
-          <span
-            className={`inline-block h-2 w-2 rounded-full ${
-              running ? "bg-green-500" : "bg-zinc-300"
-            }`}
-            aria-hidden
-          />
-          <span className="font-medium">{running ? "Running" : "Not running"}</span>
+          {running ? (
+            <span className="ui-live-dot" />
+          ) : (
+            <span className="inline-block h-2 w-2 rounded-full bg-neutral-700" />
+          )}
+          <span className="font-medium text-white">
+            {running ? "Running" : "Not running"}
+          </span>
           {running && intervalMs !== null && (
-            <span className="text-xs text-zinc-500">
+            <span className="text-xs text-neutral-500 tabular-nums">
               every {(intervalMs / 1000).toFixed(0)}s
             </span>
           )}
         </div>
 
-        <div className="mt-4 flex flex-wrap items-end gap-2">
-          <label className="flex flex-col text-xs uppercase tracking-wider text-zinc-500">
+        <div className="mt-3 flex flex-wrap items-end gap-2">
+          <label className="flex flex-col text-[10px] uppercase tracking-wider text-neutral-500">
             Interval (ms)
             <input
               type="number"
@@ -80,7 +82,7 @@ export function AlertMonitor({
               value={interval}
               onChange={(e) => setInterval(e.target.value)}
               disabled={running || pending}
-              className="mt-1 w-32 rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none disabled:bg-zinc-100"
+              className="mt-1 w-32 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-white transition-colors duration-100 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30 disabled:bg-neutral-900 disabled:text-neutral-500"
             />
           </label>
           <div className="flex gap-2 pb-[1px]">
@@ -88,7 +90,7 @@ export function AlertMonitor({
               type="button"
               onClick={handleStart}
               disabled={running || pending}
-              className="rounded bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50"
+              className={btnPrimaryEmerald}
             >
               {pending && !running ? "Starting…" : "Start monitor"}
             </button>
@@ -96,7 +98,7 @@ export function AlertMonitor({
               type="button"
               onClick={handleStop}
               disabled={!running || pending}
-              className="rounded border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+              className={btnSecondary}
             >
               {pending && running ? "Stopping…" : "Stop monitor"}
             </button>
@@ -104,11 +106,11 @@ export function AlertMonitor({
         </div>
 
         {error && (
-          <div className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <div className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
             {error}
           </div>
         )}
-      </div>
+      </Card>
     </section>
   );
 }

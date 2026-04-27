@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { Card } from "@/ui-kit/components/Card";
+import { btnPrimary } from "@/lib/buttonStyles";
 
 interface LoginFormProps {
   next: string;
@@ -20,29 +22,27 @@ export default function LoginForm({ next, action }: LoginFormProps) {
   }
 
   return (
-    <form action={handleSubmit} className="space-y-3">
-      <input type="hidden" name="next" value={next} />
-      <input
-        type="password"
-        name="password"
-        required
-        autoFocus
-        autoComplete="current-password"
-        placeholder="Password"
-        className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
-      />
-      <button
-        type="submit"
-        disabled={pending}
-        className="w-full rounded bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50"
-      >
-        {pending ? "Signing in…" : "Sign in"}
-      </button>
-      {error && (
-        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-          {error}
-        </div>
-      )}
-    </form>
+    <Card className="p-6">
+      <form action={handleSubmit} className="space-y-3">
+        <input type="hidden" name="next" value={next} />
+        <input
+          type="password"
+          name="password"
+          required
+          autoFocus
+          autoComplete="current-password"
+          placeholder="Password"
+          className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-white placeholder:text-neutral-500 transition-colors duration-100 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30"
+        />
+        <button type="submit" disabled={pending} className={`${btnPrimary} w-full`}>
+          {pending ? "Signing in…" : "Sign in"}
+        </button>
+        {error && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+            {error}
+          </div>
+        )}
+      </form>
+    </Card>
   );
 }
