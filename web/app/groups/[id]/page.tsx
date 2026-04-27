@@ -1,19 +1,114 @@
 import Link from "next/link";
-import { api, type Dashboard } from "@/lib/api";
+import { api, type Dashboard, type TradeItem } from "@/lib/api";
 import { fmtUsd, fmtPercent, fmtNumber, fmtTime, shortAddr } from "@/lib/format";
 import { addWalletAction, removeWalletAction } from "../actions";
+import { AlertsSection } from "./alerts";
+import { TradeFilters } from "./trade-filters";
 
 export const dynamic = "force-dynamic";
 
+const solscanWallet = (addr: string) => `https://solscan.io/account/${addr}`;
+const solscanTx = (sig: string) => `https://solscan.io/tx/${sig}`;
+
+const HIGHLIGHT_TRADE_USD = 50;
+const TOP_ACCUMULATED_COUNT = 3;
+
+function Badge({
+  children,
+  tone,
+}: {
+  children: React.ReactNode;
+  tone: "best" | "worst" | "accumulated";
+}) {
+  const cls =
+    tone === "best"
+      ? "bg-green-100 text-green-800"
+      : tone === "worst"
+      ? "bg-red-100 text-red-800"
+      : "bg-blue-100 text-blue-800";
+  return (
+    <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${cls}`}>
+      {children}
+    </span>
+  );
+}
+
+function WalletLink({
+  address,
+  className = "",
+  display,
+}: {
+  address: string;
+  className?: string;
+  display?: string;
+}) {
+  return (
+    <a
+      href={solscanWallet(address)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`hover:underline hover:text-zinc-900 ${className}`}
+      title={address}
+    >
+      {display ?? shortAddr(address)}
+    </a>
+  );
+}
+
+function TxLink({ tx }: { tx: string }) {
+  return (
+    <a
+      href={solscanTx(tx)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="font-mono text-xs text-zinc-500 hover:underline hover:text-zinc-900"
+      title={tx}
+    >
+      {shortAddr(tx, 6, 4)}
+    </a>
+  );
+}
+
+function TokenIcon({ image, alt }: { image: string | null; alt: string }) {
+  if (!image) {
+    return <span className="inline-block h-5 w-5 rounded-full bg-zinc-200" aria-hidden />;
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={image} alt={alt} className="h-5 w-5 rounded-full object-cover" />;
+}
+
+interface PageSearchParams {
+  minUsd?: string;
+  token?: string;
+  side?: string;
+  program?: string;
+}
+
+function normalizeFilters(sp: PageSearchParams) {
+  const out: { minUsd?: string; token?: string; side?: "buy" | "sell"; program?: string } = {};
+  if (sp.minUsd && sp.minUsd.trim() !== "") out.minUsd = sp.minUsd.trim();
+  if (sp.token && sp.token.trim() !== "") out.token = sp.token.trim();
+  if (sp.side === "buy" || sp.side === "sell") out.side = sp.side;
+  if (sp.program && sp.program.trim() !== "") out.program = sp.program.trim();
+  return out;
+}
+
 export default async function GroupDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<PageSearchParams>;
 }) {
   const { id } = await params;
+  const sp = await searchParams;
+  const filters = normalizeFilters(sp);
+  const hasFilters = Object.keys(filters).length > 0;
 
   let dashboard: Dashboard | null = null;
   let wallets: Awaited<ReturnType<typeof api.getGroupWallets>>["wallets"] = [];
+  let filteredTrades: TradeItem[] | null = null;
+  let filteredError: string | null = null;
   let error: string | null = null;
 
   try {
@@ -22,6 +117,15 @@ export default async function GroupDetailPage({
     wallets = w.wallets;
   } catch (err) {
     error = err instanceof Error ? err.message : "Failed to load";
+  }
+
+  if (hasFilters && dashboard) {
+    try {
+      const res = await api.getGroupTrades(id, filters);
+      filteredTrades = res.trades;
+    } catch (err) {
+      filteredError = err instanceof Error ? err.message : "Failed to load trades";
+    }
   }
 
   if (error) {
@@ -83,8 +187,69 @@ export default async function GroupDetailPage({
 
       <TokenActivitySection data={dashboard.tokenActivitySummary} />
 
-      <RecentTradesSection data={dashboard.recentTrades} />
+      <TradeFilters groupId={id} filters={filters} />
+
+      {hasFilters ? (
+        <FilteredTradesSection
+          trades={filteredTrades}
+          error={filteredError}
+          filters={filters}
+        />
+      ) : (
+        <RecentTradesSection data={dashboard.recentTrades} />
+      )}
+
+      <AlertsSection
+        trades={
+          hasFilters
+            ? filteredTrades ?? []
+            : dashboard.recentTrades?.trades ?? []
+        }
+      />
     </div>
+  );
+}
+
+function FilteredTradesSection({
+  trades,
+  error,
+  filters,
+}: {
+  trades: TradeItem[] | null;
+  error: string | null;
+  filters: { minUsd?: string; token?: string; side?: "buy" | "sell"; program?: string };
+}) {
+  const summary = [
+    filters.minUsd ? `≥ $${filters.minUsd}` : null,
+    filters.token ? `token=${filters.token}` : null,
+    filters.side ? `side=${filters.side}` : null,
+    filters.program ? `program=${filters.program}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  if (error) {
+    return (
+      <section>
+        <SectionHeader title="Recent trades" subtitle={summary} />
+        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {error}
+        </div>
+      </section>
+    );
+  }
+  if (!trades || trades.length === 0) {
+    return (
+      <section>
+        <SectionHeader title="Recent trades" subtitle={summary} />
+        <EmptyHint>No trades found for current filters.</EmptyHint>
+      </section>
+    );
+  }
+  return (
+    <RecentTradesSection
+      data={{ limit: trades.length, trades, failedWallets: [] }}
+    />
   );
 }
 
@@ -149,7 +314,7 @@ function WalletsSection({
             {wallets.map((w) => (
               <li key={w.address} className="flex items-center justify-between py-2">
                 <div>
-                  <div className="font-mono text-xs">{w.address}</div>
+                  <WalletLink address={w.address} className="font-mono text-xs text-zinc-700" />
                   {w.label && <div className="text-xs text-zinc-500">{w.label}</div>}
                 </div>
                 <form
@@ -179,6 +344,18 @@ function PnlOverviewSection({ data }: { data: Dashboard["pnlOverview"] }) {
     );
   }
   const t = data.totals;
+  const numericResults = data.results.filter(
+    (r) => r.ok && typeof r.summary?.totalPnlUsd === "number" && Number.isFinite(r.summary.totalPnlUsd),
+  );
+  let bestWallet: string | null = null;
+  let worstWallet: string | null = null;
+  if (numericResults.length > 0) {
+    const sorted = [...numericResults].sort(
+      (a, b) => (b.summary!.totalPnlUsd as number) - (a.summary!.totalPnlUsd as number),
+    );
+    bestWallet = sorted[0].wallet;
+    if (sorted.length > 1) worstWallet = sorted[sorted.length - 1].wallet;
+  }
   return (
     <section>
       <SectionHeader title="PnL overview" subtitle={`${data.ok} ok · ${data.failed} failed`} />
@@ -206,7 +383,11 @@ function PnlOverviewSection({ data }: { data: Dashboard["pnlOverview"] }) {
               {data.results.map((r) => (
                 <tr key={r.wallet}>
                   <td className="py-2">
-                    <div className="font-mono text-xs">{shortAddr(r.wallet)}</div>
+                    <span className="inline-flex items-center">
+                      <WalletLink address={r.wallet} className="font-mono text-xs text-zinc-700" />
+                      {r.wallet === bestWallet && <Badge tone="best">Best</Badge>}
+                      {r.wallet === worstWallet && <Badge tone="worst">Worst</Badge>}
+                    </span>
                     {r.label && <div className="text-xs text-zinc-500">{r.label}</div>}
                   </td>
                   {r.ok && r.summary ? (
@@ -294,8 +475,13 @@ function PortfolioSection({ data }: { data: Dashboard["portfolioSummary"] }) {
               {top.map((tk) => (
                 <tr key={tk.mint}>
                   <td className="py-2">
-                    <div className="font-medium">{tk.symbol ?? shortAddr(tk.mint)}</div>
-                    {tk.name && <div className="text-xs text-zinc-500">{tk.name}</div>}
+                    <div className="flex items-center gap-2">
+                      <TokenIcon image={tk.image} alt={tk.symbol ?? tk.mint} />
+                      <div>
+                        <div className="font-medium">{tk.symbol ?? shortAddr(tk.mint)}</div>
+                        {tk.name && <div className="text-xs text-zinc-500">{tk.name}</div>}
+                      </div>
+                    </div>
                   </td>
                   <td>{fmtNumber(tk.totalBalance)}</td>
                   <td className="font-medium">{fmtUsd(tk.totalValueUsd)}</td>
@@ -320,6 +506,13 @@ function TokenActivitySection({ data }: { data: Dashboard["tokenActivitySummary"
     );
   }
   const top = data.tokens.slice(0, 10);
+  const accumulatedMints = new Set(
+    [...data.tokens]
+      .filter((tk) => tk.netUsd > 0)
+      .sort((a, b) => b.netUsd - a.netUsd)
+      .slice(0, TOP_ACCUMULATED_COUNT)
+      .map((tk) => tk.mint),
+  );
   return (
     <section>
       <SectionHeader
@@ -346,8 +539,18 @@ function TokenActivitySection({ data }: { data: Dashboard["tokenActivitySummary"
               {top.map((tk) => (
                 <tr key={tk.mint}>
                   <td className="py-2">
-                    <div className="font-medium">{tk.symbol ?? shortAddr(tk.mint)}</div>
-                    {tk.name && <div className="text-xs text-zinc-500">{tk.name}</div>}
+                    <div className="flex items-center gap-2">
+                      <TokenIcon image={tk.image} alt={tk.symbol ?? tk.mint} />
+                      <div>
+                        <div className="font-medium">
+                          {tk.symbol ?? shortAddr(tk.mint)}
+                          {accumulatedMints.has(tk.mint) && (
+                            <Badge tone="accumulated">Most accumulated</Badge>
+                          )}
+                        </div>
+                        {tk.name && <div className="text-xs text-zinc-500">{tk.name}</div>}
+                      </div>
+                    </div>
                   </td>
                   <td>{tk.buysCount}</td>
                   <td>{tk.sellsCount}</td>
@@ -390,14 +593,21 @@ function RecentTradesSection({ data }: { data: Dashboard["recentTrades"] }) {
                 <th>To</th>
                 <th>USD</th>
                 <th>DEX</th>
+                <th>Tx</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
-              {data.trades.map((t) => (
-                <tr key={t.tx}>
+              {data.trades.map((t) => {
+                const big = (t.volume?.usd ?? 0) > HIGHLIGHT_TRADE_USD;
+                return (
+                <tr key={t.tx} className={big ? "bg-amber-50" : undefined}>
                   <td className="py-2 whitespace-nowrap text-xs text-zinc-600">{fmtTime(t.time)}</td>
                   <td className="text-xs">
-                    <div>{t.label ?? shortAddr(t.wallet)}</div>
+                    <WalletLink
+                      address={t.wallet}
+                      display={t.label ?? shortAddr(t.wallet)}
+                      className="text-zinc-700"
+                    />
                   </td>
                   <td>
                     <span className="text-xs text-zinc-600">
@@ -411,8 +621,12 @@ function RecentTradesSection({ data }: { data: Dashboard["recentTrades"] }) {
                   </td>
                   <td className="font-medium">{fmtUsd(t.volume.usd)}</td>
                   <td className="text-xs text-zinc-500">{t.program}</td>
+                  <td>
+                    <TxLink tx={t.tx} />
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}

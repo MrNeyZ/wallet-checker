@@ -111,6 +111,25 @@ export interface Dashboard {
   warnings: string[];
 }
 
+export interface GroupTradesResponse {
+  groupId: string;
+  groupName: string;
+  walletsCount: number;
+  limit: number;
+  perWalletLimit: number;
+  trades: TradeItem[];
+  failedWallets: { wallet: string; label: string | null; error: string }[];
+}
+
+export interface GroupTradesFilters {
+  minUsd?: number | string;
+  token?: string;
+  side?: "buy" | "sell";
+  program?: string;
+  limit?: number;
+  perWalletLimit?: number;
+}
+
 export const api = {
   listGroups: () => request<{ groups: Group[] }>("/api/groups"),
   createGroup: (name: string) =>
@@ -119,6 +138,21 @@ export const api = {
     request<Dashboard>(`/api/groups/${groupId}/dashboard`),
   getGroupWallets: (groupId: string) =>
     request<{ groupId: string; wallets: GroupWallet[] }>(`/api/groups/${groupId}/wallets`),
+  getGroupTrades: (groupId: string, filters: GroupTradesFilters) => {
+    const q = new URLSearchParams();
+    if (filters.minUsd !== undefined && String(filters.minUsd) !== "")
+      q.set("minUsd", String(filters.minUsd));
+    if (filters.token) q.set("token", filters.token);
+    if (filters.side) q.set("side", filters.side);
+    if (filters.program) q.set("program", filters.program);
+    if (filters.limit !== undefined) q.set("limit", String(filters.limit));
+    if (filters.perWalletLimit !== undefined)
+      q.set("perWalletLimit", String(filters.perWalletLimit));
+    const qs = q.toString();
+    return request<GroupTradesResponse>(
+      `/api/groups/${groupId}/trades${qs ? `?${qs}` : ""}`,
+    );
+  },
   addWallet: (groupId: string, wallet: string, label?: string) =>
     request<GroupWallet>(`/api/groups/${groupId}/wallets`, {
       method: "POST",
