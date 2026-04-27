@@ -56,7 +56,9 @@ export function AlertsSection({ trades }: { trades: TradeItem[] }) {
   return (
     <section>
       <div className="mb-3 flex items-baseline justify-between">
-        <h2 className="text-sm font-medium uppercase tracking-wider text-zinc-500">Alerts</h2>
+        <h2 className="text-sm font-medium uppercase tracking-wider text-zinc-500">
+          Local preview alerts
+        </h2>
         <span className="text-xs text-zinc-400">
           frontend-only · evaluated against the trades shown above
         </span>

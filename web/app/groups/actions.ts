@@ -26,3 +26,101 @@ export async function removeWalletAction(groupId: string, wallet: string) {
   revalidatePath(`/groups/${groupId}`);
   revalidatePath("/groups");
 }
+
+export async function startAlertsAction(
+  groupId: string,
+  intervalMs: number,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await api.startAlerts(groupId, intervalMs);
+    revalidatePath(`/groups/${groupId}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Start failed" };
+  }
+}
+
+export async function stopAlertsAction(
+  groupId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await api.stopAlerts(groupId);
+    revalidatePath(`/groups/${groupId}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Stop failed" };
+  }
+}
+
+export async function createAlertRuleAction(
+  groupId: string,
+  formData: FormData,
+): Promise<{ ok: boolean; error?: string }> {
+  const name = String(formData.get("name") ?? "").trim();
+  const minUsdRaw = String(formData.get("minUsd") ?? "").trim();
+  const minUsd = Number(minUsdRaw);
+  const token = String(formData.get("token") ?? "").trim();
+  const sideRaw = String(formData.get("side") ?? "");
+  const program = String(formData.get("program") ?? "").trim();
+  const enabled = formData.get("enabled") !== null;
+
+  if (!name) return { ok: false, error: "Name is required" };
+  if (!Number.isFinite(minUsd) || minUsd < 0) {
+    return { ok: false, error: "minUsd must be a number ≥ 0" };
+  }
+  const side = sideRaw === "buy" || sideRaw === "sell" ? sideRaw : undefined;
+
+  try {
+    await api.createAlertRule(groupId, {
+      name,
+      minUsd,
+      token: token || undefined,
+      side,
+      program: program || undefined,
+      enabled,
+    });
+    revalidatePath(`/groups/${groupId}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Create failed" };
+  }
+}
+
+export async function toggleAlertRuleAction(
+  groupId: string,
+  alertId: string,
+  enabled: boolean,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await api.patchAlertRule(groupId, alertId, { enabled });
+    revalidatePath(`/groups/${groupId}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Patch failed" };
+  }
+}
+
+export async function deleteAlertRuleAction(
+  groupId: string,
+  alertId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await api.deleteAlertRule(groupId, alertId);
+    revalidatePath(`/groups/${groupId}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Delete failed" };
+  }
+}
+
+export async function evaluateAlertsAction(
+  groupId: string,
+): Promise<{ ok: boolean; matches?: number; error?: string }> {
+  try {
+    const res = await api.evaluateAlerts(groupId);
+    revalidatePath(`/groups/${groupId}`);
+    return { ok: true, matches: res.matches.length };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Evaluate failed" };
+  }
+}

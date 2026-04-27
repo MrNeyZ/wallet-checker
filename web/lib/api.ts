@@ -96,6 +96,7 @@ export interface Dashboard {
     totalUsd: number;
     totalSol: number;
     tokens: PortfolioToken[];
+    filteredTokensCount?: number;
     failedWallets: { wallet: string; label: string | null; error: string }[];
   } | null;
   tokenActivitySummary: {
@@ -109,6 +110,27 @@ export interface Dashboard {
     failedWallets: { wallet: string; label: string | null; error: string }[];
   } | null;
   warnings: string[];
+}
+
+export interface AlertRule {
+  id: string;
+  groupId: string;
+  name: string;
+  enabled: boolean;
+  minUsd: number;
+  token?: string;
+  side?: "buy" | "sell";
+  program?: string;
+  createdAt: string;
+}
+
+export interface CreateAlertRuleInput {
+  name: string;
+  minUsd: number;
+  token?: string;
+  side?: "buy" | "sell";
+  program?: string;
+  enabled?: boolean;
 }
 
 export interface GroupTradesResponse {
@@ -165,4 +187,48 @@ export const api = {
     }).then((res) => {
       if (!res.ok) throw new Error(`Backend ${res.status}`);
     }),
+  listAlertRules: (groupId: string) =>
+    request<{ groupId: string; alerts: AlertRule[] }>(`/api/groups/${groupId}/alerts`),
+  createAlertRule: (groupId: string, input: CreateAlertRuleInput) =>
+    request<AlertRule>(`/api/groups/${groupId}/alerts`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  patchAlertRule: (
+    groupId: string,
+    alertId: string,
+    patch: Partial<CreateAlertRuleInput> & { enabled?: boolean },
+  ) =>
+    request<AlertRule>(`/api/groups/${groupId}/alerts/${alertId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteAlertRule: (groupId: string, alertId: string) =>
+    fetch(`${BACKEND_URL}/api/groups/${groupId}/alerts/${alertId}`, {
+      method: "DELETE",
+      cache: "no-store",
+    }).then((res) => {
+      if (!res.ok) throw new Error(`Backend ${res.status}`);
+    }),
+  evaluateAlerts: (groupId: string) =>
+    request<{
+      groupId: string;
+      evaluatedRules: number;
+      matches: { ruleName: string; volumeUsd: number; tokenSymbol: string | null }[];
+      failedWallets: { wallet: string; label: string | null; error: string }[];
+    }>(`/api/groups/${groupId}/alerts/evaluate`, { method: "POST", body: "{}" }),
+  getAlertStatus: (groupId: string) =>
+    request<{ groupId: string; running: boolean; intervalMs: number | null }>(
+      `/api/groups/${groupId}/alerts/status`,
+    ),
+  startAlerts: (groupId: string, intervalMs?: number) =>
+    request<{ groupId: string; running: boolean; intervalMs: number; started: boolean }>(
+      `/api/groups/${groupId}/alerts/start`,
+      { method: "POST", body: JSON.stringify(intervalMs ? { intervalMs } : {}) },
+    ),
+  stopAlerts: (groupId: string) =>
+    request<{ groupId: string; running: boolean; stopped: boolean }>(
+      `/api/groups/${groupId}/alerts/stop`,
+      { method: "POST", body: "{}" },
+    ),
 };

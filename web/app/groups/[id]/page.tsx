@@ -4,6 +4,9 @@ import { fmtUsd, fmtPercent, fmtNumber, fmtTime, shortAddr } from "@/lib/format"
 import { addWalletAction, removeWalletAction } from "../actions";
 import { AlertsSection } from "./alerts";
 import { TradeFilters } from "./trade-filters";
+import { AlertMonitor } from "./alert-monitor";
+import { ServerAlerts } from "./server-alerts";
+import type { AlertRule } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -110,11 +113,23 @@ export default async function GroupDetailPage({
   let filteredTrades: TradeItem[] | null = null;
   let filteredError: string | null = null;
   let error: string | null = null;
+  let alertStatus: { running: boolean; intervalMs: number | null } = {
+    running: false,
+    intervalMs: null,
+  };
+  let alertRules: AlertRule[] = [];
 
   try {
-    const [d, w] = await Promise.all([api.getDashboard(id), api.getGroupWallets(id)]);
+    const [d, w, s, ar] = await Promise.all([
+      api.getDashboard(id),
+      api.getGroupWallets(id),
+      api.getAlertStatus(id).catch(() => ({ running: false, intervalMs: null as number | null })),
+      api.listAlertRules(id).catch(() => ({ groupId: id, alerts: [] as AlertRule[] })),
+    ]);
     dashboard = d;
     wallets = w.wallets;
+    alertStatus = { running: s.running, intervalMs: s.intervalMs };
+    alertRules = ar.alerts;
   } catch (err) {
     error = err instanceof Error ? err.message : "Failed to load";
   }
@@ -180,6 +195,10 @@ export default async function GroupDetailPage({
       )}
 
       <WalletsSection groupId={id} wallets={wallets} addAction={addWallet} />
+
+      <AlertMonitor groupId={id} initialStatus={alertStatus} />
+
+      <ServerAlerts groupId={id} rules={alertRules} />
 
       <PnlOverviewSection data={dashboard.pnlOverview} />
 
@@ -452,6 +471,7 @@ function PortfolioSection({ data }: { data: Dashboard["portfolioSummary"] }) {
     );
   }
   const top = data.tokens.slice(0, 10);
+  const filtered = data.filteredTokensCount ?? 0;
   return (
     <section>
       <SectionHeader
@@ -459,6 +479,11 @@ function PortfolioSection({ data }: { data: Dashboard["portfolioSummary"] }) {
         subtitle={`${fmtUsd(data.totalUsd)} · ${fmtNumber(data.totalSol)} SOL · ${data.tokens.length} tokens`}
       />
       <Card>
+        {filtered > 0 && (
+          <div className="mb-3 text-xs text-amber-700">
+            ⚠️ {filtered} suspicious token{filtered === 1 ? "" : "s"} hidden
+          </div>
+        )}
         {top.length === 0 ? (
           <EmptyHint>No holdings.</EmptyHint>
         ) : (

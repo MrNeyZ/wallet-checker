@@ -23,9 +23,35 @@ interface PortfolioFetchResult {
   label: string | null;
   ok: boolean;
   totalUsd?: number;
-  totalSol?: number;
+  totalSol?: number | null;
   tokens?: PortfolioTokenItem[];
   error?: string;
+}
+
+const SUSPICIOUS_PATTERNS = ["reward", "rewards", "claim", "airdrop", ".io"];
+
+const QUOTE_MINTS = new Set([
+  "So11111111111111111111111111111111111111111", // native SOL (Helius)
+  "So11111111111111111111111111111111111111112", // wrapped SOL
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+]);
+const QUOTE_SYMBOLS = new Set(["SOL", "WSOL", "USDC", "USDT"]);
+
+function isQuoteToken(t: PortfolioTokenItem): boolean {
+  if (QUOTE_MINTS.has(t.mint)) return true;
+  if (t.symbol && QUOTE_SYMBOLS.has(t.symbol.toUpperCase())) return true;
+  return false;
+}
+
+function isSpamToken(t: PortfolioTokenItem): boolean {
+  const sym = (t.symbol ?? "").toLowerCase();
+  const name = (t.name ?? "").toLowerCase();
+  for (const p of SUSPICIOUS_PATTERNS) {
+    if (sym.includes(p) || name.includes(p)) return true;
+  }
+  if (t.valueUsd > 1000 && !isQuoteToken(t)) return true;
+  return false;
 }
 
 export async function buildPortfolioSummary(group: { wallets: GroupWallet[] }) {
@@ -54,13 +80,18 @@ export async function buildPortfolioSummary(group: { wallets: GroupWallet[] }) {
 
   let totalUsd = 0;
   let totalSol = 0;
+  let filteredTokensCount = 0;
   const tokens = new Map<string, AggregatedPortfolioToken>();
 
   for (const w of perWallet) {
     if (!w.ok || !w.tokens) continue;
-    totalUsd += w.totalUsd ?? 0;
     totalSol += w.totalSol ?? 0;
     for (const tk of w.tokens) {
+      if (isSpamToken(tk)) {
+        filteredTokensCount += 1;
+        continue;
+      }
+      totalUsd += tk.valueUsd;
       let agg = tokens.get(tk.mint);
       if (!agg) {
         agg = {
@@ -94,6 +125,7 @@ export async function buildPortfolioSummary(group: { wallets: GroupWallet[] }) {
     totalUsd,
     totalSol,
     tokens: Array.from(tokens.values()).sort((a, b) => b.totalValueUsd - a.totalValueUsd),
+    filteredTokensCount,
     failedWallets,
   };
 }

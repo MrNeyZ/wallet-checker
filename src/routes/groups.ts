@@ -16,6 +16,27 @@ import {
 } from "../services/groups/groupTrades.js";
 import { buildPortfolioSummary } from "../services/groups/groupPortfolio.js";
 import { buildGroupDashboard } from "../services/groups/groupDashboard.js";
+import {
+  createAlert,
+  deleteAlert,
+  getAlert,
+  listAlertsForGroup,
+  updateAlert,
+} from "../lib/alertsStore.js";
+import {
+  evaluateGroupAlerts,
+  DEFAULT_ALERT_PER_WALLET_LIMIT,
+  MIN_ALERT_PER_WALLET_LIMIT,
+  MAX_ALERT_PER_WALLET_LIMIT,
+} from "../services/groups/alertEvaluator.js";
+import {
+  startPoller,
+  stopPoller,
+  getPollerStatus,
+  DEFAULT_INTERVAL_MS,
+  MIN_INTERVAL_MS,
+  MAX_INTERVAL_MS,
+} from "../lib/alertPoller.js";
 
 const router = Router();
 
@@ -176,6 +197,7 @@ router.get("/:groupId/portfolio-summary", async (req, res) => {
     totalUsd: summary.totalUsd,
     totalSol: summary.totalSol,
     tokens: summary.tokens,
+    filteredTokensCount: summary.filteredTokensCount,
     failedWallets: summary.failedWallets,
   });
 });
@@ -221,6 +243,132 @@ router.get("/:groupId/pnl", async (req, res) => {
     failed: result.failed,
     results: result.results,
   });
+});
+
+const createAlertSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  minUsd: z.coerce.number().nonnegative(),
+  token: z.string().trim().min(1).optional(),
+  side: z.enum(["buy", "sell"]).optional(),
+  program: z.string().trim().min(1).optional(),
+  enabled: z.boolean().optional(),
+});
+
+const patchAlertSchema = z
+  .object({
+    name: z.string().trim().min(1).max(100).optional(),
+    minUsd: z.coerce.number().nonnegative().optional(),
+    token: z.string().trim().min(1).optional(),
+    side: z.enum(["buy", "sell"]).optional(),
+    program: z.string().trim().min(1).optional(),
+    enabled: z.boolean().optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: "Empty patch body" });
+
+const evaluateBodySchema = z.object({
+  perWalletLimit: z
+    .coerce.number()
+    .int()
+    .min(MIN_ALERT_PER_WALLET_LIMIT)
+    .max(MAX_ALERT_PER_WALLET_LIMIT)
+    .optional(),
+});
+
+router.post("/:groupId/alerts/evaluate", async (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+
+  const parsed = evaluateBodySchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0].message });
+  }
+  const perWalletLimit = parsed.data.perWalletLimit ?? DEFAULT_ALERT_PER_WALLET_LIMIT;
+
+  const result = await evaluateGroupAlerts(group, perWalletLimit);
+  res.json({ groupId: group.id, ...result });
+});
+
+const startPollerSchema = z.object({
+  intervalMs: z.coerce.number().int().min(MIN_INTERVAL_MS).max(MAX_INTERVAL_MS).optional(),
+});
+
+router.post("/:groupId/alerts/start", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const parsed = startPollerSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0].message });
+  }
+  const intervalMs = parsed.data.intervalMs ?? DEFAULT_INTERVAL_MS;
+  const groupId = group.id;
+  const result = startPoller(groupId, intervalMs, async () => {
+    const g = getGroup(groupId);
+    if (!g) return;
+    await evaluateGroupAlerts(g);
+  });
+  res.json({
+    groupId,
+    running: true,
+    intervalMs: result.intervalMs,
+    started: result.started,
+  });
+});
+
+router.post("/:groupId/alerts/stop", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const stopped = stopPoller(group.id);
+  res.json({ groupId: group.id, running: false, stopped });
+});
+
+router.get("/:groupId/alerts/status", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const status = getPollerStatus(group.id);
+  res.json({ groupId: group.id, ...status });
+});
+
+router.post("/:groupId/alerts", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const parsed = createAlertSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0].message });
+  }
+  const rule = createAlert({ groupId: group.id, ...parsed.data });
+  res.status(201).json(rule);
+});
+
+router.get("/:groupId/alerts", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  res.json({ groupId: group.id, alerts: listAlertsForGroup(group.id) });
+});
+
+router.patch("/:groupId/alerts/:alertId", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const existing = getAlert(req.params.alertId);
+  if (!existing || existing.groupId !== group.id) {
+    return res.status(404).json({ error: "Alert not found" });
+  }
+  const parsed = patchAlertSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0].message });
+  }
+  const updated = updateAlert(existing.id, parsed.data);
+  res.json(updated);
+});
+
+router.delete("/:groupId/alerts/:alertId", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const existing = getAlert(req.params.alertId);
+  if (!existing || existing.groupId !== group.id) {
+    return res.status(404).json({ error: "Alert not found" });
+  }
+  deleteAlert(existing.id);
+  res.status(204).send();
 });
 
 export default router;
