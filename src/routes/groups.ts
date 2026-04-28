@@ -18,6 +18,15 @@ import { buildPortfolioSummary } from "../services/groups/groupPortfolio.js";
 import { buildGroupDashboard } from "../services/groups/groupDashboard.js";
 import { buildGroupLpPositions } from "../services/groups/groupLp.js";
 import { buildGroupAirdrops } from "../services/groups/groupAirdrops.js";
+import { evaluateGroupSignals } from "../services/groups/groupSignals.js";
+import {
+  DEFAULT_INTERVAL_MS as SIGNAL_DEFAULT_INTERVAL_MS,
+  MAX_INTERVAL_MS as SIGNAL_MAX_INTERVAL_MS,
+  MIN_INTERVAL_MS as SIGNAL_MIN_INTERVAL_MS,
+  getPollerStatus as getSignalPollerStatus,
+  startPoller as startSignalPoller,
+  stopPoller as stopSignalPoller,
+} from "../lib/signalPoller.js";
 import { env } from "../config/env.js";
 import {
   createAlert,
@@ -409,6 +418,72 @@ router.delete("/:groupId/alerts/:alertId", (req, res) => {
   }
   deleteAlert(existing.id);
   res.status(204).send();
+});
+
+// Manual one-shot signal evaluation. Computes smart/accumulation/strong/
+// dump/multi-dump signals on demand using the cached overview + trades.
+// No Telegram, no polling, no dedup persistence — those land in subsequent
+// tasks. Settings fixed at DEFAULT_SIGNAL_SETTINGS for now.
+router.post("/:groupId/signals/evaluate", async (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  try {
+    const result = await evaluateGroupSignals(group);
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    res.status(500).json({ error: message });
+  }
+});
+
+// Body schema for signals/start. Bounds reflect the signal poller's tighter
+// floor (60s) — trade cache TTL is 60s so faster polling would just thrash
+// the cache.
+const startSignalPollerSchema = z.object({
+  intervalMs: z.coerce
+    .number()
+    .int()
+    .min(SIGNAL_MIN_INTERVAL_MS)
+    .max(SIGNAL_MAX_INTERVAL_MS)
+    .optional(),
+});
+
+router.post("/:groupId/signals/start", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const parsed = startSignalPollerSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0].message });
+  }
+  const intervalMs = parsed.data.intervalMs ?? SIGNAL_DEFAULT_INTERVAL_MS;
+  const groupId = group.id;
+  // The tick re-resolves the group from the store on every fire so wallet
+  // changes (add/remove) are picked up without restarting the poller.
+  const result = startSignalPoller(groupId, intervalMs, async () => {
+    const g = getGroup(groupId);
+    if (!g) return;
+    await evaluateGroupSignals(g);
+  });
+  res.json({
+    groupId,
+    running: true,
+    intervalMs: result.intervalMs,
+    started: result.started,
+  });
+});
+
+router.post("/:groupId/signals/stop", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const stopped = stopSignalPoller(group.id);
+  res.json({ groupId: group.id, running: false, stopped });
+});
+
+router.get("/:groupId/signals/status", (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const status = getSignalPollerStatus(group.id);
+  res.json({ groupId: group.id, ...status });
 });
 
 export default router;

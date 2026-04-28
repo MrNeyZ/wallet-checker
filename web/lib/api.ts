@@ -168,6 +168,137 @@ export interface CleanupScanResult {
   unknownTokenAccounts: ScannedTokenAccount[];
 }
 
+export interface LegacyNftBurnIncludedEntry {
+  mint: string;
+  tokenAccount: string;
+  metadata: string;
+  masterEdition: string;
+  name: string | null;
+  symbol: string | null;
+  estimatedGrossReclaimSol: number;
+  reason: string;
+}
+
+export interface LegacyNftBurnSkippedEntry {
+  mint: string;
+  tokenAccount: string;
+  reason: string;
+}
+
+export interface BuildLegacyNftBurnTxResult {
+  burnCount: number;
+  totalBurnable: number;
+  includedNfts: LegacyNftBurnIncludedEntry[];
+  skippedNfts: LegacyNftBurnSkippedEntry[];
+  estimatedGrossReclaimSol: number;
+  estimatedBaseFeeSol: number;
+  estimatedPriorityFeeSol: number;
+  estimatedFeeSol: number;
+  estimatedNetReclaimSol: number;
+  computeUnitLimit: number;
+  priorityFeeMicrolamports: number;
+  transactionBase64: string | null;
+  transactionVersion: "legacy";
+  feePayer: string;
+  requiresSignatureFrom: string;
+  warning: string;
+}
+
+export interface PnftBurnIncludedEntry {
+  mint: string;
+  tokenAccount: string;
+  metadata: string;
+  masterEdition: string;
+  tokenRecord: string;
+  name: string | null;
+  symbol: string | null;
+  estimatedGrossReclaimSol: number;
+  reason: string;
+}
+
+export interface PnftBurnSkippedEntry {
+  mint: string;
+  tokenAccount: string;
+  reason: string;
+}
+
+export interface BuildPnftBurnTxResult {
+  burnCount: number;
+  totalBurnable: number;
+  includedPnfts: PnftBurnIncludedEntry[];
+  skippedPnfts: PnftBurnSkippedEntry[];
+  estimatedGrossReclaimSol: number;
+  estimatedBaseFeeSol: number;
+  estimatedPriorityFeeSol: number;
+  estimatedFeeSol: number;
+  estimatedNetReclaimSol: number;
+  computeUnitLimit: number;
+  priorityFeeMicrolamports: number;
+  transactionBase64: string | null;
+  transactionVersion: "legacy";
+  feePayer: string;
+  requiresSignatureFrom: string;
+  warning: string;
+  simulationOk: boolean;
+  simulationError?: string;
+}
+
+export interface CoreBurnIncludedEntry {
+  asset: string;
+  collection: string | null;
+  name: string | null;
+  uri: string | null;
+  estimatedGrossReclaimSol: number;
+  reason: string;
+}
+
+export interface CoreBurnSkippedEntry {
+  asset: string;
+  reason: string;
+}
+
+export interface BuildCoreBurnTxResult {
+  burnCount: number;
+  totalBurnable: number;
+  includedAssets: CoreBurnIncludedEntry[];
+  skippedAssets: CoreBurnSkippedEntry[];
+  estimatedGrossReclaimSol: number;
+  estimatedBaseFeeSol: number;
+  estimatedPriorityFeeSol: number;
+  estimatedFeeSol: number;
+  estimatedNetReclaimSol: number;
+  computeUnitLimit: number;
+  priorityFeeMicrolamports: number;
+  transactionBase64: string | null;
+  transactionVersion: "legacy";
+  feePayer: string;
+  requiresSignatureFrom: string;
+  warning: string;
+  simulationOk: boolean;
+  simulationError?: string;
+}
+
+export interface BuildBurnAndCloseTxResult {
+  wallet: string;
+  transactionVersion: "legacy";
+  feePayer: string;
+  requiresSignatureFrom: string;
+  maxAccountsPerTx: number;
+  includedAccounts: ScannedTokenAccount[];
+  totalBurnable: number;
+  burnCount: number;
+  skippedAccounts: number;
+  estimatedReclaimSol: number;
+  estimatedBaseFeeSol: number;
+  estimatedPriorityFeeSol: number;
+  estimatedFeeSol: number;
+  estimatedNetReclaimSol: number;
+  computeUnitLimit: number;
+  priorityFeeMicrolamports: number;
+  transactionBase64: string | null;
+  warning: string;
+}
+
 export interface BuildCloseEmptyTxResult {
   wallet: string;
   transactionVersion: "legacy";
@@ -385,6 +516,32 @@ export const api = {
     request<BuildCloseEmptyTxResult>(`/api/wallet/${wallet}/close-empty-tx`, {
       method: "POST",
       body: "{}",
+    }),
+  buildBurnAndCloseTx: (wallet: string, mints: string[] = []) =>
+    request<BuildBurnAndCloseTxResult>(
+      `/api/wallet/${wallet}/burn-and-close-tx`,
+      {
+        method: "POST",
+        body: JSON.stringify(mints.length > 0 ? { mints } : {}),
+      },
+    ),
+  buildLegacyNftBurnTx: (wallet: string, mints: string[] = []) =>
+    request<BuildLegacyNftBurnTxResult>(
+      `/api/wallet/${wallet}/legacy-nft-burn-tx`,
+      {
+        method: "POST",
+        body: JSON.stringify(mints.length > 0 ? { mints } : {}),
+      },
+    ),
+  buildPnftBurnTx: (wallet: string, mints: string[] = []) =>
+    request<BuildPnftBurnTxResult>(`/api/wallet/${wallet}/pnft-burn-tx`, {
+      method: "POST",
+      body: JSON.stringify(mints.length > 0 ? { mints } : {}),
+    }),
+  buildCoreBurnTx: (wallet: string, assetIds: string[] = []) =>
+    request<BuildCoreBurnTxResult>(`/api/wallet/${wallet}/core-burn-tx`, {
+      method: "POST",
+      body: JSON.stringify(assetIds.length > 0 ? { assetIds } : {}),
     }),
   getGroupLpPositions: (groupId: string) =>
     request<GroupLpResponse>(`/api/groups/${groupId}/lp-positions`),

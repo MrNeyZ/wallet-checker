@@ -138,6 +138,66 @@ export async function deleteAlertRuleAction(
   }
 }
 
+export async function buildPnftBurnTxAction(
+  wallet: string,
+  mints: string[] = [],
+): Promise<
+  | { ok: true; result: import("@/lib/api").BuildPnftBurnTxResult }
+  | { ok: false; error: string }
+> {
+  try {
+    const result = await api.buildPnftBurnTx(wallet, mints);
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Build failed" };
+  }
+}
+
+export async function buildCoreBurnTxAction(
+  wallet: string,
+  assetIds: string[] = [],
+): Promise<
+  | { ok: true; result: import("@/lib/api").BuildCoreBurnTxResult }
+  | { ok: false; error: string }
+> {
+  try {
+    const result = await api.buildCoreBurnTx(wallet, assetIds);
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Build failed" };
+  }
+}
+
+export async function buildLegacyNftBurnTxAction(
+  wallet: string,
+  mints: string[] = [],
+): Promise<
+  | { ok: true; result: import("@/lib/api").BuildLegacyNftBurnTxResult }
+  | { ok: false; error: string }
+> {
+  try {
+    const result = await api.buildLegacyNftBurnTx(wallet, mints);
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Build failed" };
+  }
+}
+
+export async function buildBurnAndCloseTxAction(
+  wallet: string,
+  mints: string[],
+): Promise<
+  | { ok: true; result: import("@/lib/api").BuildBurnAndCloseTxResult }
+  | { ok: false; error: string }
+> {
+  try {
+    const result = await api.buildBurnAndCloseTx(wallet, mints);
+    return { ok: true, result };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Build failed" };
+  }
+}
+
 export async function buildCloseEmptyTxAction(
   wallet: string,
 ): Promise<

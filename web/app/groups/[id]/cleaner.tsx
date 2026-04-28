@@ -2,23 +2,44 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import type {
+  BuildBurnAndCloseTxResult,
   BuildCloseEmptyTxResult,
+  BuildCoreBurnTxResult,
+  BuildLegacyNftBurnTxResult,
+  BuildPnftBurnTxResult,
   BurnCandidate,
   BurnCandidatesResult,
   CleanupScanResult,
+  CoreBurnIncludedEntry,
+  CoreBurnSkippedEntry,
+  LegacyNftBurnIncludedEntry,
+  LegacyNftBurnSkippedEntry,
+  PnftBurnIncludedEntry,
+  PnftBurnSkippedEntry,
   ScannedTokenAccount,
 } from "@/lib/api";
 import { fmtNumber, fmtSol, shortAddr } from "@/lib/format";
-import { buildCloseEmptyTxAction, scanCleanupAction } from "../actions";
+import {
+  buildBurnAndCloseTxAction,
+  buildCloseEmptyTxAction,
+  buildCoreBurnTxAction,
+  buildLegacyNftBurnTxAction,
+  buildPnftBurnTxAction,
+  scanCleanupAction,
+} from "../actions";
 import { Badge } from "@/ui-kit/components/Badge";
 import { WalletLink } from "@/ui-kit/components/WalletLink";
 import { btnPrimary, btnSecondary } from "@/lib/buttonStyles";
 import {
+  auditBurnAndCloseTx,
   auditCloseEmptyTx,
+  auditLegacyNftBurnTx,
   decodeBase64Transaction,
   getProvider,
   solscanTxUrl,
+  type BurnAuditResult,
   type InstructionAuditResult,
+  type LegacyNftAuditResult,
 } from "@/lib/wallet";
 
 const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
@@ -1206,7 +1227,11 @@ function CleanerRow({ wallet }: { wallet: WalletEntry }) {
       )}
 
       {state.status === "scanned" && showDetails && (
-        <CleanerDetails scan={state.scan} burn={state.burn} />
+        <CleanerDetails
+          scan={state.scan}
+          burn={state.burn}
+          walletAddress={wallet.address}
+        />
       )}
     </div>
   );
@@ -1815,15 +1840,127 @@ function SafetyChecklist({ items }: { items: SafetyCheckItem[] }) {
   );
 }
 
+type BurnBuildState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; result: BuildBurnAndCloseTxResult }
+  | { status: "error"; error: string };
+
+// =============================================================================
+// Unified Cleaner reclaim summary — read-only roll-up of every cleanup/burn
+// path. Each burn section (legacy NFT, pNFT, Core) drops its discovery
+// result into this context via `useReportReclaim`; the parent renders a
+// compact panel at the top of CleanerDetails. Close-empty + SPL-burn values
+// are seeded synchronously from the scan / burn-candidates response that
+// CleanerDetails already receives as props.
+//
+// Status semantics (per row):
+//   - "ready":    discovery succeeded; `value` is the estimated reclaim SOL.
+//   - "loading":  discovery in flight.
+//   - "error":    discovery failed.
+//   - "empty":    no eligible items in this category.
+//   - "rejected": preflight simulation rejected the entire batch (pNFT, Core).
+//                 Excluded from the running total per the spec.
+// =============================================================================
+
+type ReclaimStatus = "loading" | "ready" | "error" | "empty" | "rejected";
+type ReclaimEntry = { value: number | null; status: ReclaimStatus };
+type ReclaimKey = "closeEmpty" | "splBurn" | "legacyNft" | "pnft" | "core";
+type ReclaimSummaryState = Record<ReclaimKey, ReclaimEntry>;
+
+const ReclaimSummaryCtx = createContext<{
+  report: (key: ReclaimKey, entry: ReclaimEntry) => void;
+} | null>(null);
+
+function useReportReclaim(key: ReclaimKey, entry: ReclaimEntry): void {
+  const ctx = useContext(ReclaimSummaryCtx);
+  // Stringify so a fresh object literal each render with the same content
+  // doesn't trigger a no-op state update on the parent.
+  const entryKey = `${entry.status}:${entry.value ?? "null"}`;
+  useEffect(() => {
+    if (!ctx) return;
+    ctx.report(key, entry);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx, key, entryKey]);
+}
+
 function CleanerDetails({
   scan,
   burn,
+  walletAddress,
 }: {
   scan: CleanupScanResult;
   burn: BurnCandidatesResult;
+  walletAddress: string;
 }) {
+  // Selected mints across the burn-candidates table. Mint is the discriminator
+  // because the backend uses it as the allowlist key in the build request.
+  const [selectedMints, setSelectedMints] = useState<Set<string>>(new Set());
+  const [burnBuild, setBurnBuild] = useState<BurnBuildState>({ status: "idle" });
+  const [burnPending, startBurnTransition] = useTransition();
+
+  // Reclaim summary state. Close-empty + SPL come straight from the props
+  // (synchronously available once CleanerDetails mounts). The three burn
+  // sections seed themselves to "loading" and report on discovery via the
+  // context below.
+  const [summary, setSummary] = useState<ReclaimSummaryState>({
+    closeEmpty: {
+      value: scan.totals.estimatedReclaimSol,
+      status: scan.emptyTokenAccounts.length === 0 ? "empty" : "ready",
+    },
+    splBurn: {
+      value: burn.totalEstimatedReclaimSol,
+      status: burn.candidates.length === 0 ? "empty" : "ready",
+    },
+    legacyNft: { value: null, status: "loading" },
+    pnft: { value: null, status: "loading" },
+    core: { value: null, status: "loading" },
+  });
+  const reportReclaim = useCallback(
+    (key: ReclaimKey, entry: ReclaimEntry) => {
+      setSummary((prev) => {
+        const cur = prev[key];
+        if (cur.status === entry.status && cur.value === entry.value) return prev;
+        return { ...prev, [key]: entry };
+      });
+    },
+    [],
+  );
+  const reclaimCtx = useMemo(() => ({ report: reportReclaim }), [reportReclaim]);
+
+  function toggleSelected(mint: string): void {
+    setSelectedMints((prev) => {
+      const next = new Set(prev);
+      if (next.has(mint)) next.delete(mint);
+      else next.add(mint);
+      return next;
+    });
+  }
+
+  function handleBuildBurnTx(): void {
+    if (selectedMints.size === 0) return;
+    setBurnBuild({ status: "loading" });
+    const mints = Array.from(selectedMints);
+    startBurnTransition(async () => {
+      const res = await buildBurnAndCloseTxAction(walletAddress, mints);
+      if (res.ok) setBurnBuild({ status: "ready", result: res.result });
+      else setBurnBuild({ status: "error", error: res.error });
+    });
+  }
+
+  const canBuild =
+    selectedMints.size > 0 &&
+    burnBuild.status !== "loading" &&
+    !burnPending;
+
   return (
+    <ReclaimSummaryCtx.Provider value={reclaimCtx}>
     <div className="border-t border-neutral-800 bg-neutral-950">
+      {/* SECTION 0 — Unified reclaim summary. Read-only roll-up of every
+          cleanup/burn path's discovery result. Auto-build/sign is never
+          triggered from here. */}
+      <ReclaimSummary summary={summary} />
+
       {/* SECTION 1 — empty accounts (closing). Plain neutral surface so this
           section reads as the "safe / implemented" path. */}
       <SubHeader
@@ -1837,20 +1974,21 @@ function CleanerDetails({
       )}
 
       {/* SECTION 2 — burn candidates. Visually quarantined inside a red-tinted
-          card so it reads as a separate, dangerous, NOT-implemented surface.
-          Sits inside the same details panel but with its own border, header,
-          warning row, and footer note. */}
+          card so it reads as a separate, dangerous surface. Preview-only:
+          this UI builds an unsigned tx via the backend and renders it; sign +
+          send for burns is intentionally NOT wired to the close-empty
+          Sign & send button. */}
       <div className="m-3 overflow-hidden rounded-md border-2 border-red-500/40 bg-red-500/[0.04]">
         <div className="flex items-baseline justify-between border-b border-red-500/30 bg-red-500/10 px-3 py-1.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-red-300">
-            Burn candidates · destructive · not implemented
+            Burn candidates · destructive · preview only
           </span>
           <span className="text-[11px] tabular-nums text-red-300/80">
             {burn.count} · est. reclaim {fmtSol(burn.totalEstimatedReclaimSol)} SOL
           </span>
         </div>
         <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] font-semibold text-red-300">
-          ⚠ Burning tokens is destructive and not implemented yet.
+          ⚠ Burning tokens is destructive and irreversible.
         </div>
         {burn.warning && (
           <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
@@ -1860,11 +1998,2007 @@ function CleanerDetails({
         {burn.candidates.length === 0 ? (
           <EmptyHint>No fungible burn candidates.</EmptyHint>
         ) : (
-          <BurnCandidatesTable rows={burn.candidates} />
+          <>
+            <BurnCandidatesTable
+              rows={burn.candidates}
+              selected={selectedMints}
+              onToggle={toggleSelected}
+            />
+            <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-2">
+              <button
+                type="button"
+                onClick={handleBuildBurnTx}
+                disabled={!canBuild}
+                title={
+                  selectedMints.size === 0
+                    ? "Select at least one candidate above"
+                    : undefined
+                }
+                aria-label="Build burn transaction"
+                className={
+                  canBuild
+                    ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-4 py-2 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
+                    : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-4 py-2 text-sm font-bold text-red-300/60 cursor-not-allowed"
+                }
+              >
+                {burnBuild.status === "loading" || burnPending
+                  ? "Building…"
+                  : burnBuild.status === "ready"
+                  ? "Rebuild burn transaction"
+                  : "Build burn transaction"}
+              </button>
+              <span className="text-[11px] text-red-200/70">
+                {selectedMints.size === 0
+                  ? "Select at least one candidate to build"
+                  : `${selectedMints.size} selected`}
+              </span>
+            </div>
+            {burnBuild.status === "error" && (
+              <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                Build failed: {burnBuild.error}
+              </div>
+            )}
+            {burnBuild.status === "ready" && (
+              <BurnTxPreview result={burnBuild.result} />
+            )}
+          </>
         )}
         <div className="border-t border-red-500/20 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
-          Manual review required. Never burn tokens automatically.
+          Manual review required. Never burn tokens automatically. Sign + send
+          for burns is intentionally not implemented in this UI.
         </div>
+      </div>
+
+      {/* SECTION 3 — Legacy Metaplex NFT burn (Milestone 1).
+          Distinct red-quarantined card from the SPL fungible burn above.
+          Backend BurnV1 reclaims token + metadata + master edition rent. */}
+      <LegacyNftBurnSection
+        walletAddress={walletAddress}
+        nftAccountCount={scan.nftTokenAccounts.length}
+      />
+
+      {/* SECTION 4 — Programmable NFT (pNFT) burn (Milestone 2).
+          Adds token-record + collection-metadata + auth-rules accounts and
+          a backend preflight simulation gate. Visually distinct from the
+          legacy NFT card — a slightly deeper red border so the user can't
+          confuse the two flows. */}
+      <PnftBurnSection
+        walletAddress={walletAddress}
+        nftAccountCount={scan.nftTokenAccounts.length}
+      />
+
+      {/* SECTION 5 — Metaplex Core asset burn (Milestone 3).
+          Core assets are NOT held in SPL token accounts — they're standalone
+          Core program accounts owned by the wallet. The cleanup-scan above
+          doesn't see them, so this section always probes the chain on mount
+          (no nftAccountCount gate). Reclaims the Core asset account rent via
+          Core BurnV1 and gates on a backend preflight simulation. */}
+      <CoreBurnSection walletAddress={walletAddress} />
+    </div>
+    </ReclaimSummaryCtx.Provider>
+  );
+}
+
+// Compact reclaim-summary panel rendered at the very top of CleanerDetails.
+// Read-only: never triggers a build / sign / select. Per spec:
+//   - Show "—" while a section is still loading.
+//   - "rejected" status (preflight simulation failed) is excluded from the
+//     running total.
+//   - "empty" / "error" rows contribute 0 to the total but render a hint so
+//     the user knows the value isn't missing data.
+function ReclaimSummary({ summary }: { summary: ReclaimSummaryState }) {
+  const rows: { key: ReclaimKey; label: string }[] = [
+    { key: "closeEmpty", label: "Close empty" },
+    { key: "splBurn", label: "SPL burn" },
+    { key: "legacyNft", label: "Legacy NFT" },
+    { key: "pnft", label: "pNFT" },
+    { key: "core", label: "Core" },
+  ];
+
+  // Sum all rows where status === "ready". loading / rejected / error /
+  // empty all contribute 0.
+  let total = 0;
+  let anyLoading = false;
+  for (const r of rows) {
+    const e = summary[r.key];
+    if (e.status === "ready" && e.value !== null) total += e.value;
+    if (e.status === "loading") anyLoading = true;
+  }
+
+  function renderValue(e: ReclaimEntry): React.ReactNode {
+    if (e.status === "loading") {
+      return <span className="text-neutral-500">—</span>;
+    }
+    if (e.status === "error") {
+      return (
+        <span className="text-amber-400/80" title="discovery failed">
+          err
+        </span>
+      );
+    }
+    if (e.status === "rejected") {
+      return (
+        <span
+          className="text-red-300/80"
+          title="preflight simulation rejected — excluded from total"
+        >
+          rejected
+        </span>
+      );
+    }
+    if (e.status === "empty" || e.value === null) {
+      return <span className="tabular-nums text-neutral-400">0</span>;
+    }
+    return (
+      <span className="tabular-nums font-semibold text-emerald-300">
+        {fmtSol(e.value)}
+      </span>
+    );
+  }
+
+  return (
+    <div className="border-b border-neutral-800 bg-neutral-900/60 px-3 py-2">
+      <div className="mb-1 flex items-baseline justify-between">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-300">
+          Total possible reclaim
+        </span>
+        <span className="text-[11px] tabular-nums text-neutral-400">
+          {anyLoading && <span className="mr-1.5 italic">scanning…</span>}
+          <span className="font-bold text-emerald-300">
+            {fmtSol(total)}
+          </span>{" "}
+          SOL
+        </span>
+      </div>
+      <ul className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] sm:grid-cols-3 md:grid-cols-5">
+        {rows.map((r) => (
+          <li
+            key={r.key}
+            className="flex items-baseline justify-between gap-2"
+          >
+            <span className="text-neutral-400">{r.label}</span>
+            <span>{renderValue(summary[r.key])}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// Burn-specific safety checklist. Renders the audit results plus the
+// destructive-action acknowledgement checkbox. Doesn't gate any sign/send
+// (none wired yet); kept visible so the user — and any future Sign/Send
+// implementation — can read the live status of every contract.
+function BurnSafetyChecklist({
+  result,
+  audit,
+  ackDestructive,
+  onToggleAck,
+}: {
+  result: BuildBurnAndCloseTxResult;
+  audit: BurnAuditResult | null;
+  ackDestructive: boolean;
+  onToggleAck: () => void;
+}) {
+  // When there's no tx (empty branch), don't render the checklist — the
+  // top-level "no candidates" state already covers it.
+  if (audit === null) return null;
+
+  // burnsPaired covers "every burn followed by close on same account",
+  // !hasInvalidTokenOpcode + !hasUnknownProgram covers "only burn + close
+  // (and ComputeBudget) instructions". We split them into discrete bullets
+  // per spec.
+  const onlyBurnClose =
+    !audit.hasInvalidTokenOpcode &&
+    !audit.hasUnknownProgram &&
+    audit.burnsPaired &&
+    audit.burnCount > 0 &&
+    audit.closeCount > 0;
+  const noTransfers = !audit.hasTransfers;
+  const burnMatches = audit.burnCount === result.burnCount;
+  const closeMatches = audit.closeCount === result.burnCount;
+
+  const items: { ok: boolean; label: React.ReactNode; failHint?: string }[] = [
+    {
+      ok: onlyBurnClose,
+      label: "Only Burn + CloseAccount instructions (plus ComputeBudget)",
+      failHint: audit.reason ?? undefined,
+    },
+    {
+      ok: noTransfers,
+      label: "No Transfer instructions",
+      failHint: audit.hasTransfers ? "Transfer detected — destructive tx is off-spec" : undefined,
+    },
+    {
+      ok: burnMatches,
+      label: (
+        <>
+          Burn count matches preview ({audit.burnCount} ≡ {result.burnCount})
+        </>
+      ),
+      failHint: !burnMatches
+        ? `Tx has ${audit.burnCount} burn ix(s) but preview claims ${result.burnCount}`
+        : undefined,
+    },
+    {
+      ok: closeMatches,
+      label: (
+        <>
+          CloseAccount count matches preview ({audit.closeCount} ≡{" "}
+          {result.burnCount})
+        </>
+      ),
+      failHint: !closeMatches
+        ? `Tx has ${audit.closeCount} close ix(s) but preview claims ${result.burnCount}`
+        : undefined,
+    },
+    {
+      ok: ackDestructive,
+      label: "Destructive action acknowledged (manual)",
+    },
+  ];
+
+  return (
+    <div className="border-b border-red-500/20 bg-red-500/[0.04] px-3 py-2">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+        Burn safety checklist
+      </div>
+      <ul className="mt-1 divide-y divide-red-500/10">
+        {items.map((item, i) => {
+          const isAckRow = i === items.length - 1;
+          return (
+            <li
+              key={i}
+              className="flex items-start gap-2 py-1.5 text-[11px]"
+            >
+              {isAckRow ? (
+                <input
+                  type="checkbox"
+                  checked={ackDestructive}
+                  onChange={onToggleAck}
+                  aria-label="Acknowledge destructive burn action"
+                  className="mt-[2px] h-3.5 w-3.5 cursor-pointer accent-red-500"
+                />
+              ) : (
+                <span
+                  aria-hidden
+                  className={`mt-[2px] inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full font-bold leading-none ${
+                    item.ok
+                      ? "bg-emerald-500/20 text-emerald-300"
+                      : "bg-red-500/25 text-red-200"
+                  }`}
+                >
+                  {item.ok ? "✓" : "✕"}
+                </span>
+              )}
+              <span
+                className={`min-w-0 flex-1 ${
+                  item.ok ? "text-neutral-200" : "text-red-200"
+                }`}
+              >
+                {item.label}
+                {!item.ok && item.failHint && (
+                  <span className="ml-1 text-red-300/80">— {item.failHint}</span>
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+// Read-only preview for the burn-and-close transaction. Visually red /
+// destructive — distinct from the violet close-empty preview so the user
+// can never confuse the two flows. Crucially: NO sign/send button. The
+// existing close-empty Sign & send is also unrelated; reusing it would
+// re-broadcast a CloseAccount tx, not a burn.
+function BurnTxPreview({ result }: { result: BuildBurnAndCloseTxResult }) {
+  // Audit the actual bytes the backend produced. The check is memoised on
+  // the base64 string so the panel doesn't redo the deserialize on every
+  // re-render of the parent (which happens every checkbox toggle).
+  const audit: BurnAuditResult | null = useMemo(() => {
+    if (result.transactionBase64 === null) return null;
+    return auditBurnAndCloseTx(result.transactionBase64);
+  }, [result.transactionBase64]);
+
+  // The acknowledgement checkbox is a per-preview UI gate that doesn't
+  // gate any action (no sign/send is wired here yet) but is part of the
+  // safety checklist contract per the task spec.
+  const [ackDestructive, setAckDestructive] = useState(false);
+  const tx = result.transactionBase64;
+  const txShort =
+    tx === null
+      ? "—"
+      : tx.length > 80
+      ? `${tx.slice(0, 40)}…${tx.slice(-20)} (${tx.length} chars)`
+      : tx;
+  const rows: { label: string; value: React.ReactNode; mono?: boolean }[] = [
+    {
+      label: "Burn count",
+      value: (
+        <span className="font-bold text-red-200">
+          {result.burnCount}
+          <span className="ml-1 text-red-300/70">
+            / {result.totalBurnable} candidate
+            {result.totalBurnable === 1 ? "" : "s"}
+          </span>
+        </span>
+      ),
+    },
+    {
+      label: "Included accounts",
+      value: (
+        <span className="font-bold text-white">
+          {result.includedAccounts.length}
+        </span>
+      ),
+    },
+    {
+      label: "Skipped accounts",
+      value: (
+        <span className="text-white">
+          {result.skippedAccounts}
+          {result.skippedAccounts > 0 && (
+            <span className="ml-1 text-neutral-500">
+              (limit {result.maxAccountsPerTx} per tx)
+            </span>
+          )}
+        </span>
+      ),
+    },
+    {
+      label: "Gross reclaim",
+      value: (
+        <span className="font-bold text-emerald-300">
+          {fmtSol(result.estimatedReclaimSol)} SOL
+        </span>
+      ),
+    },
+    {
+      label: "Estimated network fee",
+      value: (
+        <span className="text-neutral-200">
+          {fmtSol(result.estimatedFeeSol)} SOL
+          <span className="ml-1 text-[10px] text-neutral-500">
+            (base {fmtSol(result.estimatedBaseFeeSol)}
+            {result.estimatedPriorityFeeSol > 0 && (
+              <> + priority {fmtSol(result.estimatedPriorityFeeSol)}</>
+            )}
+            ; {result.computeUnitLimit.toLocaleString()} CU
+            {result.priorityFeeMicrolamports > 0 && (
+              <> @ {result.priorityFeeMicrolamports} μL/CU</>
+            )}
+            )
+          </span>
+        </span>
+      ),
+    },
+    {
+      label: "Estimated net received",
+      value: (
+        <span className="font-bold text-emerald-300">
+          {fmtSol(result.estimatedNetReclaimSol)} SOL
+        </span>
+      ),
+    },
+    {
+      label: "Tx version",
+      value: <Badge variant="info">{result.transactionVersion}</Badge>,
+    },
+    { label: "Fee payer", value: result.feePayer, mono: true },
+    {
+      label: "Requires signature from",
+      value: result.requiresSignatureFrom,
+      mono: true,
+    },
+    {
+      label: "Transaction (base64)",
+      value: txShort,
+      mono: true,
+    },
+  ];
+  return (
+    <div className="border-t border-red-500/30 bg-red-950/30">
+      <div className="flex items-center justify-between border-b border-red-500/30 bg-red-600/15 px-3 py-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+          🔥 Burn + close transaction preview
+        </span>
+        <Badge variant="sell">unsigned · destructive</Badge>
+      </div>
+      <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-200">
+        ⚠ Burning tokens is destructive and irreversible.
+      </div>
+      {result.warning && (
+        <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+          ⚠ {result.warning}
+        </div>
+      )}
+      <BurnSafetyChecklist
+        result={result}
+        audit={audit}
+        ackDestructive={ackDestructive}
+        onToggleAck={() => setAckDestructive((v) => !v)}
+      />
+      <dl className="divide-y divide-red-500/15">
+        {rows.map((r) => (
+          <div
+            key={r.label}
+            className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+          >
+            <dt className="col-span-4 text-red-300/80">{r.label}</dt>
+            <dd
+              className={`col-span-8 min-w-0 break-all ${
+                r.mono
+                  ? "font-mono text-[11px] text-neutral-100"
+                  : "text-neutral-100"
+              }`}
+            >
+              {r.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div className="border-t border-red-500/30 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
+        Preview only. Sign + send for burns is intentionally not wired in this UI.
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// Legacy Metaplex NFT burn — Milestone 1 preview UI.
+// Two-phase: (1) discovery call with no mints filter on mount populates the
+// candidate list; (2) build call with selected mints produces the actual
+// preview tx. Both calls hit POST /legacy-nft-burn-tx. NO sign/send wired.
+// =============================================================================
+
+type LegacyDiscoverState =
+  | { status: "loading" }
+  | { status: "ready"; result: BuildLegacyNftBurnTxResult }
+  | { status: "error"; error: string }
+  | { status: "empty" }; // no NFT accounts at all
+
+type LegacyBuildState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; result: BuildLegacyNftBurnTxResult }
+  | { status: "error"; error: string };
+
+function LegacyNftBurnSection({
+  walletAddress,
+  nftAccountCount,
+}: {
+  walletAddress: string;
+  nftAccountCount: number;
+}) {
+  const [discover, setDiscover] = useState<LegacyDiscoverState>(
+    nftAccountCount === 0 ? { status: "empty" } : { status: "loading" },
+  );
+  const [build, setBuild] = useState<LegacyBuildState>({ status: "idle" });
+  const [buildPending, startBuildTransition] = useTransition();
+  const [selectedMints, setSelectedMints] = useState<Set<string>>(new Set());
+
+  // Discovery: one call with no mints on mount. Captures the candidate list
+  // (includedNfts have full metadata; cap-skipped entries surface mint only).
+  // We deliberately ignore the discovery call's `transactionBase64` — that's
+  // a side-effect of the backend always building a tx for the first ≤3
+  // burnable NFTs. The user's *real* preview comes from the Build phase.
+  useEffect(() => {
+    if (nftAccountCount === 0) return;
+    let cancelled = false;
+    (async () => {
+      const res = await buildLegacyNftBurnTxAction(walletAddress, []);
+      if (cancelled) return;
+      if (res.ok) setDiscover({ status: "ready", result: res.result });
+      else setDiscover({ status: "error", error: res.error });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress, nftAccountCount]);
+
+  // Report this section's discovery to the parent reclaim-summary panel.
+  // We use per-NFT × totalBurnable as the upper bound (matches this card's
+  // own header). Legacy BurnV1 has no preflight gate, so there's no
+  // "rejected" path here.
+  const legacyEntry: ReclaimEntry = (() => {
+    if (discover.status === "loading")
+      return { value: null, status: "loading" };
+    if (discover.status === "error")
+      return { value: null, status: "error" };
+    if (discover.status === "empty")
+      return { value: 0, status: "empty" };
+    const r = discover.result;
+    if (r.totalBurnable === 0) return { value: 0, status: "empty" };
+    const per = r.includedNfts[0]?.estimatedGrossReclaimSol ?? 0;
+    return { value: per * r.totalBurnable, status: "ready" };
+  })();
+  useReportReclaim("legacyNft", legacyEntry);
+
+  // Burnable candidates surfaced by discovery: includedNfts (with full
+  // metadata) + skippedNfts whose reason indicates batch overflow (these
+  // are also burnable, just didn't fit this batch). Non-burnable skipped
+  // entries are shown separately, grouped by reason.
+  const candidates = useMemo(() => {
+    if (discover.status !== "ready") return null;
+    const named = discover.result.includedNfts.map((n) => ({
+      mint: n.mint,
+      tokenAccount: n.tokenAccount,
+      name: n.name,
+      symbol: n.symbol,
+      estimatedGrossReclaimSol: n.estimatedGrossReclaimSol,
+    }));
+    const overflow = discover.result.skippedNfts
+      .filter(
+        (s) =>
+          s.reason.startsWith("Cap of") || s.reason.startsWith("Trimmed to fit"),
+      )
+      .map((s) => ({
+        mint: s.mint,
+        tokenAccount: s.tokenAccount,
+        name: null as string | null,
+        symbol: null as string | null,
+        estimatedGrossReclaimSol: null as number | null,
+      }));
+    const nonBurnable = discover.result.skippedNfts.filter(
+      (s) =>
+        !(s.reason.startsWith("Cap of") || s.reason.startsWith("Trimmed to fit")),
+    );
+    return { burnable: [...named, ...overflow], nonBurnable };
+  }, [discover]);
+
+  function toggleSelected(mint: string): void {
+    setSelectedMints((prev) => {
+      const next = new Set(prev);
+      if (next.has(mint)) next.delete(mint);
+      else next.add(mint);
+      return next;
+    });
+  }
+
+  function handleBuild(): void {
+    if (selectedMints.size === 0) return;
+    setBuild({ status: "loading" });
+    const mints = Array.from(selectedMints);
+    startBuildTransition(async () => {
+      const res = await buildLegacyNftBurnTxAction(walletAddress, mints);
+      if (res.ok) setBuild({ status: "ready", result: res.result });
+      else setBuild({ status: "error", error: res.error });
+    });
+  }
+
+  const canBuild =
+    selectedMints.size > 0 &&
+    build.status !== "loading" &&
+    !buildPending;
+
+  return (
+    <div className="m-3 overflow-hidden rounded-md border-2 border-red-500/40 bg-red-500/[0.04]">
+      <div className="flex items-baseline justify-between border-b border-red-500/30 bg-red-500/10 px-3 py-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-red-300">
+          Legacy NFT burn · max reclaim
+        </span>
+        <span className="text-[11px] tabular-nums text-red-300/80">
+          {discover.status === "ready"
+            ? `${discover.result.totalBurnable} burnable · est. ${fmtSol(
+                (discover.result.includedNfts[0]?.estimatedGrossReclaimSol ?? 0) *
+                  discover.result.totalBurnable,
+              )} SOL`
+            : discover.status === "loading"
+            ? "scanning…"
+            : ""}
+        </span>
+      </div>
+      <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] font-semibold text-red-300">
+        ⚠ Burning NFTs is destructive and irreversible.
+      </div>
+      <div className="border-b border-red-500/15 bg-red-950/30 px-3 py-1.5 text-[11px] text-red-200/80">
+        ℹ Uses Metaplex BurnV1 and reclaims token account + metadata + master
+        edition rent.
+      </div>
+
+      {discover.status === "empty" && (
+        <EmptyHint>No NFT-shaped token accounts found in this wallet.</EmptyHint>
+      )}
+
+      {discover.status === "loading" && (
+        <EmptyHint>Discovering legacy NFTs…</EmptyHint>
+      )}
+
+      {discover.status === "error" && (
+        <div className="bg-red-500/10 px-3 py-2 text-xs text-red-300">
+          Discovery failed: {discover.error}
+        </div>
+      )}
+
+      {discover.status === "ready" && candidates && (
+        <>
+          {candidates.burnable.length === 0 ? (
+            <EmptyHint>
+              No legacy Metaplex NFTs eligible for BurnV1. See skipped reasons
+              below for non-burnable items.
+            </EmptyHint>
+          ) : (
+            <>
+              <LegacyNftCandidatesTable
+                rows={candidates.burnable}
+                selected={selectedMints}
+                onToggle={toggleSelected}
+              />
+              <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-2">
+                <button
+                  type="button"
+                  onClick={handleBuild}
+                  disabled={!canBuild}
+                  title={
+                    selectedMints.size === 0
+                      ? "Select at least one NFT above"
+                      : undefined
+                  }
+                  aria-label="Build legacy NFT burn transaction"
+                  className={
+                    canBuild
+                      ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-4 py-2 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
+                      : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-4 py-2 text-sm font-bold text-red-300/60 cursor-not-allowed"
+                  }
+                >
+                  {build.status === "loading" || buildPending
+                    ? "Building…"
+                    : build.status === "ready"
+                    ? "Rebuild legacy NFT burn"
+                    : "Build legacy NFT burn"}
+                </button>
+                <span className="text-[11px] text-red-200/70">
+                  {selectedMints.size === 0
+                    ? "Select at least one NFT to build"
+                    : `${selectedMints.size} selected · backend caps at 3 per tx`}
+                </span>
+              </div>
+              {build.status === "error" && (
+                <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                  Build failed: {build.error}
+                </div>
+              )}
+              {build.status === "ready" && (
+                <LegacyNftBurnPreview result={build.result} />
+              )}
+            </>
+          )}
+          {candidates.nonBurnable.length > 0 && (
+            <NonBurnableNftSummary entries={candidates.nonBurnable} />
+          )}
+        </>
+      )}
+
+      <div className="border-t border-red-500/20 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
+        Manual review required. Sign + send for legacy NFT burn is not yet
+        wired in this UI.
+      </div>
+    </div>
+  );
+}
+
+function LegacyNftCandidatesTable({
+  rows,
+  selected,
+  onToggle,
+}: {
+  rows: {
+    mint: string;
+    tokenAccount: string;
+    name: string | null;
+    symbol: string | null;
+    estimatedGrossReclaimSol: number | null;
+  }[];
+  selected: Set<string>;
+  onToggle: (mint: string) => void;
+}) {
+  return (
+    <div>
+      <div className="grid grid-cols-12 gap-3 border-b border-red-500/20 bg-red-500/[0.03] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-300/80">
+        <div className="col-span-1">Burn</div>
+        <div className="col-span-5">Name</div>
+        <div className="col-span-2">Symbol</div>
+        <div className="col-span-2">Mint</div>
+        <div className="col-span-2 text-right">Reclaim</div>
+      </div>
+      <div>
+        {rows.map((r) => {
+          const isChecked = selected.has(r.mint);
+          const isBatchOverflow = r.estimatedGrossReclaimSol === null;
+          return (
+            <label
+              key={r.tokenAccount}
+              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-red-500/15 px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-100 hover:bg-red-500/[0.08] ${
+                isChecked ? "bg-red-500/[0.06] ring-1 ring-inset ring-red-400/40" : ""
+              }`}
+            >
+              <div className="col-span-1">
+                <input
+                  type="checkbox"
+                  checked={isChecked}
+                  onChange={() => onToggle(r.mint)}
+                  aria-label={`Select ${r.name ?? "NFT"} for burn`}
+                  className="h-3.5 w-3.5 cursor-pointer accent-red-500"
+                />
+              </div>
+              <div className="col-span-5 min-w-0">
+                {r.name ? (
+                  <div className="truncate font-semibold text-neutral-100">
+                    {r.name}
+                  </div>
+                ) : (
+                  <span className="text-[11px] italic text-neutral-500">
+                    metadata not yet loaded — select to include in next batch
+                  </span>
+                )}
+              </div>
+              <div className="col-span-2 truncate text-[11px] text-neutral-300">
+                {r.symbol ?? "—"}
+              </div>
+              <div className="col-span-2 truncate font-mono text-[11px] text-neutral-300">
+                {shortAddr(r.mint, 4, 4)}
+              </div>
+              <div className="col-span-2 text-right font-semibold tabular-nums text-emerald-300/90">
+                {isBatchOverflow ? "—" : fmtSol(r.estimatedGrossReclaimSol!)}
+              </div>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function NonBurnableNftSummary({
+  entries,
+}: {
+  entries: { reason: string }[];
+}) {
+  // Group by reason for compact display — typically 200+ entries on a real
+  // wallet, dominated by pNFTs.
+  const byReason = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of entries) m.set(e.reason, (m.get(e.reason) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [entries]);
+  return (
+    <div className="border-t border-red-500/20 bg-red-950/20 px-3 py-2">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-red-300/80">
+        Skipped (not burnable in Milestone 1)
+      </div>
+      <ul className="mt-1 space-y-0.5 text-[11px] text-red-200/70">
+        {byReason.map(([reason, count]) => (
+          <li key={reason}>
+            <span className="font-semibold text-red-200">{count}×</span>{" "}
+            {reason}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// Legacy-NFT-specific safety checklist. Mirrors the SPL fungible
+// BurnSafetyChecklist visually but checks the legacy-NFT contract: BurnV1
+// is the only Metaplex op, no top-level SPL Token Burn / Transfer, audit's
+// burnV1Count matches the preview's burnCount, and the user has explicitly
+// acknowledged destructiveness via the inline checkbox.
+function LegacyNftSafetyChecklist({
+  result,
+  audit,
+  ackDestructive,
+  onToggleAck,
+}: {
+  result: BuildLegacyNftBurnTxResult;
+  audit: LegacyNftAuditResult | null;
+  ackDestructive: boolean;
+  onToggleAck: () => void;
+}) {
+  if (audit === null) return null;
+
+  const usesBurnV1 =
+    audit.burnV1Count > 0 && !audit.hasUnknownProgram && !audit.hasSplTokenBurn;
+  const noSplTokenBurn = !audit.hasSplTokenBurn;
+  const noTransfers = !audit.hasTransfers;
+  const burnMatches = audit.burnV1Count === result.burnCount;
+
+  const items: { ok: boolean; label: React.ReactNode; failHint?: string }[] = [
+    {
+      ok: usesBurnV1,
+      label: "Uses Metaplex BurnV1 (no other Metaplex ix)",
+      failHint: !usesBurnV1
+        ? audit.reason ?? "BurnV1 not detected"
+        : undefined,
+    },
+    {
+      ok: noSplTokenBurn,
+      label: "No top-level SPL Token Burn instruction",
+      failHint: audit.hasSplTokenBurn
+        ? "Top-level SPL Token Burn detected — legacy NFT burn must use Metaplex BurnV1"
+        : undefined,
+    },
+    {
+      ok: noTransfers,
+      label: "No Transfer instructions",
+      failHint: audit.hasTransfers ? "Top-level token Transfer detected" : undefined,
+    },
+    {
+      ok: burnMatches,
+      label: (
+        <>
+          Burn count matches preview ({audit.burnV1Count} ≡ {result.burnCount})
+        </>
+      ),
+      failHint: !burnMatches
+        ? `Tx has ${audit.burnV1Count} BurnV1 ix(s) but preview claims ${result.burnCount}`
+        : undefined,
+    },
+    {
+      ok: ackDestructive,
+      label: "Destructive action acknowledged (manual)",
+    },
+  ];
+
+  return (
+    <div className="border-b border-red-500/20 bg-red-500/[0.04] px-3 py-2">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+        Legacy NFT burn safety checklist
+      </div>
+      <ul className="mt-1 divide-y divide-red-500/10">
+        {items.map((item, i) => {
+          const isAckRow = i === items.length - 1;
+          return (
+            <li
+              key={i}
+              className="flex items-start gap-2 py-1.5 text-[11px]"
+            >
+              {isAckRow ? (
+                <input
+                  type="checkbox"
+                  checked={ackDestructive}
+                  onChange={onToggleAck}
+                  aria-label="Acknowledge destructive legacy NFT burn"
+                  className="mt-[2px] h-3.5 w-3.5 cursor-pointer accent-red-500"
+                />
+              ) : (
+                <span
+                  aria-hidden
+                  className={`mt-[2px] inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full font-bold leading-none ${
+                    item.ok
+                      ? "bg-emerald-500/20 text-emerald-300"
+                      : "bg-red-500/25 text-red-200"
+                  }`}
+                >
+                  {item.ok ? "✓" : "✕"}
+                </span>
+              )}
+              <span
+                className={`min-w-0 flex-1 ${
+                  item.ok ? "text-neutral-200" : "text-red-200"
+                }`}
+              >
+                {item.label}
+                {!item.ok && item.failHint && (
+                  <span className="ml-1 text-red-300/80">— {item.failHint}</span>
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function LegacyNftBurnPreview({
+  result,
+}: {
+  result: BuildLegacyNftBurnTxResult;
+}) {
+  // Audit the actual produced bytes. Memoised on the base64 string so the
+  // ack-checkbox toggle doesn't redo the deserialize on every render.
+  const audit: LegacyNftAuditResult | null = useMemo(() => {
+    if (result.transactionBase64 === null) return null;
+    return auditLegacyNftBurnTx(result.transactionBase64);
+  }, [result.transactionBase64]);
+  const [ackDestructive, setAckDestructive] = useState(false);
+
+  const tx = result.transactionBase64;
+  const txShort =
+    tx === null
+      ? "—"
+      : tx.length > 80
+      ? `${tx.slice(0, 40)}…${tx.slice(-20)} (${tx.length} chars)`
+      : tx;
+
+  const rows: { label: string; value: React.ReactNode; mono?: boolean }[] = [
+    {
+      label: "Burn count",
+      value: (
+        <span className="font-bold text-red-200">
+          {result.burnCount}
+          <span className="ml-1 text-red-300/70">
+            / {result.totalBurnable} eligible
+          </span>
+        </span>
+      ),
+    },
+    {
+      label: "Gross reclaim",
+      value: (
+        <span className="font-bold text-emerald-300">
+          {fmtSol(result.estimatedGrossReclaimSol)} SOL
+        </span>
+      ),
+    },
+    {
+      label: "Estimated network fee",
+      value: (
+        <span className="text-neutral-200">
+          {fmtSol(result.estimatedFeeSol)} SOL
+          <span className="ml-1 text-[10px] text-neutral-500">
+            (base {fmtSol(result.estimatedBaseFeeSol)}
+            {result.estimatedPriorityFeeSol > 0 && (
+              <> + priority {fmtSol(result.estimatedPriorityFeeSol)}</>
+            )}
+            ; {result.computeUnitLimit.toLocaleString()} CU
+            {result.priorityFeeMicrolamports > 0 && (
+              <> @ {result.priorityFeeMicrolamports} μL/CU</>
+            )}
+            )
+          </span>
+        </span>
+      ),
+    },
+    {
+      label: "Estimated net received",
+      value: (
+        <span className="font-bold text-emerald-300">
+          {fmtSol(result.estimatedNetReclaimSol)} SOL
+        </span>
+      ),
+    },
+    {
+      label: "Tx version",
+      value: <Badge variant="info">{result.transactionVersion}</Badge>,
+    },
+    { label: "Fee payer", value: result.feePayer, mono: true },
+    {
+      label: "Requires signature from",
+      value: result.requiresSignatureFrom,
+      mono: true,
+    },
+    {
+      label: "Transaction (base64)",
+      value: txShort,
+      mono: true,
+    },
+  ];
+
+  return (
+    <div className="border-t border-red-500/30 bg-red-950/30">
+      <div className="flex items-center justify-between border-b border-red-500/30 bg-red-600/15 px-3 py-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+          🔥 Legacy NFT burn preview
+        </span>
+        <Badge variant="sell">unsigned · destructive</Badge>
+      </div>
+      <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-200">
+        ⚠ Burning NFTs is destructive and irreversible.
+      </div>
+      {result.warning && (
+        <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+          ⚠ {result.warning}
+        </div>
+      )}
+      <LegacyNftSafetyChecklist
+        result={result}
+        audit={audit}
+        ackDestructive={ackDestructive}
+        onToggleAck={() => setAckDestructive((v) => !v)}
+      />
+      {result.includedNfts.length > 0 && (
+        <ul className="divide-y divide-red-500/15 border-b border-red-500/15">
+          {result.includedNfts.map((n: LegacyNftBurnIncludedEntry) => (
+            <li
+              key={n.tokenAccount}
+              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+            >
+              <div className="col-span-5 min-w-0">
+                <div className="truncate font-semibold text-neutral-100">
+                  {n.name ?? "—"}
+                </div>
+                <div className="truncate font-mono text-[10px] text-neutral-400">
+                  {shortAddr(n.mint, 4, 4)}
+                </div>
+              </div>
+              <div className="col-span-2 truncate text-[11px] text-neutral-300">
+                {n.symbol ?? "—"}
+              </div>
+              <div className="col-span-2 truncate text-[10px] text-neutral-500">
+                {n.reason}
+              </div>
+              <div className="col-span-3 text-right font-semibold tabular-nums text-emerald-300/90">
+                {fmtSol(n.estimatedGrossReclaimSol)} SOL
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {result.skippedNfts.length > 0 && (
+        <NonBurnableNftSummary entries={result.skippedNfts} />
+      )}
+      <dl className="divide-y divide-red-500/15">
+        {rows.map((r) => (
+          <div
+            key={r.label}
+            className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+          >
+            <dt className="col-span-4 text-red-300/80">{r.label}</dt>
+            <dd
+              className={`col-span-8 min-w-0 break-all ${
+                r.mono
+                  ? "font-mono text-[11px] text-neutral-100"
+                  : "text-neutral-100"
+              }`}
+            >
+              {r.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div className="border-t border-red-500/30 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
+        Preview only. Sign + send for legacy NFT burn is intentionally not
+        wired in this UI.
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// pNFT burn — Milestone 2 preview UI.
+// Same two-phase pattern as LegacyNftBurnSection. Differs in:
+//   - Backend response shape (includedPnfts / skippedPnfts / simulationOk).
+//   - Adds a preflight simulation badge (Ok / Failed with reason).
+//   - Slightly deeper red border so the section is visually distinct from
+//     the legacy NFT card just above it.
+// =============================================================================
+
+type PnftDiscoverState =
+  | { status: "loading" }
+  | { status: "ready"; result: BuildPnftBurnTxResult }
+  | { status: "error"; error: string }
+  | { status: "empty" };
+
+type PnftBuildState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; result: BuildPnftBurnTxResult }
+  | { status: "error"; error: string };
+
+function PnftBurnSection({
+  walletAddress,
+  nftAccountCount,
+}: {
+  walletAddress: string;
+  nftAccountCount: number;
+}) {
+  const [discover, setDiscover] = useState<PnftDiscoverState>(
+    nftAccountCount === 0 ? { status: "empty" } : { status: "loading" },
+  );
+  const [build, setBuild] = useState<PnftBuildState>({ status: "idle" });
+  const [buildPending, startBuildTransition] = useTransition();
+  const [selectedMints, setSelectedMints] = useState<Set<string>>(new Set());
+
+  // Discovery: one no-mints call on mount. Returns up to N pNFTs in
+  // includedPnfts (with full metadata) plus the rest in skippedPnfts.
+  // We ignore the discovery call's transactionBase64 — that's a tx for a
+  // default 2-pNFT batch the user didn't choose. The build phase fires the
+  // user's actual selection.
+  useEffect(() => {
+    if (nftAccountCount === 0) return;
+    let cancelled = false;
+    (async () => {
+      const res = await buildPnftBurnTxAction(walletAddress, []);
+      if (cancelled) return;
+      if (res.ok) setDiscover({ status: "ready", result: res.result });
+      else setDiscover({ status: "error", error: res.error });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress, nftAccountCount]);
+
+  // Report this section's discovery to the parent reclaim-summary panel.
+  // pNFT has a preflight simulation gate — if discovery's simulationOk is
+  // false, the entire batch is currently un-burnable. Per the spec, do not
+  // include rejected items in the running total.
+  const pnftEntry: ReclaimEntry = (() => {
+    if (discover.status === "loading")
+      return { value: null, status: "loading" };
+    if (discover.status === "error")
+      return { value: null, status: "error" };
+    if (discover.status === "empty")
+      return { value: 0, status: "empty" };
+    const r = discover.result;
+    if (r.totalBurnable === 0) return { value: 0, status: "empty" };
+    if (!r.simulationOk) return { value: null, status: "rejected" };
+    const per = r.includedPnfts[0]?.estimatedGrossReclaimSol ?? 0;
+    return { value: per * r.totalBurnable, status: "ready" };
+  })();
+  useReportReclaim("pnft", pnftEntry);
+
+  // Burnable candidates surfaced by discovery: includedPnfts (with full
+  // metadata) + skippedPnfts whose reason indicates batch overflow. The
+  // overflow rows don't carry name/symbol — backend's skip envelope is
+  // mint-only — but the user can still pick them; build phase resolves
+  // metadata for the selected set.
+  const candidates = useMemo(() => {
+    if (discover.status !== "ready") return null;
+    const named = discover.result.includedPnfts.map((n) => ({
+      mint: n.mint,
+      tokenAccount: n.tokenAccount,
+      name: n.name,
+      symbol: n.symbol,
+      estimatedGrossReclaimSol: n.estimatedGrossReclaimSol,
+    }));
+    const overflow = discover.result.skippedPnfts
+      .filter(
+        (s) =>
+          s.reason.startsWith("Cap of") || s.reason.startsWith("Trimmed to fit"),
+      )
+      .map((s) => ({
+        mint: s.mint,
+        tokenAccount: s.tokenAccount,
+        name: null as string | null,
+        symbol: null as string | null,
+        estimatedGrossReclaimSol: null as number | null,
+      }));
+    const nonBurnable = discover.result.skippedPnfts.filter(
+      (s) =>
+        !(s.reason.startsWith("Cap of") || s.reason.startsWith("Trimmed to fit")),
+    );
+    return { burnable: [...named, ...overflow], nonBurnable };
+  }, [discover]);
+
+  function toggleSelected(mint: string): void {
+    setSelectedMints((prev) => {
+      const next = new Set(prev);
+      if (next.has(mint)) next.delete(mint);
+      else next.add(mint);
+      return next;
+    });
+  }
+
+  function handleBuild(): void {
+    if (selectedMints.size === 0) return;
+    setBuild({ status: "loading" });
+    const mints = Array.from(selectedMints);
+    startBuildTransition(async () => {
+      const res = await buildPnftBurnTxAction(walletAddress, mints);
+      if (res.ok) setBuild({ status: "ready", result: res.result });
+      else setBuild({ status: "error", error: res.error });
+    });
+  }
+
+  const canBuild =
+    selectedMints.size > 0 &&
+    build.status !== "loading" &&
+    !buildPending;
+
+  return (
+    <div className="m-3 overflow-hidden rounded-md border-2 border-red-600/50 bg-red-500/[0.05]">
+      <div className="flex items-baseline justify-between border-b border-red-600/40 bg-red-600/15 px-3 py-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+          pNFT burn · max reclaim
+        </span>
+        <span className="text-[11px] tabular-nums text-red-200/80">
+          {discover.status === "ready"
+            ? `${discover.result.totalBurnable} burnable · est. ${fmtSol(
+                (discover.result.includedPnfts[0]?.estimatedGrossReclaimSol ?? 0) *
+                  discover.result.totalBurnable,
+              )} SOL`
+            : discover.status === "loading"
+            ? "scanning…"
+            : ""}
+        </span>
+      </div>
+      <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-200">
+        ⚠ Burning pNFTs is destructive and irreversible.
+      </div>
+      <div className="border-b border-red-500/15 bg-red-950/30 px-3 py-1.5 text-[11px] text-red-200/80">
+        ℹ Uses Metaplex BurnV1 with token record, collection metadata, and
+        auth-rules when required.
+      </div>
+
+      {discover.status === "empty" && (
+        <EmptyHint>No NFT-shaped token accounts found in this wallet.</EmptyHint>
+      )}
+      {discover.status === "loading" && (
+        <EmptyHint>Discovering pNFTs…</EmptyHint>
+      )}
+      {discover.status === "error" && (
+        <div className="bg-red-500/10 px-3 py-2 text-xs text-red-300">
+          Discovery failed: {discover.error}
+        </div>
+      )}
+
+      {discover.status === "ready" && candidates && (
+        <>
+          {candidates.burnable.length === 0 ? (
+            <EmptyHint>
+              No pNFTs eligible for BurnV1 in this wallet. See skipped reasons
+              below — pNFTs with missing token records or unsupported standards
+              don't qualify in this milestone.
+            </EmptyHint>
+          ) : (
+            <>
+              <PnftCandidatesTable
+                rows={candidates.burnable}
+                selected={selectedMints}
+                onToggle={toggleSelected}
+              />
+              <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-2">
+                <button
+                  type="button"
+                  onClick={handleBuild}
+                  disabled={!canBuild}
+                  title={
+                    selectedMints.size === 0
+                      ? "Select at least one pNFT above"
+                      : undefined
+                  }
+                  aria-label="Build pNFT burn transaction"
+                  className={
+                    canBuild
+                      ? "inline-flex items-center rounded-lg border-2 border-red-600/70 bg-red-700 px-4 py-2 text-sm font-bold text-white shadow shadow-red-700/40 transition-colors duration-100 hover:bg-red-600"
+                      : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-4 py-2 text-sm font-bold text-red-300/60 cursor-not-allowed"
+                  }
+                >
+                  {build.status === "loading" || buildPending
+                    ? "Building…"
+                    : build.status === "ready"
+                    ? "Rebuild pNFT burn"
+                    : "Build pNFT burn"}
+                </button>
+                <span className="text-[11px] text-red-200/70">
+                  {selectedMints.size === 0
+                    ? "Select at least one pNFT to build"
+                    : `${selectedMints.size} selected · backend caps at 2 per tx`}
+                </span>
+              </div>
+              {build.status === "error" && (
+                <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                  Build failed: {build.error}
+                </div>
+              )}
+              {build.status === "ready" && (
+                <PnftBurnPreview result={build.result} />
+              )}
+            </>
+          )}
+          {candidates.nonBurnable.length > 0 && (
+            <NonBurnableNftSummary entries={candidates.nonBurnable} />
+          )}
+        </>
+      )}
+
+      <div className="border-t border-red-500/20 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
+        Manual review required. Sign + send for pNFT burn is not yet wired in
+        this UI.
+      </div>
+    </div>
+  );
+}
+
+function PnftCandidatesTable({
+  rows,
+  selected,
+  onToggle,
+}: {
+  rows: {
+    mint: string;
+    tokenAccount: string;
+    name: string | null;
+    symbol: string | null;
+    estimatedGrossReclaimSol: number | null;
+  }[];
+  selected: Set<string>;
+  onToggle: (mint: string) => void;
+}) {
+  return (
+    <div>
+      <div className="grid grid-cols-12 gap-3 border-b border-red-600/20 bg-red-600/[0.05] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-200/80">
+        <div className="col-span-1">Burn</div>
+        <div className="col-span-5">Name</div>
+        <div className="col-span-2">Symbol</div>
+        <div className="col-span-2">Mint</div>
+        <div className="col-span-2 text-right">Reclaim</div>
+      </div>
+      <div>
+        {rows.map((r) => {
+          const isChecked = selected.has(r.mint);
+          const isBatchOverflow = r.estimatedGrossReclaimSol === null;
+          return (
+            <label
+              key={r.tokenAccount}
+              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-red-600/15 px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-100 hover:bg-red-600/[0.10] ${
+                isChecked ? "bg-red-600/[0.10] ring-1 ring-inset ring-red-400/40" : ""
+              }`}
+            >
+              <div className="col-span-1">
+                <input
+                  type="checkbox"
+                  checked={isChecked}
+                  onChange={() => onToggle(r.mint)}
+                  aria-label={`Select ${r.name ?? "pNFT"} for burn`}
+                  className="h-3.5 w-3.5 cursor-pointer accent-red-600"
+                />
+              </div>
+              <div className="col-span-5 min-w-0">
+                {r.name ? (
+                  <div className="truncate font-semibold text-neutral-100">
+                    {r.name}
+                  </div>
+                ) : (
+                  <span className="text-[11px] italic text-neutral-500">
+                    metadata not yet loaded — select to include in next batch
+                  </span>
+                )}
+              </div>
+              <div className="col-span-2 truncate text-[11px] text-neutral-300">
+                {r.symbol ?? "—"}
+              </div>
+              <div className="col-span-2 truncate font-mono text-[11px] text-neutral-300">
+                {shortAddr(r.mint, 4, 4)}
+              </div>
+              <div className="col-span-2 text-right font-semibold tabular-nums text-emerald-300/90">
+                {isBatchOverflow ? "—" : fmtSol(r.estimatedGrossReclaimSol!)}
+              </div>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PnftBurnPreview({ result }: { result: BuildPnftBurnTxResult }) {
+  const tx = result.transactionBase64;
+  const txShort =
+    tx === null
+      ? "—"
+      : tx.length > 80
+      ? `${tx.slice(0, 40)}…${tx.slice(-20)} (${tx.length} chars)`
+      : tx;
+
+  const rows: { label: string; value: React.ReactNode; mono?: boolean }[] = [
+    {
+      label: "Burn count",
+      value: (
+        <span className="font-bold text-red-200">
+          {result.burnCount}
+          <span className="ml-1 text-red-300/70">
+            / {result.totalBurnable} eligible
+          </span>
+        </span>
+      ),
+    },
+    {
+      label: "Preflight simulation",
+      value: result.simulationOk ? (
+        <span className="inline-flex items-center gap-1.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-bold text-emerald-300 ring-1 ring-emerald-500/30">
+          ✓ Passed
+        </span>
+      ) : (
+        <span className="inline-flex flex-col gap-0.5">
+          <span className="inline-flex w-fit items-center gap-1.5 rounded bg-red-500/15 px-1.5 py-0.5 text-[11px] font-bold text-red-300 ring-1 ring-red-500/30">
+            ✕ Rejected
+          </span>
+          {result.simulationError && (
+            <span className="text-[10px] text-red-300/80">
+              {result.simulationError}
+            </span>
+          )}
+        </span>
+      ),
+    },
+    {
+      label: "Gross reclaim",
+      value: (
+        <span className="font-bold text-emerald-300">
+          {fmtSol(result.estimatedGrossReclaimSol)} SOL
+        </span>
+      ),
+    },
+    {
+      label: "Estimated network fee",
+      value: (
+        <span className="text-neutral-200">
+          {fmtSol(result.estimatedFeeSol)} SOL
+          <span className="ml-1 text-[10px] text-neutral-500">
+            (base {fmtSol(result.estimatedBaseFeeSol)}
+            {result.estimatedPriorityFeeSol > 0 && (
+              <> + priority {fmtSol(result.estimatedPriorityFeeSol)}</>
+            )}
+            ; {result.computeUnitLimit.toLocaleString()} CU
+            {result.priorityFeeMicrolamports > 0 && (
+              <> @ {result.priorityFeeMicrolamports} μL/CU</>
+            )}
+            )
+          </span>
+        </span>
+      ),
+    },
+    {
+      label: "Estimated net received",
+      value: (
+        <span className="font-bold text-emerald-300">
+          {fmtSol(result.estimatedNetReclaimSol)} SOL
+        </span>
+      ),
+    },
+    {
+      label: "Tx version",
+      value: <Badge variant="info">{result.transactionVersion}</Badge>,
+    },
+    { label: "Fee payer", value: result.feePayer, mono: true },
+    {
+      label: "Requires signature from",
+      value: result.requiresSignatureFrom,
+      mono: true,
+    },
+    {
+      label: "Transaction (base64)",
+      value: txShort,
+      mono: true,
+    },
+  ];
+
+  return (
+    <div className="border-t border-red-600/30 bg-red-950/35">
+      <div className="flex items-center justify-between border-b border-red-600/40 bg-red-700/20 px-3 py-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+          🔥 pNFT burn preview
+        </span>
+        <Badge variant="sell">unsigned · destructive</Badge>
+      </div>
+      <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-200">
+        ⚠ Burning pNFTs is destructive and irreversible.
+      </div>
+      {result.warning && (
+        <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+          ⚠ {result.warning}
+        </div>
+      )}
+      {result.includedPnfts.length > 0 && (
+        <ul className="divide-y divide-red-600/15 border-b border-red-600/15">
+          {result.includedPnfts.map((n: PnftBurnIncludedEntry) => (
+            <li
+              key={n.tokenAccount}
+              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+            >
+              <div className="col-span-5 min-w-0">
+                <div className="truncate font-semibold text-neutral-100">
+                  {n.name ?? "—"}
+                </div>
+                <div className="truncate font-mono text-[10px] text-neutral-400">
+                  {shortAddr(n.mint, 4, 4)}
+                </div>
+              </div>
+              <div className="col-span-2 truncate text-[11px] text-neutral-300">
+                {n.symbol ?? "—"}
+              </div>
+              <div className="col-span-2 truncate text-[10px] text-neutral-500">
+                {n.reason}
+              </div>
+              <div className="col-span-3 text-right font-semibold tabular-nums text-emerald-300/90">
+                {fmtSol(n.estimatedGrossReclaimSol)} SOL
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {result.skippedPnfts.length > 0 && (
+        <NonBurnableNftSummary
+          entries={result.skippedPnfts as PnftBurnSkippedEntry[]}
+        />
+      )}
+      <dl className="divide-y divide-red-600/15">
+        {rows.map((r) => (
+          <div
+            key={r.label}
+            className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+          >
+            <dt className="col-span-4 text-red-300/80">{r.label}</dt>
+            <dd
+              className={`col-span-8 min-w-0 break-all ${
+                r.mono
+                  ? "font-mono text-[11px] text-neutral-100"
+                  : "text-neutral-100"
+              }`}
+            >
+              {r.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div className="border-t border-red-600/30 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
+        Preview only. Sign + send for pNFT burn is intentionally not wired in
+        this UI.
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// Metaplex Core asset burn — Milestone 3 preview UI.
+// Same two-phase pattern as PnftBurnSection. Differs in:
+//   - Discovers via Core program (getProgramAccounts) — independent of
+//     scan.nftTokenAccounts, which only enumerates SPL token accounts.
+//   - Selection key is the Core asset address (no SPL "mint" for Core).
+//   - Backend body uses `assetIds`, response uses `includedAssets` /
+//     `skippedAssets`.
+//   - Slightly deeper red (red-700) border so the section is visually
+//     distinct from the pNFT (red-600) and legacy NFT (red-500) cards above.
+// =============================================================================
+
+type CoreDiscoverState =
+  | { status: "loading" }
+  | { status: "ready"; result: BuildCoreBurnTxResult }
+  | { status: "error"; error: string };
+
+type CoreBuildState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; result: BuildCoreBurnTxResult }
+  | { status: "error"; error: string };
+
+function CoreBurnSection({ walletAddress }: { walletAddress: string }) {
+  const [discover, setDiscover] = useState<CoreDiscoverState>({
+    status: "loading",
+  });
+  const [build, setBuild] = useState<CoreBuildState>({ status: "idle" });
+  const [buildPending, startBuildTransition] = useTransition();
+  const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set());
+
+  // Discovery: one no-assetIds call on mount. Backend probes the Core
+  // program for AssetV1 accounts owned by the wallet and returns up to N
+  // burnable in includedAssets, with the rest in skippedAssets. The
+  // discovery tx is for a default batch — we ignore it and rebuild against
+  // the user's selection in the build phase.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await buildCoreBurnTxAction(walletAddress, []);
+      if (cancelled) return;
+      if (res.ok) setDiscover({ status: "ready", result: res.result });
+      else setDiscover({ status: "error", error: res.error });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress]);
+
+  // Report this section's discovery to the parent reclaim-summary panel.
+  // Core also has a preflight simulation gate (Permanent Freeze /
+  // Burn-Delegate plugins, etc.). If simulationOk is false, exclude this
+  // section's value from the running total per spec.
+  const coreEntry: ReclaimEntry = (() => {
+    if (discover.status === "loading")
+      return { value: null, status: "loading" };
+    if (discover.status === "error")
+      return { value: null, status: "error" };
+    const r = discover.result;
+    if (r.totalBurnable === 0) return { value: 0, status: "empty" };
+    if (!r.simulationOk) return { value: null, status: "rejected" };
+    const per = r.includedAssets[0]?.estimatedGrossReclaimSol ?? 0;
+    return { value: per * r.totalBurnable, status: "ready" };
+  })();
+  useReportReclaim("core", coreEntry);
+
+  // Burnable candidates: includedAssets (full metadata) + skippedAssets
+  // whose reason indicates batch overflow (the user can select them; build
+  // phase will resolve metadata for the chosen set).
+  const candidates = useMemo(() => {
+    if (discover.status !== "ready") return null;
+    const named = discover.result.includedAssets.map((a) => ({
+      asset: a.asset,
+      collection: a.collection,
+      name: a.name,
+      uri: a.uri,
+      estimatedGrossReclaimSol: a.estimatedGrossReclaimSol,
+    }));
+    const overflow = discover.result.skippedAssets
+      .filter(
+        (s) =>
+          s.reason.startsWith("Cap of") || s.reason.startsWith("Trimmed to fit"),
+      )
+      .map((s) => ({
+        asset: s.asset,
+        collection: null as string | null,
+        name: null as string | null,
+        uri: null as string | null,
+        estimatedGrossReclaimSol: null as number | null,
+      }));
+    const nonBurnable = discover.result.skippedAssets.filter(
+      (s) =>
+        !(s.reason.startsWith("Cap of") || s.reason.startsWith("Trimmed to fit")),
+    );
+    return { burnable: [...named, ...overflow], nonBurnable };
+  }, [discover]);
+
+  function toggleSelected(asset: string): void {
+    setSelectedAssets((prev) => {
+      const next = new Set(prev);
+      if (next.has(asset)) next.delete(asset);
+      else next.add(asset);
+      return next;
+    });
+  }
+
+  function handleBuild(): void {
+    if (selectedAssets.size === 0) return;
+    setBuild({ status: "loading" });
+    const assetIds = Array.from(selectedAssets);
+    startBuildTransition(async () => {
+      const res = await buildCoreBurnTxAction(walletAddress, assetIds);
+      if (res.ok) setBuild({ status: "ready", result: res.result });
+      else setBuild({ status: "error", error: res.error });
+    });
+  }
+
+  const canBuild =
+    selectedAssets.size > 0 &&
+    build.status !== "loading" &&
+    !buildPending;
+
+  return (
+    <div className="m-3 overflow-hidden rounded-md border-2 border-red-700/60 bg-red-700/[0.06]">
+      <div className="flex items-baseline justify-between border-b border-red-700/50 bg-red-700/20 px-3 py-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+          Core asset burn · max reclaim
+        </span>
+        <span className="text-[11px] tabular-nums text-red-200/80">
+          {discover.status === "ready"
+            ? `${discover.result.totalBurnable} burnable`
+            : discover.status === "loading"
+            ? "scanning…"
+            : ""}
+        </span>
+      </div>
+      <div className="border-b border-red-600/25 bg-red-600/10 px-3 py-2 text-[11px] font-semibold text-red-200">
+        ⚠ Burning Core assets is destructive and irreversible.
+      </div>
+      <div className="border-b border-red-600/20 bg-red-950/30 px-3 py-1.5 text-[11px] text-red-200/80">
+        ℹ Uses Metaplex Core BurnV1 and reclaims the Core asset account rent.
+      </div>
+
+      {discover.status === "loading" && (
+        <EmptyHint>Discovering Core assets…</EmptyHint>
+      )}
+      {discover.status === "error" && (
+        <div className="bg-red-600/10 px-3 py-2 text-xs text-red-300">
+          Discovery failed: {discover.error}
+        </div>
+      )}
+
+      {discover.status === "ready" && candidates && (
+        <>
+          {candidates.burnable.length === 0 &&
+          candidates.nonBurnable.length === 0 ? (
+            <EmptyHint>
+              No Metaplex Core assets found in this wallet.
+            </EmptyHint>
+          ) : candidates.burnable.length === 0 ? (
+            <EmptyHint>
+              No Core assets eligible for BurnV1 in this wallet. See skipped
+              reasons below — assets with permanent freeze/burn delegates or
+              unsupported plugins are not burnable here.
+            </EmptyHint>
+          ) : (
+            <>
+              <CoreCandidatesTable
+                rows={candidates.burnable}
+                selected={selectedAssets}
+                onToggle={toggleSelected}
+              />
+              <div className="flex flex-wrap items-center gap-2 border-t border-red-600/25 px-3 py-2">
+                <button
+                  type="button"
+                  onClick={handleBuild}
+                  disabled={!canBuild}
+                  title={
+                    selectedAssets.size === 0
+                      ? "Select at least one Core asset above"
+                      : undefined
+                  }
+                  aria-label="Build Core asset burn transaction"
+                  className={
+                    canBuild
+                      ? "inline-flex items-center rounded-lg border-2 border-red-700/80 bg-red-800 px-4 py-2 text-sm font-bold text-white shadow shadow-red-800/40 transition-colors duration-100 hover:bg-red-700"
+                      : "inline-flex items-center rounded-lg border-2 border-red-600/30 bg-red-900/30 px-4 py-2 text-sm font-bold text-red-300/60 cursor-not-allowed"
+                  }
+                >
+                  {build.status === "loading" || buildPending
+                    ? "Building…"
+                    : build.status === "ready"
+                    ? "Rebuild Core burn"
+                    : "Build Core burn"}
+                </button>
+                <span className="text-[11px] text-red-200/70">
+                  {selectedAssets.size === 0
+                    ? "Select at least one Core asset to build"
+                    : `${selectedAssets.size} selected · backend caps per tx`}
+                </span>
+              </div>
+              {build.status === "error" && (
+                <div className="border-t border-red-600/30 bg-red-600/10 px-3 py-2 text-xs text-red-300">
+                  Build failed: {build.error}
+                </div>
+              )}
+              {build.status === "ready" && (
+                <CoreBurnPreview result={build.result} />
+              )}
+            </>
+          )}
+          {candidates.nonBurnable.length > 0 && (
+            <NonBurnableNftSummary entries={candidates.nonBurnable} />
+          )}
+        </>
+      )}
+
+      <div className="border-t border-red-600/25 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
+        Manual review required. Sign + send for Core asset burn is not yet
+        wired in this UI.
+      </div>
+    </div>
+  );
+}
+
+function CoreCandidatesTable({
+  rows,
+  selected,
+  onToggle,
+}: {
+  rows: {
+    asset: string;
+    collection: string | null;
+    name: string | null;
+    uri: string | null;
+    estimatedGrossReclaimSol: number | null;
+  }[];
+  selected: Set<string>;
+  onToggle: (asset: string) => void;
+}) {
+  return (
+    <div>
+      <div className="grid grid-cols-12 gap-3 border-b border-red-700/25 bg-red-700/[0.06] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-200/80">
+        <div className="col-span-1">Burn</div>
+        <div className="col-span-6">Name</div>
+        <div className="col-span-3">Asset</div>
+        <div className="col-span-2 text-right">Reclaim</div>
+      </div>
+      <div>
+        {rows.map((r) => {
+          const isChecked = selected.has(r.asset);
+          const isBatchOverflow = r.estimatedGrossReclaimSol === null;
+          return (
+            <label
+              key={r.asset}
+              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-red-700/20 px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-100 hover:bg-red-700/[0.10] ${
+                isChecked
+                  ? "bg-red-700/[0.10] ring-1 ring-inset ring-red-400/40"
+                  : ""
+              }`}
+            >
+              <div className="col-span-1">
+                <input
+                  type="checkbox"
+                  checked={isChecked}
+                  onChange={() => onToggle(r.asset)}
+                  aria-label={`Select ${r.name ?? "Core asset"} for burn`}
+                  className="h-3.5 w-3.5 cursor-pointer accent-red-700"
+                />
+              </div>
+              <div className="col-span-6 min-w-0">
+                {r.name ? (
+                  <>
+                    <div className="truncate font-semibold text-neutral-100">
+                      {r.name}
+                    </div>
+                    {r.collection && (
+                      <div className="truncate font-mono text-[10px] text-neutral-400">
+                        coll {shortAddr(r.collection, 4, 4)}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-[11px] italic text-neutral-500">
+                    metadata not yet loaded — select to include in next batch
+                  </span>
+                )}
+              </div>
+              <div className="col-span-3 truncate font-mono text-[11px] text-neutral-300">
+                {shortAddr(r.asset, 4, 4)}
+              </div>
+              <div className="col-span-2 text-right font-semibold tabular-nums text-emerald-300/90">
+                {isBatchOverflow ? "—" : fmtSol(r.estimatedGrossReclaimSol!)}
+              </div>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CoreBurnPreview({ result }: { result: BuildCoreBurnTxResult }) {
+  const tx = result.transactionBase64;
+  const txShort =
+    tx === null
+      ? "—"
+      : tx.length > 80
+      ? `${tx.slice(0, 40)}…${tx.slice(-20)} (${tx.length} chars)`
+      : tx;
+
+  const rows: { label: string; value: React.ReactNode; mono?: boolean }[] = [
+    {
+      label: "Burn count",
+      value: (
+        <span className="font-bold text-red-200">
+          {result.burnCount}
+          <span className="ml-1 text-red-300/70">
+            / {result.totalBurnable} eligible
+          </span>
+        </span>
+      ),
+    },
+    {
+      label: "Preflight simulation",
+      value: result.simulationOk ? (
+        <span className="inline-flex items-center gap-1.5 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-bold text-emerald-300 ring-1 ring-emerald-500/30">
+          ✓ Passed
+        </span>
+      ) : (
+        <span className="inline-flex flex-col gap-0.5">
+          <span className="inline-flex w-fit items-center gap-1.5 rounded bg-red-500/15 px-1.5 py-0.5 text-[11px] font-bold text-red-300 ring-1 ring-red-500/30">
+            ✕ Rejected
+          </span>
+          {result.simulationError && (
+            <span className="text-[10px] text-red-300/80">
+              {result.simulationError}
+            </span>
+          )}
+        </span>
+      ),
+    },
+    {
+      label: "Gross reclaim",
+      value: (
+        <span className="font-bold text-emerald-300">
+          {fmtSol(result.estimatedGrossReclaimSol)} SOL
+        </span>
+      ),
+    },
+    {
+      label: "Estimated network fee",
+      value: (
+        <span className="text-neutral-200">
+          {fmtSol(result.estimatedFeeSol)} SOL
+          <span className="ml-1 text-[10px] text-neutral-500">
+            (base {fmtSol(result.estimatedBaseFeeSol)}
+            {result.estimatedPriorityFeeSol > 0 && (
+              <> + priority {fmtSol(result.estimatedPriorityFeeSol)}</>
+            )}
+            ; {result.computeUnitLimit.toLocaleString()} CU
+            {result.priorityFeeMicrolamports > 0 && (
+              <> @ {result.priorityFeeMicrolamports} μL/CU</>
+            )}
+            )
+          </span>
+        </span>
+      ),
+    },
+    {
+      label: "Estimated net received",
+      value: (
+        <span className="font-bold text-emerald-300">
+          {fmtSol(result.estimatedNetReclaimSol)} SOL
+        </span>
+      ),
+    },
+    {
+      label: "Tx version",
+      value: <Badge variant="info">{result.transactionVersion}</Badge>,
+    },
+    { label: "Fee payer", value: result.feePayer, mono: true },
+    {
+      label: "Requires signature from",
+      value: result.requiresSignatureFrom,
+      mono: true,
+    },
+    {
+      label: "Transaction (base64)",
+      value: txShort,
+      mono: true,
+    },
+  ];
+
+  return (
+    <div className="border-t border-red-700/40 bg-red-950/40">
+      <div className="flex items-center justify-between border-b border-red-700/50 bg-red-800/25 px-3 py-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+          🔥 Core asset burn preview
+        </span>
+        <Badge variant="sell">unsigned · destructive</Badge>
+      </div>
+      <div className="border-b border-red-600/25 bg-red-600/10 px-3 py-2 text-[11px] font-semibold text-red-200">
+        ⚠ Burning Core assets is destructive and irreversible.
+      </div>
+      {result.warning && (
+        <div className="border-b border-red-600/20 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+          ⚠ {result.warning}
+        </div>
+      )}
+      {result.includedAssets.length > 0 && (
+        <ul className="divide-y divide-red-700/20 border-b border-red-700/20">
+          {result.includedAssets.map((a: CoreBurnIncludedEntry) => (
+            <li
+              key={a.asset}
+              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+            >
+              <div className="col-span-5 min-w-0">
+                <div className="truncate font-semibold text-neutral-100">
+                  {a.name ?? "—"}
+                </div>
+                <div className="truncate font-mono text-[10px] text-neutral-400">
+                  {shortAddr(a.asset, 4, 4)}
+                </div>
+              </div>
+              <div className="col-span-2 truncate font-mono text-[11px] text-neutral-300">
+                {a.collection ? shortAddr(a.collection, 4, 4) : "—"}
+              </div>
+              <div className="col-span-2 truncate text-[10px] text-neutral-500">
+                {a.reason}
+              </div>
+              <div className="col-span-3 text-right font-semibold tabular-nums text-emerald-300/90">
+                {fmtSol(a.estimatedGrossReclaimSol)} SOL
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {result.skippedAssets.length > 0 && (
+        <NonBurnableNftSummary
+          entries={result.skippedAssets as CoreBurnSkippedEntry[]}
+        />
+      )}
+      <dl className="divide-y divide-red-700/20">
+        {rows.map((r) => (
+          <div
+            key={r.label}
+            className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+          >
+            <dt className="col-span-4 text-red-300/80">{r.label}</dt>
+            <dd
+              className={`col-span-8 min-w-0 break-all ${
+                r.mono
+                  ? "font-mono text-[11px] text-neutral-100"
+                  : "text-neutral-100"
+              }`}
+            >
+              {r.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div className="border-t border-red-700/40 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
+        Preview only. Sign + send for Core asset burn is intentionally not
+        wired in this UI.
       </div>
     </div>
   );
@@ -1919,17 +4053,26 @@ function EmptyAccountsTable({ rows }: { rows: ScannedTokenAccount[] }) {
   );
 }
 
-function BurnCandidatesTable({ rows }: { rows: BurnCandidate[] }) {
+function BurnCandidatesTable({
+  rows,
+  selected,
+  onToggle,
+}: {
+  rows: BurnCandidate[];
+  selected: Set<string>;
+  onToggle: (mint: string) => void;
+}) {
   return (
     <div>
       <div className="grid grid-cols-12 gap-3 border-b border-red-500/20 bg-red-500/[0.03] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-300/80">
-        <div className="col-span-3">Token</div>
+        <div className="col-span-1">Burn</div>
+        <div className="col-span-2">Token</div>
         <div className="col-span-2">Mint</div>
         <div className="col-span-2 text-right">Amount</div>
         <div className="col-span-1 text-right">Dec.</div>
         <div className="col-span-2 text-right">Reclaim (burn+close)</div>
         <div className="col-span-1">Risk</div>
-        <div className="col-span-1">Burn?</div>
+        <div className="col-span-1">Rec?</div>
       </div>
       <div>
         {rows.map((r) => {
@@ -1938,12 +4081,22 @@ function BurnCandidatesTable({ rows }: { rows: BurnCandidate[] }) {
           // background + red badge in the last column, so the user can't miss
           // that this token needs manual review before any (future) burn.
           const rowTint = r.burnRecommended ? "" : "bg-red-500/[0.06]";
+          const isChecked = selected.has(r.mint);
           return (
-            <div
+            <label
               key={r.tokenAccount}
-              className={`grid grid-cols-12 items-center gap-3 border-b border-red-500/15 px-3 py-1.5 text-xs last:border-b-0 ${rowTint}`}
+              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-red-500/15 px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-100 hover:bg-red-500/[0.08] ${rowTint} ${isChecked ? "ring-1 ring-inset ring-red-400/40" : ""}`}
             >
-              <div className="col-span-3 min-w-0">
+              <div className="col-span-1">
+                <input
+                  type="checkbox"
+                  checked={isChecked}
+                  onChange={() => onToggle(r.mint)}
+                  aria-label={`Select ${tokenLabel ?? "unknown token"} for burn`}
+                  className="h-3.5 w-3.5 cursor-pointer accent-red-500"
+                />
+              </div>
+              <div className="col-span-2 min-w-0">
                 {tokenLabel ? (
                   <>
                     <div className="truncate font-semibold text-neutral-100">
@@ -1985,7 +4138,7 @@ function BurnCandidatesTable({ rows }: { rows: BurnCandidate[] }) {
                   <Badge variant="sell">No</Badge>
                 )}
               </div>
-            </div>
+            </label>
           );
         })}
       </div>

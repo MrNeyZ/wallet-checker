@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "signals:smoke": "tsx src/lib/signals/__smoke.ts",
+    "signals:dedup-smoke": "tsx src/lib/__signal-sent-smoke.ts"
   },
   "dependencies": {
+    "@metaplex-foundation/mpl-token-metadata": "^2.13.0",
     "@solana/spl-token": "^0.4.9",
     "@solana/web3.js": "^1.95.4",
     "dotenv": "^16.4.5",
