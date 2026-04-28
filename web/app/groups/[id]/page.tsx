@@ -132,11 +132,14 @@ export default async function GroupDetailPage({
       <Tabs active={tab} groupId={id} />
 
       {tab === "positions" && (
+        // Stagger first-load fetches so we don't fan out four wallet-iterating
+        // requests against SolanaTracker the instant the tab mounts. Cached
+        // panels render instantly regardless; delays only apply to cold loads.
         <div className="space-y-3">
-          <LazyPnlOverview groupId={id} />
-          <LazyPortfolio groupId={id} />
-          <LazyLp groupId={id} />
-          <LazyAirdrops groupId={id} />
+          <LazyPnlOverview groupId={id} initialDelayMs={0} />
+          <LazyPortfolio groupId={id} initialDelayMs={1500} />
+          <LazyLp groupId={id} initialDelayMs={2500} />
+          <LazyAirdrops groupId={id} initialDelayMs={3500} />
         </div>
       )}
 

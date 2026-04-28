@@ -1,4 +1,5 @@
 import { env } from "../../config/env.js";
+import { solanaTrackerFetch } from "../solanaTracker/throttle.js";
 import {
   MissingApiKeyError,
   ProviderError,
@@ -73,7 +74,7 @@ export async function fetchWalletTrades(
 
   let res: Response;
   try {
-    res = await fetch(url, { headers: { "x-api-key": apiKey } });
+    res = await solanaTrackerFetch(url, { headers: { "x-api-key": apiKey } });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Network error";
     throw new ProviderError(`SolanaTracker request failed: ${message}`);

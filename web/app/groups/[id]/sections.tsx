@@ -1098,6 +1098,9 @@ export function FilteredTradesView({
     );
   }
   if (!trades || trades.length === 0) {
+    const anyFilter = Boolean(
+      filters.minUsd || filters.token || filters.side || filters.program,
+    );
     return (
       <Panel
         title="Recent trades"
@@ -1109,7 +1112,22 @@ export function FilteredTradesView({
         }
       >
         <div className="px-4 py-8 text-center text-sm text-neutral-500">
-          No trades found for current filters.
+          {anyFilter ? (
+            <>
+              No trades match the current filters.
+              <div className="mt-1 text-xs text-neutral-500">
+                Clear filters above to see all recent trades.
+              </div>
+            </>
+          ) : (
+            <>
+              No trades yet for this group.
+              <div className="mt-1 text-xs text-neutral-500">
+                Trades from the past few hours appear here automatically once
+                wallets transact.
+              </div>
+            </>
+          )}
         </div>
       </Panel>
     );

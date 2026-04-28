@@ -1,4 +1,5 @@
 import { env } from "../../config/env.js";
+import { solanaTrackerFetch } from "../solanaTracker/throttle.js";
 import { normalizePnlSummary, type PnlSummary } from "./normalizePnl.js";
 
 const BASE_URL = "https://data.solanatracker.io";
@@ -49,7 +50,7 @@ async function fetchFromProvider(wallet: string): Promise<{ data: unknown; fetch
   const url = `${BASE_URL}/pnl/${encodeURIComponent(wallet)}`;
   let res: Response;
   try {
-    res = await fetch(url, { headers: { "x-api-key": apiKey } });
+    res = await solanaTrackerFetch(url, { headers: { "x-api-key": apiKey } });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Network error";
     throw new ProviderError(`SolanaTracker request failed: ${message}`);

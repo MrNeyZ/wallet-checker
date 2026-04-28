@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { SESSION_COOKIE, sha256Hex } from "./lib/auth";
 
 export const config = {
-  matcher: ["/", "/groups/:path*"],
+  matcher: ["/", "/groups/:path*", "/burner/:path*"],
 };
 
 export async function middleware(req: NextRequest) {

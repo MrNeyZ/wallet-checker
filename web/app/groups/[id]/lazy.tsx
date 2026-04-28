@@ -5,6 +5,7 @@
 // is gated by the parent tab, so the fetch only fires when the tab is active.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { prettifyApiError } from "@/lib/prettifyError";
 import type {
   AirdropsState,
   GroupLpResponse,
@@ -70,6 +71,7 @@ async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
 function useLazyLoad<T>(
   label: string,
   loader: () => Promise<{ ok: true; data: T } | { ok: false; error: string }>,
+  opts?: { initialDelayMs?: number },
 ): { state: LoadState<T>; reload: () => void } {
   const [state, setState] = useState<LoadState<T>>({ status: "loading" });
   // Keep loader reference stable-ish; we re-run only on mount + manual reload.
@@ -83,7 +85,7 @@ function useLazyLoad<T>(
       const res = await timed(label, () => loaderRef.current());
       if (cancelled) return;
       if (res.ok) setState({ status: "ok", data: res.data });
-      else setState({ status: "error", error: res.error });
+      else setState({ status: "error", error: prettifyApiError(res.error) });
     })();
     return () => {
       cancelled = true;
@@ -91,13 +93,26 @@ function useLazyLoad<T>(
   }, [label]);
 
   useEffect(() => {
-    const cleanup = reload();
-    return cleanup;
+    let cancelled = false;
+    let cleanupFromReload: (() => void) | undefined;
+    const delay = opts?.initialDelayMs ?? 0;
+    const t = setTimeout(() => {
+      if (cancelled) return;
+      cleanupFromReload = reload();
+    }, delay);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      cleanupFromReload?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return { state, reload };
 }
+
+// Re-export so call sites that already import from this module keep working.
+export { prettifyApiError };
 
 // Module-level cache so PnL overview survives tab unmount/remount. Keyed by
 // groupId; same-key remount uses cached data instantly with no auto-refetch.
@@ -106,7 +121,13 @@ const overviewCache = new Map<
   { data: OverviewResponse; fetchedAt: number }
 >();
 
-export function LazyPnlOverview({ groupId }: { groupId: string }) {
+export function LazyPnlOverview({
+  groupId,
+  initialDelayMs = 0,
+}: {
+  groupId: string;
+  initialDelayMs?: number;
+}) {
   const cached = overviewCache.get(groupId);
   const [data, setData] = useState<OverviewResponse | null>(cached?.data ?? null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(cached?.fetchedAt ?? null);
@@ -126,7 +147,7 @@ export function LazyPnlOverview({ groupId }: { groupId: string }) {
         setData(res.data);
         setFetchedAt(now);
       } else {
-        setError(res.error);
+        setError(prettifyApiError(res.error));
       }
       setRefreshing(false);
     })();
@@ -136,10 +157,18 @@ export function LazyPnlOverview({ groupId }: { groupId: string }) {
   }, [groupId]);
 
   useEffect(() => {
-    if (!data) {
-      const cleanup = load();
-      return cleanup;
-    }
+    if (data) return;
+    let cancelled = false;
+    let cleanup: (() => void) | undefined;
+    const t = setTimeout(() => {
+      if (cancelled) return;
+      cleanup = load();
+    }, initialDelayMs);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      cleanup?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -177,7 +206,13 @@ const portfolioCache = new Map<
   { data: PortfolioResponse; fetchedAt: number }
 >();
 
-export function LazyPortfolio({ groupId }: { groupId: string }) {
+export function LazyPortfolio({
+  groupId,
+  initialDelayMs = 0,
+}: {
+  groupId: string;
+  initialDelayMs?: number;
+}) {
   const cached = portfolioCache.get(groupId);
   const [data, setData] = useState<PortfolioResponse | null>(cached?.data ?? null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(cached?.fetchedAt ?? null);
@@ -197,7 +232,7 @@ export function LazyPortfolio({ groupId }: { groupId: string }) {
         setData(res.data);
         setFetchedAt(now);
       } else {
-        setError(res.error);
+        setError(prettifyApiError(res.error));
       }
       setRefreshing(false);
     })();
@@ -209,10 +244,18 @@ export function LazyPortfolio({ groupId }: { groupId: string }) {
   // Fetch on mount only when no cached data. If we already have data from a
   // previous mount, skip the fetch — user can hit Refresh manually.
   useEffect(() => {
-    if (!data) {
-      const cleanup = load();
-      return cleanup;
-    }
+    if (data) return;
+    let cancelled = false;
+    let cleanup: (() => void) | undefined;
+    const t = setTimeout(() => {
+      if (cancelled) return;
+      cleanup = load();
+    }, initialDelayMs);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      cleanup?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -306,17 +349,35 @@ function LastUpdated({
   return <span className="text-neutral-400">{label}</span>;
 }
 
-export function LazyLp({ groupId }: { groupId: string }) {
-  const { state, reload } = useLazyLoad<GroupLpResponse>("lp", () => loadLpAction(groupId));
+export function LazyLp({
+  groupId,
+  initialDelayMs = 0,
+}: {
+  groupId: string;
+  initialDelayMs?: number;
+}) {
+  const { state, reload } = useLazyLoad<GroupLpResponse>(
+    "lp",
+    () => loadLpAction(groupId),
+    { initialDelayMs },
+  );
   if (state.status === "loading") return <PanelSkeleton title="LP Positions" lines={3} />;
   if (state.status === "error")
     return <PanelError title="LP Positions" error={state.error} onRetry={reload} />;
   return <LpView data={state.data} />;
 }
 
-export function LazyAirdrops({ groupId }: { groupId: string }) {
-  const { state, reload } = useLazyLoad<AirdropsState>("airdrops", () =>
-    loadAirdropsAction(groupId),
+export function LazyAirdrops({
+  groupId,
+  initialDelayMs = 0,
+}: {
+  groupId: string;
+  initialDelayMs?: number;
+}) {
+  const { state, reload } = useLazyLoad<AirdropsState>(
+    "airdrops",
+    () => loadAirdropsAction(groupId),
+    { initialDelayMs },
   );
   if (state.status === "loading") return <PanelSkeleton title="Airdrops" lines={3} />;
   if (state.status === "error")
@@ -383,7 +444,7 @@ export function LazyTrades({
         setData(res.data);
         setFetchedAt(now);
       } else {
-        setError(res.error);
+        setError(prettifyApiError(res.error));
       }
       setRefreshing(false);
     })();

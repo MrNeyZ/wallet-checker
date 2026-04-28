@@ -33,6 +33,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/groups" className="transition-colors duration-100 hover:text-white">
                 Groups
               </Link>
+              <Link href="/burner" className="transition-colors duration-100 hover:text-white">
+                Burner
+              </Link>
               <Link href="/preview" className="transition-colors duration-100 hover:text-white">
                 Preview
               </Link>

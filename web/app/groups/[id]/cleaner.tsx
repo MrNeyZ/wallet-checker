@@ -30,6 +30,7 @@ import {
 import { Badge } from "@/ui-kit/components/Badge";
 import { WalletLink } from "@/ui-kit/components/WalletLink";
 import { btnPrimary, btnSecondary } from "@/lib/buttonStyles";
+import { prettifyApiError } from "@/lib/prettifyError";
 import {
   auditBurnAndCloseTx,
   auditCloseEmptyTx,
@@ -64,13 +65,13 @@ interface WalletCtx {
 }
 const WalletContext = createContext<WalletCtx | null>(null);
 
-function useWallet(): WalletCtx {
+export function useWallet(): WalletCtx {
   const ctx = useContext(WalletContext);
   if (!ctx) throw new Error("useWallet must be used within WalletProvider");
   return ctx;
 }
 
-function WalletProvider({ children }: { children: React.ReactNode }) {
+export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [connected, setConnected] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,7 +151,7 @@ function WalletProvider({ children }: { children: React.ReactNode }) {
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }
 
-function WalletConnectBar() {
+export function WalletConnectBar() {
   const w = useWallet();
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-neutral-700 bg-neutral-900 p-3 text-xs">
@@ -211,7 +212,7 @@ function useScanRegistry(): ScanRegistryCtx {
   return ctx;
 }
 
-function ScanRegistryProvider({ children }: { children: React.ReactNode }) {
+export function ScanRegistryProvider({ children }: { children: React.ReactNode }) {
   const [scans, setScans] = useState<Record<string, ScanSummary>>({});
   const setScan = useCallback((address: string, summary: ScanSummary) => {
     setScans((prev) => ({ ...prev, [address]: summary }));
@@ -242,6 +243,8 @@ type ScanAllState =
       idx: number;
       total: number;
       currentWallet: string;
+      attempt: number;     // 1 = initial, 2..(SCAN_ALL_MAX_RETRIES+1) = retries
+      cooldown: boolean;   // true while sleeping (backoff or inter-wallet delay)
       failed: ScanFailure[];
     }
   | {
@@ -280,6 +283,14 @@ type CleanAllState =
 
 const DELAY_BETWEEN_WALLETS_MS = 200;
 
+// Scan-all-specific pacing. Larger wallets hammer the RPC and trigger
+// backend 429s, so we space scans out and retry rate-limit errors with
+// exponential backoff. These do NOT affect Clean all or individual scans.
+const SCAN_ALL_DELAY_BETWEEN_WALLETS_MS = 4000;
+const SCAN_ALL_MAX_RETRIES = 3;
+const SCAN_ALL_RETRY_BACKOFF_MS = [5000, 10000, 20000];
+const RATE_LIMIT_PATTERN = /\b429\b|rate[\s-]?limit|too many requests/i;
+
 function GroupAllActions({ wallets }: { wallets: WalletEntry[] }) {
   const { scans, setScan } = useScanRegistry();
   const w = useWallet();
@@ -306,6 +317,20 @@ function GroupAllActions({ wallets }: { wallets: WalletEntry[] }) {
     ? candidates.filter((wlt) => wlt.address === w.connected)
     : [];
 
+  // Sleep that polls cancelRef so long backoffs (up to 20s) don't trap the
+  // user. Returns true if cancelled mid-sleep.
+  async function cancellableSleep(ms: number): Promise<boolean> {
+    const step = 250;
+    let remaining = ms;
+    while (remaining > 0) {
+      if (cancelRef.current) return true;
+      const slice = Math.min(step, remaining);
+      await sleep(slice);
+      remaining -= slice;
+    }
+    return cancelRef.current;
+  }
+
   async function runScanAll() {
     cancelRef.current = false;
     const failed: ScanFailure[] = [];
@@ -322,29 +347,89 @@ function GroupAllActions({ wallets }: { wallets: WalletEntry[] }) {
         return;
       }
       const wlt = wallets[i];
-      setScanAll({
-        status: "running",
-        idx: i + 1,
-        total: wallets.length,
-        currentWallet: wlt.address,
-        failed: [...failed],
-      });
-      const res = await scanCleanupAction(wlt.address);
-      if (res.ok) {
-        setScan(wlt.address, {
-          empty: res.scan.emptyTokenAccounts.length,
-          reclaimSol: res.scan.totals.estimatedReclaimSol,
-          fungible: res.burn.count,
-          nft: res.scan.nftTokenAccounts.length,
+
+      // Per-wallet attempt loop: 1 initial + up to SCAN_ALL_MAX_RETRIES retries.
+      // Only 429 / "rate limit" / "Too Many Requests" errors are retried; any
+      // other error fails fast for that wallet.
+      let lastError = "";
+      let walletDone = false;
+      for (let attempt = 1; attempt <= SCAN_ALL_MAX_RETRIES + 1; attempt++) {
+        if (cancelRef.current) break;
+        setScanAll({
+          status: "running",
+          idx: i + 1,
+          total: wallets.length,
+          currentWallet: wlt.address,
+          attempt,
+          cooldown: false,
+          failed: [...failed],
         });
-        succeeded++;
-      } else {
-        failed.push({ wallet: wlt.address, label: wlt.label, error: res.error });
+        const res = await scanCleanupAction(wlt.address);
+        if (res.ok) {
+          setScan(wlt.address, {
+            empty: res.scan.emptyTokenAccounts.length,
+            reclaimSol: res.scan.totals.estimatedReclaimSol,
+            fungible: res.burn.count,
+            nft: res.scan.nftTokenAccounts.length,
+          });
+          succeeded++;
+          walletDone = true;
+          break;
+        }
+        lastError = res.error;
+        const isRateLimit = RATE_LIMIT_PATTERN.test(res.error);
+        if (!isRateLimit || attempt > SCAN_ALL_MAX_RETRIES) break;
+
+        // Backoff before retry: 5s, 10s, 20s.
+        const backoff = SCAN_ALL_RETRY_BACKOFF_MS[attempt - 1];
+        setScanAll({
+          status: "running",
+          idx: i + 1,
+          total: wallets.length,
+          currentWallet: wlt.address,
+          attempt,
+          cooldown: true,
+          failed: [...failed],
+        });
+        if (await cancellableSleep(backoff)) break;
       }
-      // Light spacing between RPC bursts; the backend already throttles
-      // getParsedTokenAccountsByOwner but a small client-side delay keeps
-      // things friendly even if multiple users share the backend.
-      if (i < wallets.length - 1) await sleep(DELAY_BETWEEN_WALLETS_MS);
+
+      if (cancelRef.current) {
+        setScanAll({
+          status: "done",
+          total: wallets.length,
+          succeeded,
+          failed,
+          cancelled: true,
+        });
+        return;
+      }
+      if (!walletDone) {
+        failed.push({ wallet: wlt.address, label: wlt.label, error: lastError });
+      }
+
+      // Inter-wallet cooldown to keep the backend RPC happy on large groups.
+      if (i < wallets.length - 1) {
+        setScanAll({
+          status: "running",
+          idx: i + 1,
+          total: wallets.length,
+          currentWallet: wlt.address,
+          attempt: 1,
+          cooldown: true,
+          failed: [...failed],
+        });
+        if (await cancellableSleep(SCAN_ALL_DELAY_BETWEEN_WALLETS_MS)) {
+          setScanAll({
+            status: "done",
+            total: wallets.length,
+            succeeded,
+            failed,
+            cancelled: true,
+          });
+          return;
+        }
+      }
     }
     setScanAll({
       status: "done",
@@ -575,8 +660,38 @@ function GroupAllActions({ wallets }: { wallets: WalletEntry[] }) {
 
       {isScanning && scanAll.status === "running" && (
         <div className="border-t border-neutral-800 bg-neutral-900 px-3 py-1.5 text-[11px] text-neutral-300">
-          Scanning <span className="font-mono">{shortAddr(scanAll.currentWallet, 4, 4)}</span>{" "}
-          ({scanAll.idx} / {scanAll.total})
+          {scanAll.cooldown ? (
+            <>
+              <span className="text-amber-300">Waiting for RPC cooldown…</span>{" "}
+              {scanAll.attempt > 1 && (
+                <span className="text-amber-200/80">
+                  before retry {scanAll.attempt - 1} / {SCAN_ALL_MAX_RETRIES} of{" "}
+                </span>
+              )}
+              <span className="font-mono">
+                {shortAddr(scanAll.currentWallet, 4, 4)}
+              </span>{" "}
+              ({scanAll.idx} / {scanAll.total})
+            </>
+          ) : scanAll.attempt > 1 ? (
+            <>
+              <span className="text-amber-300">
+                Retrying ({scanAll.attempt - 1} / {SCAN_ALL_MAX_RETRIES})
+              </span>{" "}
+              <span className="font-mono">
+                {shortAddr(scanAll.currentWallet, 4, 4)}
+              </span>{" "}
+              ({scanAll.idx} / {scanAll.total})
+            </>
+          ) : (
+            <>
+              Scanning{" "}
+              <span className="font-mono">
+                {shortAddr(scanAll.currentWallet, 4, 4)}
+              </span>{" "}
+              ({scanAll.idx} / {scanAll.total})
+            </>
+          )}
         </div>
       )}
 
@@ -768,7 +883,7 @@ function GroupCleanerSummary({
                 : "Download scanned wallets as CSV"
             }
             aria-label="Export cleaner overview as CSV"
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] font-semibold text-neutral-300 transition-colors duration-100 hover:border-emerald-500/60 hover:bg-emerald-500/10 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:bg-neutral-900 disabled:hover:text-neutral-300"
+            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] font-semibold text-neutral-300 transition-colors duration-100 hover:border-emerald-500/60 hover:bg-emerald-500/10 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-neutral-700 disabled:hover:bg-neutral-900 disabled:hover:text-neutral-300"
           >
             Export CSV ↓
           </button>
@@ -806,9 +921,10 @@ export function CleanerSection({ wallets }: { wallets: WalletEntry[] }) {
           <div className="rounded-md border border-neutral-700 bg-neutral-900 p-3 text-xs text-neutral-300">
             <span className="font-semibold text-white">Wallet Cleaner</span>
             <span className="ml-2 text-neutral-500">
-              Scans report empty SPL token accounts (rent reclaimable) and fungible
-              burn candidates. Connect a wallet to sign close-empty transactions
-              and reclaim rent. Burn flow is not implemented.
+              Scans report empty SPL token accounts (rent reclaimable) and burn
+              candidates (SPL, Legacy NFT, pNFT, Core). Connect a wallet to sign
+              close-empty transactions and reclaim rent. Burn flows are
+              preview-only — no burn transaction is signed or sent.
             </span>
           </div>
           <WalletConnectBar />
@@ -860,7 +976,7 @@ const CONFIRM_POLL_MAX_ATTEMPTS = 8; // ≤ 8 s wall-clock worst case
 // for progress display ("Closing batch K / N").
 const MAX_CLOSE_IX_PER_TX = 10;
 
-function CleanerRow({ wallet }: { wallet: WalletEntry }) {
+export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
   const [state, setState] = useState<ScanState>({ status: "idle" });
   const [showDetails, setShowDetails] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -1053,40 +1169,45 @@ function CleanerRow({ wallet }: { wallet: WalletEntry }) {
 
   return (
     <div className="overflow-hidden rounded-md border border-neutral-700 bg-neutral-900">
-      <div className="grid grid-cols-12 items-center gap-3 px-3 py-2">
-        <div className="col-span-3 min-w-0">
+      {/* Mobile: stack header / stats / actions vertically. md+: original
+          12-col grid layout. Avoids horizontal overflow on phones/tablets
+          while preserving the dense desktop table look. */}
+      <div className="flex flex-col gap-3 px-3 py-2 md:grid md:grid-cols-12 md:items-center">
+        <div className="min-w-0 md:col-span-3">
           {wallet.label ? (
-            <div className="text-sm font-semibold text-white">{wallet.label}</div>
+            <div className="truncate text-sm font-semibold text-white">{wallet.label}</div>
           ) : null}
           <WalletLink address={wallet.address} chars={6} className="text-xs" />
         </div>
 
-        <div className="col-span-2 text-right">
-          <div className="text-[10px] uppercase tracking-wider text-neutral-400">Empty</div>
-          <div className="text-sm font-bold tabular-nums text-white">
-            {summary ? summary.empty : "—"}
+        <div className="grid grid-cols-4 gap-2 md:contents">
+          <div className="md:col-span-2 md:text-right">
+            <div className="text-[10px] uppercase tracking-wider text-neutral-400">Empty</div>
+            <div className="text-sm font-bold tabular-nums text-white">
+              {summary ? summary.empty : "—"}
+            </div>
           </div>
-        </div>
-        <div className="col-span-2 text-right">
-          <div className="text-[10px] uppercase tracking-wider text-neutral-400">Reclaim SOL</div>
-          <div className="text-sm font-bold tabular-nums text-emerald-300">
-            {summary ? fmtSol(summary.reclaimSol) : "—"}
+          <div className="md:col-span-2 md:text-right">
+            <div className="text-[10px] uppercase tracking-wider text-neutral-400">Reclaim SOL</div>
+            <div className="text-sm font-bold tabular-nums text-emerald-300">
+              {summary ? fmtSol(summary.reclaimSol) : "—"}
+            </div>
           </div>
-        </div>
-        <div className="col-span-2 text-right">
-          <div className="text-[10px] uppercase tracking-wider text-neutral-400">Burn cand.</div>
-          <div className="text-sm font-bold tabular-nums text-white">
-            {summary ? summary.fungible : "—"}
+          <div className="md:col-span-2 md:text-right">
+            <div className="text-[10px] uppercase tracking-wider text-neutral-400">Burn cand.</div>
+            <div className="text-sm font-bold tabular-nums text-white">
+              {summary ? summary.fungible : "—"}
+            </div>
           </div>
-        </div>
-        <div className="col-span-1 text-right">
-          <div className="text-[10px] uppercase tracking-wider text-neutral-400">NFTs</div>
-          <div className="text-sm font-bold tabular-nums text-white">
-            {summary ? summary.nft : "—"}
+          <div className="md:col-span-1 md:text-right">
+            <div className="text-[10px] uppercase tracking-wider text-neutral-400">NFTs</div>
+            <div className="text-sm font-bold tabular-nums text-white">
+              {summary ? summary.nft : "—"}
+            </div>
           </div>
         </div>
 
-        <div className="col-span-2 flex flex-wrap justify-end gap-2">
+        <div className="flex flex-wrap gap-2 md:col-span-2 md:justify-end">
           <button
             type="button"
             onClick={handleScan}
@@ -1156,7 +1277,7 @@ function CleanerRow({ wallet }: { wallet: WalletEntry }) {
 
       {state.status === "error" && (
         <div className="border-t border-neutral-800 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-          {state.error}
+          {prettifyApiError(state.error)}
         </div>
       )}
 
@@ -1192,7 +1313,8 @@ function CleanerRow({ wallet }: { wallet: WalletEntry }) {
       )}
       {fullClean.status === "error" && (
         <div className="border-t border-neutral-800 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-          Full clean stopped at batch {fullClean.batches}: {fullClean.error}
+          Full clean stopped at batch {fullClean.batches}:{" "}
+          {prettifyApiError(fullClean.error)}
         </div>
       )}
 
@@ -1212,7 +1334,13 @@ function CleanerRow({ wallet }: { wallet: WalletEntry }) {
 
       {buildState.status === "error" && (
         <div className="border-t border-neutral-800 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-          Build failed: {buildState.error}
+          Build failed: {prettifyApiError(buildState.error)}
+        </div>
+      )}
+
+      {state.status === "idle" && !pending && (
+        <div className="border-t border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+          Scan wallet to discover reclaimable SOL.
         </div>
       )}
 
@@ -1431,7 +1559,7 @@ function SignAndSendBlock({
       w.connected !== null && w.connected === targetWallet && !walletMismatch,
     closeAccountOnly: audit?.ok === true,
     includedNonZero: !noIncluded,
-    burnExcluded: true, // burn flow is not implemented anywhere in this codebase
+    burnExcluded: true, // close-empty path: burn ixs are never bundled into the tx audited here
   };
   const checklistPassed =
     checks.walletMatches &&
@@ -2048,7 +2176,7 @@ function CleanerDetails({
         <CollapsibleBurnHeader
           collapsed={!openSpl}
           onToggle={() => setOpenSpl((v) => !v)}
-          title="SPL burn · destructive · preview only"
+          title="SPL burn · destructive"
           count={`${burn.count} candidate${burn.count === 1 ? "" : "s"}`}
           estSol={burn.totalEstimatedReclaimSol}
           toneBorder="border-red-500/30"
@@ -2058,8 +2186,7 @@ function CleanerDetails({
         {openSpl && (
           <>
             <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-1.5 text-[11px] font-semibold text-red-300">
-              ⚠ Burning tokens is destructive and irreversible. Manual review
-              required — sign + send is not wired in this UI.
+              ⚠ Destructive and irreversible. Review before any future signing.
             </div>
             {burn.warning && (
               <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
@@ -2894,8 +3021,7 @@ function LegacyNftBurnSection({
       {!collapsed && (
         <>
           <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-1.5 text-[11px] font-semibold text-red-300">
-            ⚠ Destructive and irreversible. Manual review required — sign +
-            send is not wired in this UI.
+            ⚠ Destructive and irreversible. Review before any future signing.
           </div>
 
           {discover.status === "empty" && (
@@ -4375,15 +4501,25 @@ function CollapsibleBurnHeader({
       type="button"
       onClick={onToggle}
       aria-expanded={!collapsed}
-      className={`flex w-full items-baseline justify-between border-b ${toneBorder} ${toneBg} px-3 py-1.5 text-left transition-colors hover:brightness-125`}
+      className={`flex w-full flex-wrap items-baseline justify-between gap-2 border-b ${toneBorder} ${toneBg} px-3 py-1.5 text-left transition-colors hover:brightness-125`}
     >
       <span
-        className={`flex items-baseline gap-2 text-[10px] font-bold uppercase tracking-wider ${toneText}`}
+        className={`flex flex-wrap items-baseline gap-2 text-[10px] font-bold uppercase tracking-wider ${toneText}`}
       >
         <span className="inline-block w-2 text-[9px] opacity-70">
           {collapsed ? "▶" : "▼"}
         </span>
         {title}
+        <span
+          className={`rounded-sm border px-1 py-px text-[9px] font-semibold uppercase tracking-wider ${toneBorder} ${toneText} opacity-90`}
+        >
+          Preview only
+        </span>
+        <span
+          className={`rounded-sm border px-1 py-px text-[9px] font-semibold uppercase tracking-wider ${toneBorder} ${toneText} opacity-70`}
+        >
+          No signing
+        </span>
       </span>
       <span className={`text-[11px] tabular-nums ${toneText} opacity-80`}>
         {summary}
