@@ -210,6 +210,16 @@ PM2 must be installed globally (`npm i -g pm2`) and `.env` files in repo root an
 
 End-to-end deployment to a single Ubuntu host. No Docker, no orchestrator, no DB.
 
+> **Before you start** — quick checklist of the things that are easy to get wrong:
+>
+> | Topic | Required |
+> |---|---|
+> | Backend port | **3002** (PM2 sets this from `ecosystem.config.cjs`) |
+> | Frontend port | **3003** (PM2 sets this from `ecosystem.config.cjs`) |
+> | Auth pairing | `APP_API_KEY` (`.env`) **must equal** `BACKEND_APP_API_KEY` (`web/.env`) — the frontend forwards the latter as `x-app-key` and the backend rejects mismatches with `401 Unauthorized` |
+> | UI auth | Set `WEB_PASSWORD` in `web/.env` so `/login` is required (otherwise the dashboard is open to anyone who knows the URL) |
+> | Secrets | **Never commit real `.env` or `web/.env`.** Both files are gitignored — keep it that way and edit only on the VPS |
+
 ### 1. Install Node.js
 
 Pick one. nvm is simpler if you want to control the Node version per-shell:
@@ -280,7 +290,6 @@ cd web && npm install && npm run build && cd ..
 pm2 start ecosystem.config.cjs
 pm2 save                              # persist process list across reboot
 pm2 startup                           # generate the systemd unit; follow the printed sudo line
-pm2 logs                              # tail combined logs
 pm2 status                            # current state
 ```
 
@@ -288,7 +297,26 @@ Both apps now run:
 - `wallet-checker-backend` on port **3002**
 - `wallet-checker-web` on port **3003**
 
-### 7. Nginx reverse proxy (optional)
+### 7. Check logs
+
+```bash
+pm2 logs                                            # tail both apps (Ctrl+C to detach)
+pm2 logs wallet-checker-backend --lines 200         # last 200 lines of the backend
+pm2 logs wallet-checker-web      --lines 200         # last 200 lines of the frontend
+pm2 monit                                           # live CPU / memory / log stream
+```
+
+The on-disk log files PM2 writes to are listed by `pm2 info wallet-checker-backend` (look for `out log path` / `error log path`).
+
+Quick sanity probes once both are up:
+
+```bash
+curl -s http://127.0.0.1:3002/health           # → {"ok":true,...}
+curl -s -o /dev/null -w "%{http_code}\n" \
+  http://127.0.0.1:3003/                       # → 200 (or 307 → /login if WEB_PASSWORD set)
+```
+
+### 8. Nginx reverse proxy (optional)
 
 Expose only the frontend publicly; route `/api/*` to the backend on the same domain so the browser never sees port 3002.
 
@@ -337,8 +365,6 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-For HTTPS, run `sudo certbot --nginx -d your-domain.example.com` (one-time) to get a Let's Encrypt certificate; certbot rewrites the server block automatically.
-
 If you front the API via Nginx, point the frontend at the public URL too so server-side fetches use the proxy:
 
 ```bash
@@ -346,9 +372,37 @@ If you front the API via Nginx, point the frontend at the public URL too so serv
 BACKEND_URL=https://your-domain.example.com
 ```
 
-(Set this only if your Nginx proxies `/api/` to the backend; with a separate API host, point `BACKEND_URL` to that host instead.)
+(Set this only if your Nginx proxies `/api/` to the backend; with a separate API host, point `BACKEND_URL` to that host instead.) After editing `web/.env`, restart the frontend so it picks up the new value: `pm2 restart wallet-checker-web`.
 
-### 8. Updating
+### 9. HTTPS with certbot (Let's Encrypt)
+
+DNS first: point an A record for `your-domain.example.com` at the VPS public IP, and verify it resolves before requesting a cert (Let's Encrypt validates over HTTP).
+
+Open the firewall to ports 80 + 443:
+
+```bash
+sudo ufw allow 'Nginx Full'           # 80 + 443
+sudo ufw status                        # verify
+```
+
+Install certbot and request the certificate:
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.example.com
+```
+
+Certbot rewrites the Nginx server block to listen on 443, redirects 80 → 443, and installs an auto-renew systemd timer. Verify both:
+
+```bash
+sudo certbot certificates              # cert paths + expiry
+sudo systemctl list-timers | grep certbot
+sudo certbot renew --dry-run           # full dry-run of the renewal pipeline
+```
+
+After HTTPS is in place, the frontend `BACKEND_URL` should use `https://` (see step 8) and you can confirm end-to-end with `curl -sI https://your-domain.example.com/health`.
+
+### 10. Updating
 
 ```bash
 cd wallet-checker
