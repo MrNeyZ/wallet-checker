@@ -119,26 +119,10 @@ export async function buildCloseEmptyTxAction(
   | { ok: true; result: import("@/lib/api").BuildCloseEmptyTxResult }
   | { ok: false; error: string }
 > {
-  // [cleaner-debug] temporary diagnostic logs — remove after triage.
-  const dev = process.env.NODE_ENV !== "production";
-  if (dev) console.debug("[cleaner-debug] buildCloseEmptyTxAction start", { wallet });
   try {
     const result = await api.buildCloseEmptyTx(wallet);
-    if (dev) {
-      console.debug("[cleaner-debug] buildCloseEmptyTxAction ok", {
-        wallet,
-        feePayer: result.feePayer,
-        requiresSignatureFrom: result.requiresSignatureFrom,
-        included: result.includedAccounts.length,
-        totalEmpty: result.totalEmpty,
-        skipped: result.skippedAccounts,
-        txB64Length: result.transactionBase64?.length ?? null,
-        txVersion: result.transactionVersion,
-      });
-    }
     return { ok: true, result };
   } catch (err) {
-    if (dev) console.debug("[cleaner-debug] buildCloseEmptyTxAction error", { wallet, err });
     return { ok: false, error: err instanceof Error ? err.message : "Build failed" };
   }
 }

@@ -726,16 +726,32 @@ function GroupCleanerSummary({
   ];
   return (
     <div className="overflow-hidden rounded-md border border-neutral-700 bg-neutral-900">
-      <div className="flex items-baseline justify-between border-b border-neutral-700 px-3 py-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-700 px-3 py-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-300">
           Group cleaner overview
         </span>
-        {scanned < totalWallets && (
-          <span className="text-[11px] text-neutral-500">
-            {totalWallets - scanned} wallet
-            {totalWallets - scanned === 1 ? "" : "s"} not scanned yet
-          </span>
-        )}
+        <span className="inline-flex items-center gap-2">
+          {scanned < totalWallets && (
+            <span className="text-[11px] text-neutral-500">
+              {totalWallets - scanned} wallet
+              {totalWallets - scanned === 1 ? "" : "s"} not scanned yet
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => exportCleanerOverviewCsv(wallets, scans)}
+            disabled={scanned === 0}
+            title={
+              scanned === 0
+                ? "Scan at least one wallet first"
+                : "Download scanned wallets as CSV"
+            }
+            aria-label="Export cleaner overview as CSV"
+            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] font-semibold text-neutral-300 transition-colors duration-100 hover:border-emerald-500/60 hover:bg-emerald-500/10 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:bg-neutral-900 disabled:hover:text-neutral-300"
+          >
+            Export CSV ↓
+          </button>
+        </span>
       </div>
       <div className="grid grid-cols-2 gap-px bg-neutral-800 sm:grid-cols-5">
         {tiles.map((t) => (
@@ -1408,31 +1424,8 @@ function SignAndSendBlock({
     send.status !== "signing";
 
   async function handleSignAndSend() {
-    const dev = process.env.NODE_ENV !== "production";
-    const provider = getProvider();
-    // [cleaner-debug] click-time snapshot — remove after triage.
-    if (dev) {
-      const p = provider as (typeof provider & { isSolflare?: boolean; isPhantom?: boolean }) | null;
-      const providerName = p?.isPhantom
-        ? "phantom"
-        : p?.isSolflare
-        ? "solflare"
-        : provider
-        ? "unknown"
-        : "(none)";
-      console.debug("[cleaner-debug] sign click", {
-        providerName,
-        connected: w.connected,
-        targetWallet,
-        requiresSignatureFrom: result.requiresSignatureFrom,
-        feePayer: result.feePayer,
-        txB64Length: result.transactionBase64?.length ?? null,
-        included: result.includedAccounts.length,
-        guards: { noTx, noIncluded, walletMismatch, targetMismatch, alreadySent, canSend },
-        audit,
-      });
-    }
     if (!canSend || result.transactionBase64 === null) return;
+    const provider = getProvider();
     if (!provider) {
       setSend({ status: "error", error: "No wallet provider available." });
       return;
@@ -1440,22 +1433,10 @@ function SignAndSendBlock({
     setSend({ status: "signing" });
     try {
       const tx = decodeBase64Transaction(result.transactionBase64);
-      if (dev) {
-        console.debug("[cleaner-debug] decoded tx", {
-          instructions: tx.instructions.length,
-          programIds: tx.instructions.map((i) => i.programId.toBase58()),
-          opcodes: tx.instructions.map((i) => i.data[0]),
-          feePayer: tx.feePayer?.toBase58(),
-          recentBlockhash: tx.recentBlockhash,
-          signaturesCount: tx.signatures.length,
-        });
-      }
       const res = await provider.signAndSendTransaction(tx);
-      if (dev) console.debug("[cleaner-debug] signAndSendTransaction ok", { signature: res.signature });
       setSend({ status: "sent", signature: res.signature });
       onSent(res.signature);
     } catch (err) {
-      if (dev) console.debug("[cleaner-debug] signAndSendTransaction error", err);
       setSend({ status: "error", error: prettifyWalletError(err) });
     }
   }
@@ -1770,8 +1751,7 @@ function Spinner() {
 
 // Maps the raw error thrown by `provider.signAndSendTransaction` (Phantom /
 // Solflare / generic Phantom-shaped provider) into a clean, user-facing
-// sentence. We keep the original error in dev console via [cleaner-debug],
-// but the UI never shows raw provider stack traces.
+// sentence. The UI never shows raw provider stack traces.
 function prettifyWalletError(err: unknown): string {
   const e = err as { code?: number; message?: string; name?: string } | null;
   const m = (e?.message ?? "").toLowerCase();
@@ -2013,3 +1993,63 @@ function BurnCandidatesTable({ rows }: { rows: BurnCandidate[] }) {
   );
 }
 
+
+// ============================================================================
+// CSV export for the Group Cleaner overview.
+// Builds rows from the ScanRegistry (only scanned wallets), pulls labels
+// from the WalletEntry list, escapes per RFC 4180, and triggers a browser
+// download. No new deps — pure Blob + URL.createObjectURL + <a download>.
+// ============================================================================
+
+function csvEscape(value: string): string {
+  if (/[",\n\r]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function exportCleanerOverviewCsv(
+  wallets: WalletEntry[],
+  scans: Record<string, ScanSummary>,
+): void {
+  if (typeof window === "undefined") return;
+
+  const header = [
+    "wallet",
+    "label",
+    "emptyAccounts",
+    "grossReclaimSol",
+    "burnCandidates",
+    "nfts",
+  ];
+  const lines = [header.join(",")];
+  // Walk wallets in display order, but only include those that have been
+  // scanned. Keeps the file aligned with the rows the user actually sees.
+  for (const w of wallets) {
+    const s = scans[w.address];
+    if (!s) continue;
+    lines.push(
+      [
+        csvEscape(w.address),
+        csvEscape(w.label ?? ""),
+        String(s.empty),
+        String(s.reclaimSol),
+        String(s.fungible),
+        String(s.nft),
+      ].join(","),
+    );
+  }
+  // CRLF for broader Excel compatibility.
+  const csv = lines.join("\r\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const today = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `cleaner-overview-${today}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
