@@ -103,26 +103,19 @@ const Dots = () => (
   </span>
 );
 
-// Text wordmark in place of upstream's /brand/victorylabs.png — preserves
-// the layout slot and the Playfair Display headline aesthetic without
-// shipping a third-party brand asset.
+// VictoryLabs wordmark — verbatim from upstream Gate.tsx.
+// Source PNG must live at /web/public/brand/victorylabs.png so this
+// resolves to /brand/victorylabs.png at runtime. See deploy notes.
 function Wordmark() {
   return (
-    <div
+    <img
+      src="/brand/victorylabs.png"
+      alt="VictoryLabs"
+      width={264}
+      height={79}
       className="vl-wordmark"
-      style={{
-        fontFamily: "'Playfair Display', 'Georgia', serif",
-        fontSize: 28,
-        fontWeight: 700,
-        letterSpacing: 6,
-        color: "#c4b3f0",
-        textAlign: "center",
-        textTransform: "uppercase",
-        textShadow: "0 0 24px rgba(168, 144, 232, 0.18)",
-      }}
-    >
-      Wallet Checker
-    </div>
+      draggable={false}
+    />
   );
 }
 
