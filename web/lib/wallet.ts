@@ -422,3 +422,89 @@ export function auditLegacyNftBurnTx(b64: string): LegacyNftAuditResult {
   result.ok = true;
   return result;
 }
+
+// ============================================================================
+// Metaplex Core asset BurnV1 audit.
+//
+// Top-level ix scope:
+//   1. Only ComputeBudget or Metaplex Core program instructions allowed.
+//   2. Every Core instruction must be BurnV1 (discriminator 12).
+//   3. At least 1 BurnV1 instruction.
+// SPL Token / System Program calls happen as CPIs from Core; they don't
+// appear at top level here.
+// ============================================================================
+
+const MPL_CORE_PROGRAM_ID =
+  "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d";
+const CORE_BURN_V1_DISCRIMINATOR = 12;
+
+export interface CoreBurnAuditResult {
+  ok: boolean;
+  totalInstructions: number;
+  burnV1Count: number;
+  hasUnknownProgram: boolean;
+  reason?: string;
+}
+
+export function auditCoreBurnTx(b64: string): CoreBurnAuditResult {
+  const result: CoreBurnAuditResult = {
+    ok: false,
+    totalInstructions: 0,
+    burnV1Count: 0,
+    hasUnknownProgram: false,
+  };
+
+  let tx;
+  try {
+    tx = decodeBase64Transaction(b64);
+  } catch (err) {
+    result.reason =
+      err instanceof Error ? err.message : "Failed to deserialize transaction";
+    return result;
+  }
+
+  const ixs = tx.instructions;
+  result.totalInstructions = ixs.length;
+  if (ixs.length === 0) {
+    result.reason = "Transaction has no instructions";
+    return result;
+  }
+
+  for (let i = 0; i < ixs.length; i++) {
+    const ix = ixs[i];
+    const pid = ix.programId.toBase58();
+    const opcode = ix.data[0];
+
+    if (pid === COMPUTE_BUDGET_PROGRAM_ID) {
+      if (
+        opcode !== SET_COMPUTE_UNIT_LIMIT_OPCODE &&
+        opcode !== SET_COMPUTE_UNIT_PRICE_OPCODE
+      ) {
+        result.reason = `Instruction #${i} ComputeBudget opcode is ${opcode ?? "empty"}, only SetComputeUnitLimit (2) and SetComputeUnitPrice (3) are allowed`;
+        return result;
+      }
+      continue;
+    }
+
+    if (pid === MPL_CORE_PROGRAM_ID) {
+      if (opcode !== CORE_BURN_V1_DISCRIMINATOR) {
+        result.reason = `Instruction #${i} Core opcode is ${opcode ?? "empty"}, only BurnV1 (${CORE_BURN_V1_DISCRIMINATOR}) is allowed`;
+        return result;
+      }
+      result.burnV1Count++;
+      continue;
+    }
+
+    result.hasUnknownProgram = true;
+    result.reason = `Instruction #${i} program is ${pid.slice(0, 6)}…, not ComputeBudget or Metaplex Core`;
+    return result;
+  }
+
+  if (result.burnV1Count === 0) {
+    result.reason = "No Metaplex Core BurnV1 instructions found";
+    return result;
+  }
+
+  result.ok = true;
+  return result;
+}

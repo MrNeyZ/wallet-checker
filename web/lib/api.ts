@@ -175,6 +175,7 @@ export interface LegacyNftBurnIncludedEntry {
   masterEdition: string;
   name: string | null;
   symbol: string | null;
+  image: string | null;
   estimatedGrossReclaimSol: number;
   reason: string;
 }
@@ -183,6 +184,15 @@ export interface LegacyNftBurnSkippedEntry {
   mint: string;
   tokenAccount: string;
   reason: string;
+  // Populated only for cap-overflow / tx-size-trimmed entries — the NFT is
+  // burnable, just didn't fit this batch. Truly non-burnable skips leave
+  // these undefined.
+  name?: string | null;
+  symbol?: string | null;
+  image?: string | null;
+  estimatedGrossReclaimSol?: number;
+  metadata?: string;
+  masterEdition?: string;
 }
 
 export interface BuildLegacyNftBurnTxResult {
@@ -212,6 +222,7 @@ export interface PnftBurnIncludedEntry {
   tokenRecord: string;
   name: string | null;
   symbol: string | null;
+  image: string | null;
   estimatedGrossReclaimSol: number;
   reason: string;
 }
@@ -220,6 +231,17 @@ export interface PnftBurnSkippedEntry {
   mint: string;
   tokenAccount: string;
   reason: string;
+  // Populated only for cap-overflow / tx-size-trimmed entries — the pNFT is
+  // burnable, just didn't fit this batch.
+  name?: string | null;
+  symbol?: string | null;
+  image?: string | null;
+  estimatedGrossReclaimSol?: number;
+  metadata?: string;
+  masterEdition?: string;
+  tokenRecord?: string;
+  ruleSet?: string | null;
+  collectionMetadata?: string | null;
 }
 
 export interface BuildPnftBurnTxResult {
@@ -248,6 +270,7 @@ export interface CoreBurnIncludedEntry {
   collection: string | null;
   name: string | null;
   uri: string | null;
+  image: string | null;
   estimatedGrossReclaimSol: number;
   reason: string;
 }
@@ -255,6 +278,12 @@ export interface CoreBurnIncludedEntry {
 export interface CoreBurnSkippedEntry {
   asset: string;
   reason: string;
+  // Populated only for cap-overflow / tx-size-trimmed entries.
+  collection?: string | null;
+  name?: string | null;
+  uri?: string | null;
+  image?: string | null;
+  estimatedGrossReclaimSol?: number;
 }
 
 export interface BuildCoreBurnTxResult {

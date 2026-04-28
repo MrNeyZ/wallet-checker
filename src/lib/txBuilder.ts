@@ -11,6 +11,7 @@ import {
 } from "@solana/spl-token";
 import { connection } from "./solana.js";
 import { scanWalletForCleanup, type ScannedTokenAccount } from "./scanner.js";
+import { fetchAssetMetadataBatch } from "../services/helius/das.js";
 
 export const MAX_CLOSE_IX_PER_TX = 10;
 
@@ -823,10 +824,55 @@ const LEGACY_NFT_BURN_WARNING =
 
 // Strip Metaplex's fixed-length null/space padding from name/symbol so JSON
 // consumers don't see embedded   or trailing whitespace.
+// Merge Helius DAS results into a list of LegacyNftConfirmation objects.
+// Mutates in place: fills in name/symbol from off-chain JSON when on-chain
+// extraction yielded null/empty, and always sets image when DAS provided
+// one. Confined to burnable entries to keep the DAS call payload tight.
+async function enrichLegacyConfirmationsWithDas(
+  confirmations: LegacyNftConfirmation[],
+): Promise<void> {
+  const ids = confirmations
+    .filter((c) => c.isBurnable)
+    .map((c) => c.mint);
+  if (ids.length === 0) return;
+  const dasMap = await fetchAssetMetadataBatch(ids);
+  for (const c of confirmations) {
+    const m = dasMap.get(c.mint);
+    if (!m) continue;
+    if (!c.name && m.name) c.name = m.name;
+    if (!c.symbol && m.symbol) c.symbol = m.symbol;
+    if (m.image) c.image = m.image;
+  }
+}
+
+// Same merge for pNFT confirmations. Forward-declared here so both
+// builders share one implementation shape.
+async function enrichPnftConfirmationsWithDas(
+  confirmations: { mint: string; isBurnable: boolean; name: string | null; symbol: string | null; image: string | null }[],
+): Promise<void> {
+  const ids = confirmations
+    .filter((c) => c.isBurnable)
+    .map((c) => c.mint);
+  if (ids.length === 0) return;
+  const dasMap = await fetchAssetMetadataBatch(ids);
+  for (const c of confirmations) {
+    const m = dasMap.get(c.mint);
+    if (!m) continue;
+    if (!c.name && m.name) c.name = m.name;
+    if (!c.symbol && m.symbol) c.symbol = m.symbol;
+    if (m.image) c.image = m.image;
+  }
+}
+
 function stripPadding(s: string | null | undefined): string | null {
   if (typeof s !== "string") return null;
-  // Remove embedded NUL bytes that Metaplex pads with, then trim whitespace.
-  const trimmed = s.replace(/ +$/g, "").trim();
+  // Two-step strip: NUL bytes (Metaplex pads name/symbol with U+0000)
+  // plus ASCII whitespace at both ends. JS .trim() does NOT consider
+  // NUL as whitespace, so the explicit char-class is required — without
+  // it, names like "MyNFT\u0000\u0000\u0000 \u2026" leaked through with
+  // the padding intact, contributing to the "metadata not yet loaded"
+  // UX bug.
+  const trimmed = s.replace(/[\u0000\s]+$/g, "").replace(/^[\u0000\s]+/, "");
   return trimmed.length > 0 ? trimmed : null;
 }
 
@@ -844,6 +890,9 @@ export interface LegacyNftConfirmation {
   masterEditionLamports: number;
   name: string | null;
   symbol: string | null;
+  // Off-chain JSON metadata (image URL). Populated by the Helius DAS
+  // enrichment pass in buildLegacyNftBurnTx; null on confirm-time.
+  image: string | null;
 }
 
 async function confirmLegacyNfts(
@@ -884,6 +933,7 @@ async function confirmLegacyNfts(
       masterEditionLamports: editionInfo?.lamports ?? 0,
       name: null as string | null,
       symbol: null as string | null,
+      image: null as string | null,
     };
     if (!metaInfo) {
       out.push({
@@ -971,6 +1021,7 @@ export interface LegacyNftBurnIncludedEntry {
   masterEdition: string;
   name: string | null;
   symbol: string | null;
+  image: string | null;
   estimatedGrossReclaimSol: number;
   reason: string;
 }
@@ -979,6 +1030,15 @@ export interface LegacyNftBurnSkippedEntry {
   mint: string;
   tokenAccount: string;
   reason: string;
+  // Populated only for cap-overflow / tx-size-trimmed entries (the NFT is
+  // burnable, just didn't fit this batch). Truly non-burnable skips leave
+  // these undefined so the frontend can keep their summary minimal.
+  name?: string | null;
+  symbol?: string | null;
+  image?: string | null;
+  estimatedGrossReclaimSol?: number;
+  metadata?: string;
+  masterEdition?: string;
 }
 
 export interface BuildLegacyNftBurnTxResult {
@@ -1055,6 +1115,14 @@ export async function buildLegacyNftBurnTx(
   }
 
   const confirmations = await confirmLegacyNfts(coarse);
+
+  // Helius DAS enrichment. The on-chain Metadata.data.name field is often
+  // empty (the real name lives in off-chain JSON), so without this pass
+  // most candidates show as "metadata not yet loaded" in the UI. DAS
+  // resolves both layers in a single batched call. Fails open: if Helius
+  // is unavailable, the on-chain bytes we already extracted are kept.
+  await enrichLegacyConfirmationsWithDas(confirmations);
+
   const burnable: LegacyNftConfirmation[] = [];
   for (const c of confirmations) {
     if (c.isBurnable) burnable.push(c);
@@ -1067,13 +1135,44 @@ export async function buildLegacyNftBurnTx(
     }
   }
 
+  // Built early so cap-overflow / trim skip entries can include reclaim-SOL
+  // (which needs the SPL token-account lamports alongside metadata + master
+  // edition rent).
+  const tokenAccountByMint = new Map<string, ScannedTokenAccount>();
+  for (const acc of coarse) tokenAccountByMint.set(acc.mint, acc);
+
+  // Helper: enrich a cap-skipped / trim-skipped entry with the metadata that
+  // discovery already confirmed. Burnable NFTs are still burnable, just
+  // didn't fit this batch — the frontend should show them with full info.
+  const enrichSkip = (
+    c: LegacyNftConfirmation,
+    reason: string,
+  ): LegacyNftBurnSkippedEntry => {
+    const acc = tokenAccountByMint.get(c.mint);
+    const reclaimLamports = acc
+      ? acc.lamports + c.metadataLamports + c.masterEditionLamports
+      : c.metadataLamports + c.masterEditionLamports;
+    return {
+      mint: c.mint,
+      tokenAccount: c.tokenAccount,
+      reason,
+      name: c.name,
+      symbol: c.symbol,
+      image: c.image,
+      estimatedGrossReclaimSol: reclaimLamports / LAMPORTS_PER_SOL,
+      metadata: c.metadataPda,
+      masterEdition: c.masterEditionPda,
+    };
+  };
+
   let included = burnable.slice(0, MAX_NFT_BURN_PER_TX);
   for (const trimmed of burnable.slice(MAX_NFT_BURN_PER_TX)) {
-    skippedNfts.push({
-      mint: trimmed.mint,
-      tokenAccount: trimmed.tokenAccount,
-      reason: `Cap of ${MAX_NFT_BURN_PER_TX} NFTs per tx — rebuild after this batch confirms`,
-    });
+    skippedNfts.push(
+      enrichSkip(
+        trimmed,
+        `Cap of ${MAX_NFT_BURN_PER_TX} NFTs per tx — rebuild after this batch confirms`,
+      ),
+    );
   }
   const priorityFeeMicrolamports = readPriorityFeeMicrolamports();
 
@@ -1100,9 +1199,6 @@ export async function buildLegacyNftBurnTx(
 
   const { blockhash, lastValidBlockHeight } =
     await connection.getLatestBlockhash();
-
-  const tokenAccountByMint = new Map<string, ScannedTokenAccount>();
-  for (const acc of coarse) tokenAccountByMint.set(acc.mint, acc);
 
   const buildTx = (
     items: LegacyNftConfirmation[],
@@ -1152,11 +1248,12 @@ export async function buildLegacyNftBurnTx(
   let built = buildTx(included, computeUnitLimit);
   while (built.serialized.length > MAX_TX_SIZE_BYTES && included.length > 1) {
     const dropped = included[included.length - 1];
-    skippedNfts.push({
-      mint: dropped.mint,
-      tokenAccount: dropped.tokenAccount,
-      reason: "Trimmed to fit 1232-byte tx cap — rebuild after this batch confirms",
-    });
+    skippedNfts.push(
+      enrichSkip(
+        dropped,
+        "Trimmed to fit 1232-byte tx cap — rebuild after this batch confirms",
+      ),
+    );
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_NFT_BURN * included.length + CU_HEADROOM;
     built = buildTx(included, computeUnitLimit);
@@ -1185,6 +1282,7 @@ export async function buildLegacyNftBurnTx(
       masterEdition: c.masterEditionPda,
       name: c.name,
       symbol: c.symbol,
+      image: c.image,
       estimatedGrossReclaimSol: reclaimLamports / LAMPORTS_PER_SOL,
       reason:
         "Standard NonFungible — full BurnV1 (token + metadata + master edition)",
@@ -1306,6 +1404,9 @@ export interface PnftConfirmation {
   tokenRecordLamports: number;
   name: string | null;
   symbol: string | null;
+  // Off-chain JSON metadata (image URL). Populated by the Helius DAS
+  // enrichment pass in buildPnftBurnTx; null on confirm-time.
+  image: string | null;
   // Set when the pNFT belongs to a verified Metaplex collection AND that
   // collection's Metadata account exists on-chain. BurnV1 requires this
   // PDA in the `collectionMetadata` slot for collection-verified pNFTs;
@@ -1384,6 +1485,7 @@ async function confirmPnfts(
       tokenRecordLamports: tokenRecordInfo?.lamports ?? 0,
       name: null as string | null,
       symbol: null as string | null,
+      image: null as string | null,
     };
     if (!metaInfo) {
       out.push({
@@ -1540,6 +1642,7 @@ export interface PnftBurnIncludedEntry {
   tokenRecord: string;
   name: string | null;
   symbol: string | null;
+  image: string | null;
   estimatedGrossReclaimSol: number;
   reason: string;
 }
@@ -1548,6 +1651,18 @@ export interface PnftBurnSkippedEntry {
   mint: string;
   tokenAccount: string;
   reason: string;
+  // Populated only for cap-overflow / tx-size-trimmed entries (the pNFT is
+  // burnable, just didn't fit this batch). Truly non-burnable skips leave
+  // these undefined.
+  name?: string | null;
+  symbol?: string | null;
+  image?: string | null;
+  estimatedGrossReclaimSol?: number;
+  metadata?: string;
+  masterEdition?: string;
+  tokenRecord?: string;
+  ruleSet?: string | null;
+  collectionMetadata?: string | null;
 }
 
 export interface BuildPnftBurnTxResult {
@@ -1735,6 +1850,10 @@ export async function buildPnftBurnTx(
   }
 
   const confirmations = await confirmPnfts(coarse);
+
+  // Helius DAS enrichment — see comment in buildLegacyNftBurnTx.
+  await enrichPnftConfirmationsWithDas(confirmations);
+
   const burnable: PnftConfirmation[] = [];
   for (const c of confirmations) {
     if (c.isBurnable) burnable.push(c);
@@ -1747,13 +1866,47 @@ export async function buildPnftBurnTx(
     }
   }
 
+  // Lifted early so cap-overflow / trim entries can include reclaim-SOL
+  // and the auth-rules / token-record / collection PDAs the frontend
+  // already needs to render the row.
+  const tokenAccountByMint = new Map<string, ScannedTokenAccount>();
+  for (const acc of coarse) tokenAccountByMint.set(acc.mint, acc);
+
+  const enrichSkip = (
+    c: PnftConfirmation,
+    reason: string,
+  ): PnftBurnSkippedEntry => {
+    const acc = tokenAccountByMint.get(c.mint);
+    const reclaimLamports = acc
+      ? acc.lamports +
+        c.metadataLamports +
+        c.masterEditionLamports +
+        c.tokenRecordLamports
+      : c.metadataLamports + c.masterEditionLamports + c.tokenRecordLamports;
+    return {
+      mint: c.mint,
+      tokenAccount: c.tokenAccount,
+      reason,
+      name: c.name,
+      symbol: c.symbol,
+      image: c.image,
+      estimatedGrossReclaimSol: reclaimLamports / LAMPORTS_PER_SOL,
+      metadata: c.metadataPda,
+      masterEdition: c.masterEditionPda,
+      tokenRecord: c.tokenRecordPda,
+      ruleSet: c.ruleSet,
+      collectionMetadata: c.collectionMetadataPda,
+    };
+  };
+
   let included = burnable.slice(0, MAX_PNFT_BURN_PER_TX);
   for (const trimmed of burnable.slice(MAX_PNFT_BURN_PER_TX)) {
-    skippedPnfts.push({
-      mint: trimmed.mint,
-      tokenAccount: trimmed.tokenAccount,
-      reason: `Cap of ${MAX_PNFT_BURN_PER_TX} pNFTs per tx — rebuild after this batch confirms`,
-    });
+    skippedPnfts.push(
+      enrichSkip(
+        trimmed,
+        `Cap of ${MAX_PNFT_BURN_PER_TX} pNFTs per tx — rebuild after this batch confirms`,
+      ),
+    );
   }
   const priorityFeeMicrolamports = readPriorityFeeMicrolamports();
 
@@ -1781,9 +1934,6 @@ export async function buildPnftBurnTx(
 
   const { blockhash, lastValidBlockHeight } =
     await connection.getLatestBlockhash();
-
-  const tokenAccountByMint = new Map<string, ScannedTokenAccount>();
-  for (const acc of coarse) tokenAccountByMint.set(acc.mint, acc);
 
   // pNFT BurnV1 is heavier than legacy BurnV1 (extra account access for
   // token record + delegate checks). Conservative ~70k CU per pNFT.
@@ -1864,12 +2014,12 @@ export async function buildPnftBurnTx(
   let built = buildTx(included, computeUnitLimit);
   while (built.serialized.length > MAX_TX_SIZE_BYTES && included.length > 1) {
     const dropped = included[included.length - 1];
-    skippedPnfts.push({
-      mint: dropped.mint,
-      tokenAccount: dropped.tokenAccount,
-      reason:
+    skippedPnfts.push(
+      enrichSkip(
+        dropped,
         "Trimmed to fit 1232-byte tx cap — rebuild after this batch confirms",
-    });
+      ),
+    );
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_PNFT_BURN * included.length + CU_HEADROOM;
     built = buildTx(included, computeUnitLimit);
@@ -1902,6 +2052,7 @@ export async function buildPnftBurnTx(
       tokenRecord: c.tokenRecordPda,
       name: c.name,
       symbol: c.symbol,
+      image: c.image,
       estimatedGrossReclaimSol: reclaimLamports / LAMPORTS_PER_SOL,
       reason: c.ruleSet
         ? "ProgrammableNonFungible with ruleset — full BurnV1 (token + metadata + master edition + token record + auth-rules)"
@@ -2046,6 +2197,9 @@ interface CoreAssetParsed {
   name: string | null;
   uri: string | null;
   lamports: number;
+  // Off-chain image URL. Populated by the Helius DAS enrichment pass in
+  // buildCoreBurnTx; null on parse-time.
+  image: string | null;
 }
 
 // Borsh-decode just enough of the AssetV1 layout to know whether the asset
@@ -2135,6 +2289,7 @@ async function findCoreAssets(owner: PublicKey): Promise<CoreAssetParsed[]> {
       name: parsed.name?.replace(/\0+$/, "").trim() || null,
       uri: parsed.uri?.replace(/\0+$/, "").trim() || null,
       lamports: a.account.lamports,
+      image: null,
     });
   }
   return out;
@@ -2180,6 +2335,7 @@ export interface CoreBurnIncludedEntry {
   collection: string | null;
   name: string | null;
   uri: string | null;
+  image: string | null;
   estimatedGrossReclaimSol: number;
   reason: string;
 }
@@ -2187,6 +2343,13 @@ export interface CoreBurnIncludedEntry {
 export interface CoreBurnSkippedEntry {
   asset: string;
   reason: string;
+  // Populated only for cap-overflow / tx-size-trimmed entries — the asset is
+  // burnable, just didn't fit this batch.
+  collection?: string | null;
+  name?: string | null;
+  uri?: string | null;
+  image?: string | null;
+  estimatedGrossReclaimSol?: number;
 }
 
 export interface BuildCoreBurnTxResult {
@@ -2234,11 +2397,30 @@ export async function buildCoreBurnTx(
     candidates.push(a);
   }
 
+  // Helius DAS enrichment for Core assets — same rationale as legacy/pNFT:
+  // on-chain Core layout often stores a short or empty name; the real name
+  // and image live in off-chain JSON resolved by DAS.
+  const dasMap = await fetchAssetMetadataBatch(
+    candidates.map((a) => a.asset.toBase58()),
+  );
+  for (const a of candidates) {
+    const m = dasMap.get(a.asset.toBase58());
+    if (!m) continue;
+    if (!a.name && m.name) a.name = m.name;
+    if (!a.uri && m.uri) a.uri = m.uri;
+    if (m.image) a.image = m.image;
+  }
+
   let included = candidates.slice(0, MAX_CORE_BURN_PER_TX);
   for (const trimmed of candidates.slice(MAX_CORE_BURN_PER_TX)) {
     skippedAssets.push({
       asset: trimmed.asset.toBase58(),
       reason: `Cap of ${MAX_CORE_BURN_PER_TX} assets per tx — rebuild after this batch confirms`,
+      collection: trimmed.collection ? trimmed.collection.toBase58() : null,
+      name: trimmed.name,
+      uri: trimmed.uri,
+      image: trimmed.image,
+      estimatedGrossReclaimSol: trimmed.lamports / LAMPORTS_PER_SOL,
     });
   }
 
@@ -2303,6 +2485,11 @@ export async function buildCoreBurnTx(
       asset: dropped.asset.toBase58(),
       reason:
         "Trimmed to fit 1232-byte tx cap — rebuild after this batch confirms",
+      collection: dropped.collection ? dropped.collection.toBase58() : null,
+      name: dropped.name,
+      uri: dropped.uri,
+      image: dropped.image,
+      estimatedGrossReclaimSol: dropped.lamports / LAMPORTS_PER_SOL,
     });
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_CORE_BURN * included.length + CU_HEADROOM;
@@ -2326,6 +2513,7 @@ export async function buildCoreBurnTx(
     collection: a.collection ? a.collection.toBase58() : null,
     name: a.name,
     uri: a.uri,
+    image: a.image,
     estimatedGrossReclaimSol: a.lamports / LAMPORTS_PER_SOL,
     reason: a.collection
       ? "Core asset (collection-stamped) — full BurnV1 with collection slot wired"

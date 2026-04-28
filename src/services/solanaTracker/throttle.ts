@@ -10,8 +10,12 @@
 // this trips the upstream limiter (HTTP 429). A single in-process queue
 // keeps fan-out under control without per-call-site logic.
 
-const MIN_SPACING_MS = 750;
-const MAX_CONCURRENCY = 1;
+// Bumped from 1/750ms to 2/350ms to roughly halve group-open latency on
+// large groups while staying under SolanaTracker's free-tier rate cap. The
+// retry-on-429 ladder below is the safety net if the tighter pacing trips
+// the upstream limiter.
+const MIN_SPACING_MS = 350;
+const MAX_CONCURRENCY = 2;
 const RETRY_BACKOFFS_MS = [2000, 5000, 10000]; // 3 retries on 429
 
 let inFlight = 0;

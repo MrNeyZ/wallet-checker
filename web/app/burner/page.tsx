@@ -3,9 +3,9 @@
 // Standalone Solana Burner page. Composes the per-wallet CleanerRow from the
 // group cleaner module — that single component already implements every
 // burner requirement (collapsible burn sections default-collapsed, close-empty
-// always visible, no auto-select, preview-only burns, ReclaimSummary +
-// ActionPlan). Page chrome (title, subtitle, warning, connect CTA) is
-// burner-specific and lives here.
+// always visible, no auto-select, sign+send gated by destructive-ack +
+// audit + wallet match, ReclaimSummary + ActionPlan). Page chrome (title,
+// subtitle, warning, connect CTA) is burner-specific and lives here.
 
 import {
   CleanerRow,
@@ -43,8 +43,9 @@ function BurnerBody() {
         role="note"
         className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-200"
       >
-        <span className="font-semibold">Heads-up:</span> burn flows are
-        preview-only. Only close-empty can be signed.
+        <span className="font-semibold">Heads-up:</span> burns are destructive
+        and irreversible. Every burn requires you to acknowledge the action
+        before the sign button enables — no auto-sign anywhere.
       </div>
 
       <WalletConnectBar />
@@ -70,8 +71,9 @@ function DisconnectedCta() {
           Connect a wallet to begin
         </div>
         <p className="text-sm text-neutral-400">
-          The burner needs Phantom or Solflare to sign close-empty
-          transactions. Burn flows are preview-only and require no signature.
+          The burner needs Phantom or Solflare to sign close-empty and burn
+          transactions. Each burn flow gates the sign button on wallet match,
+          a client-side audit, and a destructive-action acknowledgement.
         </p>
         <p className="text-[11px] text-neutral-500">
           Use the “Connect wallet” button above.
