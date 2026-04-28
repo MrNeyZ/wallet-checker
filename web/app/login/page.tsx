@@ -4,6 +4,10 @@ import LoginForm from "./form";
 
 export const dynamic = "force-dynamic";
 
+// Page-level shell is intentionally bare — the Gate component (form.tsx)
+// is a full-screen takeover (`position: fixed; inset: 0`). Wrapping it in
+// the dashboard's Tailwind container would clip the dark-purple wash and
+// break pixel parity with the VictoryLabs source.
 export default async function LoginPage({
   searchParams,
 }: {
@@ -14,17 +18,5 @@ export default async function LoginPage({
   }
   const sp = await searchParams;
   const next = sp.next ?? "/groups";
-  return (
-    <div className="mx-auto max-w-sm space-y-4 py-12 ui-fade-in">
-      <h1 className="text-xl font-semibold tracking-tight text-white">Sign in</h1>
-      <p className="text-sm text-neutral-400">
-        Enter the dashboard password configured via{" "}
-        <code className="rounded bg-neutral-900 px-1 py-0.5 text-xs text-neutral-300">
-          WEB_PASSWORD
-        </code>
-        .
-      </p>
-      <LoginForm next={next} action={loginAction} />
-    </div>
-  );
+  return <LoginForm next={next} action={loginAction} />;
 }
