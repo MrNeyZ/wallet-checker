@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { addWalletAction, removeWalletAction } from "../actions";
 import { TradeFilters } from "./trade-filters";
 import { AlertMonitor } from "./alert-monitor";
+import { SignalMonitor } from "./signal-monitor";
 import { ServerAlerts } from "./server-alerts";
 import { CleanerSection } from "./cleaner";
 import { Tabs } from "./tabs";
@@ -71,19 +72,27 @@ export default async function GroupDetailPage({
     running: false,
     intervalMs: null,
   };
+  let signalStatus: { running: boolean; intervalMs: number | null } = {
+    running: false,
+    intervalMs: null,
+  };
   let alertRules: AlertRule[] = [];
   let error: string | null = null;
 
   try {
-    const [w, s, ar, groups] = await Promise.all([
+    const [w, s, sigStatus, ar, groups] = await Promise.all([
       api.getGroupWallets(id),
       api.getAlertStatus(id).catch(() => ({ running: false, intervalMs: null as number | null })),
+      api
+        .getSignalStatus(id)
+        .catch(() => ({ running: false, intervalMs: null as number | null })),
       api.listAlertRules(id).catch(() => ({ groupId: id, alerts: [] as AlertRule[] })),
       // Cheap call: just gives us the group name without forcing any provider work.
       api.listGroups().catch(() => ({ groups: [] as { id: string; name: string }[] })),
     ]);
     wallets = w.wallets;
     alertStatus = { running: s.running, intervalMs: s.intervalMs };
+    signalStatus = { running: sigStatus.running, intervalMs: sigStatus.intervalMs };
     alertRules = ar.alerts;
     const found = groups.groups.find((g) => g.id === id);
     if (found) groupName = found.name;
@@ -134,6 +143,7 @@ export default async function GroupDetailPage({
       {tab === "activity" && (
         <div className="space-y-3">
           <TradeFilters groupId={id} filters={filters} />
+          <SignalMonitor groupId={id} initialStatus={signalStatus} />
           <LazySmartSignals groupId={id} />
           <LazyTokenActivity groupId={id} />
           <LazyTrades groupId={id} filters={filters} hasFilters={hasFilters} />

@@ -27,6 +27,31 @@ export async function removeWalletAction(groupId: string, wallet: string) {
   revalidatePath("/groups");
 }
 
+export async function startSignalMonitorAction(
+  groupId: string,
+  intervalMs: number,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await api.startSignalMonitor(groupId, intervalMs);
+    revalidatePath(`/groups/${groupId}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Start failed" };
+  }
+}
+
+export async function stopSignalMonitorAction(
+  groupId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await api.stopSignalMonitor(groupId);
+    revalidatePath(`/groups/${groupId}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Stop failed" };
+  }
+}
+
 export async function startAlertsAction(
   groupId: string,
   intervalMs: number,

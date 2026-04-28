@@ -446,4 +446,18 @@ export const api = {
       `/api/groups/${groupId}/alerts/stop`,
       { method: "POST", body: "{}" },
     ),
+  getSignalStatus: (groupId: string) =>
+    request<{ groupId: string; running: boolean; intervalMs: number | null }>(
+      `/api/groups/${groupId}/signals/status`,
+    ),
+  startSignalMonitor: (groupId: string, intervalMs?: number) =>
+    request<{ groupId: string; running: boolean; intervalMs: number; started: boolean }>(
+      `/api/groups/${groupId}/signals/start`,
+      { method: "POST", body: JSON.stringify(intervalMs ? { intervalMs } : {}) },
+    ),
+  stopSignalMonitor: (groupId: string) =>
+    request<{ groupId: string; running: boolean; stopped: boolean }>(
+      `/api/groups/${groupId}/signals/stop`,
+      { method: "POST", body: "{}" },
+    ),
 };
