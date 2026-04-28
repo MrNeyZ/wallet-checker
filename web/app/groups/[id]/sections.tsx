@@ -9,10 +9,12 @@ import type {
   GroupTradesResponse,
   LpPosition,
   OverviewResponse,
+  OverviewResultItem,
   PortfolioResponse,
   TokenActivityResponse,
   TradeItem,
 } from "@/lib/api";
+import { WalletComparisonView } from "./wallet-comparison";
 import { Card } from "@/ui-kit/components/Card";
 import { Badge } from "@/ui-kit/components/Badge";
 import { SectionHeader } from "@/ui-kit/components/SectionHeader";
@@ -101,6 +103,9 @@ export function PnlOverviewView({
         ))}
       </div>
 
+      <TopWalletsView results={numericResults} />
+      <WalletComparisonView results={numericResults} />
+
       <Panel
         title="PnL overview"
         subtitle={
@@ -166,6 +171,203 @@ export function PnlOverviewView({
         )}
       </Panel>
     </section>
+  );
+}
+
+// ============================================================================
+// Top wallets — wallet scoring v1
+// ----------------------------------------------------------------------------
+// Ranks wallets by a composite score derived from existing OverviewResponse
+// fields. The spec calls for pnl + winRate + volumeUsd + recentActivityBoost,
+// but the OverviewResponse doesn't carry per-wallet volume or last-trade
+// timestamp. To keep "no new API calls" we substitute totalTrades as a proxy
+// for both volume and activity in v1; if/when overview gains volume + recency
+// fields we can plug them in here without touching the consumer UI.
+// ============================================================================
+
+const SCORE_WEIGHTS = {
+  pnl: 0.6,
+  winRate: 0.2,
+  // Activity proxy. Spec splits this into volumeUsd*0.1 + recencyBoost*0.1
+  // but we only have trade count, so we collapse both 0.1 weights into one
+  // 0.2 weight applied to the trade-count term.
+  activity: 0.2,
+} as const;
+
+export interface ScoredWallet {
+  wallet: string;
+  label: string | null;
+  score: number; // 0–100
+  pnlUsd: number;
+  winRate: number; // 0–1
+  trades: number;
+}
+
+export function computeWalletScores(
+  results: OverviewResultItem[],
+): ScoredWallet[] {
+  // Filter again here so the function is robust if called with raw results.
+  const usable = results.filter(
+    (r) =>
+      r.ok &&
+      r.summary &&
+      typeof r.summary.totalPnlUsd === "number" &&
+      Number.isFinite(r.summary.totalPnlUsd),
+  );
+  if (usable.length === 0) return [];
+
+  const pnls = usable.map((r) => r.summary!.totalPnlUsd as number);
+  const trades = usable.map((r) => r.summary!.totalTrades ?? 0);
+
+  // Min-max normalize. When all values match, every wallet gets 0.5 for that
+  // term — they're equal on that axis, so they don't differentiate the score.
+  const norm = (v: number, arr: number[]) => {
+    const min = Math.min(...arr);
+    const max = Math.max(...arr);
+    if (max === min) return 0.5;
+    return (v - min) / (max - min);
+  };
+
+  return usable
+    .map((r) => {
+      const s = r.summary!;
+      const pnlUsd = (s.totalPnlUsd as number) ?? 0;
+      // winRate is already 0–1 (or null for wallets with no trades).
+      const winRate = typeof s.winRate === "number" && Number.isFinite(s.winRate)
+        ? s.winRate
+        : 0;
+      const t = s.totalTrades ?? 0;
+      const score01 =
+        norm(pnlUsd, pnls) * SCORE_WEIGHTS.pnl +
+        winRate * SCORE_WEIGHTS.winRate +
+        norm(t, trades) * SCORE_WEIGHTS.activity;
+      return {
+        wallet: r.wallet,
+        label: r.label,
+        score: Math.round(Math.max(0, Math.min(1, score01)) * 100),
+        pnlUsd,
+        winRate,
+        trades: t,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+function TopWalletsView({ results }: { results: OverviewResultItem[] }) {
+  const ranked = computeWalletScores(results);
+  if (ranked.length === 0) return null;
+
+  return (
+    <Panel
+      title="Top wallets"
+      subtitle={
+        <span className="text-[11px] text-neutral-400">
+          Score 0–100 · pnl × {SCORE_WEIGHTS.pnl}, win rate × {SCORE_WEIGHTS.winRate}, activity × {SCORE_WEIGHTS.activity}
+        </span>
+      }
+    >
+      <div className="grid grid-cols-1 gap-px bg-neutral-800 sm:grid-cols-2 xl:grid-cols-3">
+        {ranked.map((w, i) => (
+          <TopWalletCard key={w.wallet} rank={i + 1} wallet={w} />
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+const RANK_STYLES: Record<number, { tint: string; medal: string; medalText: string; ring: string }> = {
+  1: {
+    tint: "bg-amber-500/[0.05]",
+    medal: "bg-amber-400 text-neutral-950",
+    medalText: "🥇",
+    ring: "border-l-2 border-amber-400/70",
+  },
+  2: {
+    tint: "bg-neutral-400/[0.04]",
+    medal: "bg-neutral-300 text-neutral-950",
+    medalText: "🥈",
+    ring: "border-l-2 border-neutral-300/70",
+  },
+  3: {
+    tint: "bg-orange-500/[0.05]",
+    medal: "bg-orange-400 text-neutral-950",
+    medalText: "🥉",
+    ring: "border-l-2 border-orange-400/70",
+  },
+};
+
+function TopWalletCard({ rank, wallet }: { rank: number; wallet: ScoredWallet }) {
+  const podium = RANK_STYLES[rank];
+  return (
+    <div
+      className={`flex flex-col gap-1.5 px-3 py-2.5 transition-colors duration-100 hover:bg-neutral-800/80 ${
+        podium ? `${podium.tint} ${podium.ring}` : "border-l-2 border-transparent bg-neutral-900"
+      }`}
+    >
+      {/* row 1: rank + wallet */}
+      <div className="flex items-center gap-2">
+        {podium ? (
+          <span
+            className={`inline-flex h-5 min-w-[28px] items-center justify-center rounded-md px-1.5 text-[11px] font-bold tabular-nums ${podium.medal}`}
+            aria-label={`Rank ${rank}`}
+          >
+            #{rank}
+          </span>
+        ) : (
+          <span
+            className="inline-flex h-5 min-w-[28px] items-center justify-center rounded-md bg-neutral-800 px-1.5 text-[11px] font-bold tabular-nums text-neutral-400"
+            aria-label={`Rank ${rank}`}
+          >
+            #{rank}
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          {wallet.label ? (
+            <div className="truncate text-sm font-bold text-white">
+              {wallet.label}
+            </div>
+          ) : null}
+          <div className={wallet.label ? "text-[11px]" : "text-sm font-bold text-white"}>
+            <WalletLink address={wallet.wallet} chars={4} />
+          </div>
+        </div>
+        {podium && (
+          <span aria-hidden className="text-base leading-none">
+            {podium.medalText}
+          </span>
+        )}
+      </div>
+      {/* row 2: score + pnl */}
+      <div className="flex items-baseline justify-between">
+        <span className="text-2xl font-bold tabular-nums text-white">
+          {wallet.score}
+          <span className="ml-0.5 text-[11px] font-medium text-neutral-500">
+            / 100
+          </span>
+        </span>
+        <span
+          className={`text-sm font-semibold tabular-nums ${pnlClass(wallet.pnlUsd)}`}
+        >
+          {wallet.pnlUsd > 0 ? "+" : ""}
+          {fmtUsd(wallet.pnlUsd)}
+        </span>
+      </div>
+      {/* row 3: meta */}
+      <div className="flex items-baseline justify-between text-[11px] text-neutral-400">
+        <span>
+          <span className="text-neutral-500">Win rate</span>{" "}
+          <span className="font-semibold tabular-nums text-white">
+            {fmtPercent(wallet.winRate)}
+          </span>
+        </span>
+        <span>
+          <span className="text-neutral-500">Trades</span>{" "}
+          <span className="font-semibold tabular-nums text-white">
+            {fmtNumber(wallet.trades)}
+          </span>
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -449,7 +651,65 @@ export function AirdropsView({ state }: { state: AirdropsState }) {
   );
 }
 
+// ============================================================================
+// LP Positions dashboard
+// ----------------------------------------------------------------------------
+// Card-based layout with three summary tiles, positions grouped by pair, and
+// per-position cards that emphasise value / fees / PnL like a real DeFi
+// dashboard rather than a generic data table.
+// ============================================================================
+
+interface LpPairGroup {
+  key: string;
+  label: string;
+  tokenX: LpPosition["tokenX"];
+  tokenY: LpPosition["tokenY"];
+  positions: LpPosition[];
+  totalValue: number;
+  totalFees: number;
+  totalPnl: number;
+}
+
+function groupLpPositionsByPair(positions: LpPosition[]): LpPairGroup[] {
+  const groups = new Map<string, LpPairGroup>();
+  for (const p of positions) {
+    // Stable key: prefer sorted symbols (so SOL/USDC and USDC/SOL collapse),
+    // fall back to mints when a leg has no symbol.
+    const xSym = p.tokenX.symbol;
+    const ySym = p.tokenY.symbol;
+    const key =
+      xSym && ySym
+        ? [xSym, ySym].sort().join("/")
+        : `${p.tokenX.mint}/${p.tokenY.mint}`;
+    const label = p.pairName ?? `${xSym ?? "?"}/${ySym ?? "?"}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        key,
+        label,
+        tokenX: p.tokenX,
+        tokenY: p.tokenY,
+        positions: [],
+        totalValue: 0,
+        totalFees: 0,
+        totalPnl: 0,
+      };
+      groups.set(key, g);
+    }
+    g.positions.push(p);
+    g.totalValue += p.valueUsd;
+    g.totalFees += p.unclaimedFeesUsd;
+    g.totalPnl += p.unrealizedPnlUsd;
+  }
+  // Largest group first, then by descending PnL within same value tier.
+  return [...groups.values()].sort(
+    (a, b) => b.totalValue - a.totalValue || b.totalPnl - a.totalPnl,
+  );
+}
+
 export function LpView({ data }: { data: GroupLpResponse }) {
+  const totalPnl = data.positions.reduce((s, p) => s + p.unrealizedPnlUsd, 0);
+  const groups = groupLpPositionsByPair(data.positions);
   const subtitle = (
     <>
       <span className="font-semibold text-white">{fmtUsd(data.totalValueUsd)}</span>
@@ -474,73 +734,218 @@ export function LpView({ data }: { data: GroupLpResponse }) {
           No active Meteora DLMM positions found.
         </div>
       ) : (
-        <div>
-          <div className="grid grid-cols-12 gap-3 border-b border-neutral-800 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-neutral-300">
-            <div className="col-span-2">Wallet</div>
-            <div className="col-span-1">Protocol</div>
-            <div className="col-span-2">Pair</div>
-            <div className="col-span-2 text-right">Value</div>
-            <div className="col-span-1 text-right">Fees</div>
-            <div className="col-span-2 text-right">PnL</div>
-            <div className="col-span-1 text-right">Range</div>
-            <div className="col-span-1 text-right">Created</div>
-          </div>
-          <div>
-            {data.positions.map((p) => (
-              <LpRow key={p.positionAddress} position={p} />
+        <>
+          <LpSummaryTiles
+            totalValue={data.totalValueUsd}
+            totalFees={data.totalUnclaimedFeesUsd}
+            totalPnl={totalPnl}
+          />
+          <div className="divide-y divide-neutral-800">
+            {groups.map((g) => (
+              <LpPairGroupBlock key={g.key} group={g} />
             ))}
           </div>
-        </div>
+        </>
       )}
     </Panel>
   );
 }
 
-function LpRow({ position: p }: { position: LpPosition }) {
-  const pair = p.pairName ?? `${p.tokenX.symbol ?? "?"}-${p.tokenY.symbol ?? "?"}`;
+function LpSummaryTiles({
+  totalValue,
+  totalFees,
+  totalPnl,
+}: {
+  totalValue: number;
+  totalFees: number;
+  totalPnl: number;
+}) {
+  const tiles = [
+    {
+      label: "Total LP value",
+      value: <span className="text-white">{fmtUsd(totalValue)}</span>,
+    },
+    {
+      label: "Total unclaimed fees",
+      value: <span className="text-emerald-300">{fmtUsd(totalFees)}</span>,
+    },
+    {
+      label: "Total PnL",
+      value: (
+        <span className={pnlClass(totalPnl)}>
+          {totalPnl > 0 ? "+" : ""}
+          {fmtUsd(totalPnl)}
+        </span>
+      ),
+    },
+  ];
+  return (
+    <div className="grid grid-cols-3 gap-px border-b border-neutral-800 bg-neutral-800">
+      {tiles.map((t) => (
+        <div key={t.label} className="bg-neutral-900 px-3 py-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
+            {t.label}
+          </div>
+          <div className="mt-0.5 text-xl font-bold tabular-nums">{t.value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LpPairGroupBlock({ group }: { group: LpPairGroup }) {
+  return (
+    <div>
+      <div className="flex flex-wrap items-baseline justify-between gap-2 bg-neutral-950/40 px-3 py-1.5">
+        <div className="flex items-center gap-2">
+          <PairIcons tokenX={group.tokenX} tokenY={group.tokenY} size={18} />
+          <span className="text-sm font-bold text-white">{group.label}</span>
+          <Badge variant="info">{group.positions.length}</Badge>
+        </div>
+        <span className="text-[11px] tabular-nums text-neutral-400">
+          <span className="font-semibold text-white">
+            {fmtUsd(group.totalValue)}
+          </span>
+          <span className="text-neutral-500"> · </span>
+          <span className="text-emerald-300">{fmtUsd(group.totalFees)}</span>
+          <span className="text-neutral-500"> fees</span>
+          <span className="text-neutral-500"> · </span>
+          <span className={pnlClass(group.totalPnl)}>
+            {group.totalPnl > 0 ? "+" : ""}
+            {fmtUsd(group.totalPnl)}
+          </span>
+          <span className="text-neutral-500"> PnL</span>
+        </span>
+      </div>
+      <div className="grid grid-cols-1 gap-px bg-neutral-800 sm:grid-cols-2 xl:grid-cols-3">
+        {group.positions.map((p) => (
+          <LpPositionCard key={p.positionAddress} position={p} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LpPositionCard({ position: p }: { position: LpPosition }) {
+  const pair = p.pairName ?? `${p.tokenX.symbol ?? "?"}/${p.tokenY.symbol ?? "?"}`;
+  const profitable = p.unrealizedPnlUsd > 0;
   const range =
     p.lowerBinId !== null && p.upperBinId !== null
       ? `${p.lowerBinId}…${p.upperBinId}`
       : "—";
   const created = p.createdAt
     ? new Date(p.createdAt * 1000).toISOString().slice(0, 10)
-    : "—";
+    : null;
   return (
-    <div className="grid grid-cols-12 items-center gap-3 border-b border-neutral-800 px-3 py-1.5 transition-colors duration-100 last:border-b-0 hover:bg-neutral-800/60">
-      <div className="col-span-2 min-w-0">
-        {p.label ? (
-          <span className="text-xs font-semibold text-white">{p.label}</span>
-        ) : (
-          <WalletLink address={p.wallet} chars={4} />
-        )}
-      </div>
-      <div className="col-span-1">
+    <div
+      className={`relative flex flex-col gap-1.5 bg-neutral-900 px-3 py-2.5 transition-colors duration-100 hover:bg-neutral-800/80 ${
+        profitable ? "border-l-2 border-emerald-500/50" : "border-l-2 border-transparent"
+      }`}
+    >
+      {/* row 1: pair + protocol */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <PairIcons tokenX={p.tokenX} tokenY={p.tokenY} size={20} />
+          <span className="truncate text-sm font-bold text-white">{pair}</span>
+        </div>
         <Badge variant="info">DLMM</Badge>
       </div>
-      <div className="col-span-2 min-w-0">
-        <div className="truncate text-sm font-semibold text-white">{pair}</div>
-      </div>
-      <div className="col-span-2 text-right text-sm font-bold tabular-nums text-white">
-        {fmtUsd(p.valueUsd)}
-      </div>
-      <div className="col-span-1 text-right text-sm font-semibold tabular-nums text-emerald-300">
-        {fmtUsd(p.unclaimedFeesUsd)}
-      </div>
-      <div className="col-span-2 text-right">
+      {/* row 2: value (large) + PnL */}
+      <div className="flex items-baseline justify-between">
+        <span className="text-xl font-bold tabular-nums text-white">
+          {fmtUsd(p.valueUsd)}
+        </span>
         <span
           className={`text-sm font-semibold tabular-nums ${pnlClass(p.unrealizedPnlUsd)}`}
         >
+          {p.unrealizedPnlUsd > 0 ? "+" : ""}
           {fmtUsd(p.unrealizedPnlUsd)}
+          {Number.isFinite(p.unrealizedPnlPct) && (
+            <span className="ml-1 text-[10px]">
+              ({(p.unrealizedPnlPct * 100).toFixed(1)}%)
+            </span>
+          )}
         </span>
-        {Number.isFinite(p.unrealizedPnlPct) && (
-          <span className={`ml-1 text-[10px] tabular-nums ${pnlClass(p.unrealizedPnlUsd)}`}>
-            ({(p.unrealizedPnlPct * 100).toFixed(1)}%)
-          </span>
-        )}
       </div>
-      <div className="col-span-1 text-right font-mono text-xs text-neutral-300">{range}</div>
-      <div className="col-span-1 text-right font-mono text-xs text-neutral-300">{created}</div>
+      {/* row 3: fees + range */}
+      <div className="flex items-baseline justify-between text-[11px]">
+        <span>
+          <span className="text-neutral-500">Fees</span>{" "}
+          <span className="font-semibold tabular-nums text-emerald-300">
+            {fmtUsd(p.unclaimedFeesUsd)}
+          </span>
+        </span>
+        <span className="font-mono text-neutral-300">{range}</span>
+      </div>
+      {/* row 4: meta */}
+      <div className="flex items-baseline justify-between text-[10px] text-neutral-500">
+        <span className="truncate">
+          {p.label ?? shortAddr(p.wallet, 4, 4)}
+        </span>
+        {created && <span className="font-mono">{created}</span>}
+      </div>
     </div>
+  );
+}
+
+// Stacked token-icon pair display. Falls back to the in-app tokenIconUrl
+// if the LP provider didn't supply an icon URL; final fallback is a colored
+// placeholder. Uses native <img> rather than next/image to avoid configuring
+// every CDN domain in next.config.
+function PairIcons({
+  tokenX,
+  tokenY,
+  size = 20,
+}: {
+  tokenX: LpPosition["tokenX"];
+  tokenY: LpPosition["tokenY"];
+  size?: number;
+}) {
+  const overlap = Math.round(size * 0.4);
+  const containerWidth = size * 2 - overlap;
+  return (
+    <span
+      className="relative inline-flex shrink-0 items-center"
+      style={{ width: containerWidth, height: size }}
+    >
+      <PairIcon token={tokenX} size={size} style={{ left: 0, zIndex: 2 }} />
+      <PairIcon
+        token={tokenY}
+        size={size}
+        style={{ left: size - overlap, zIndex: 1 }}
+      />
+    </span>
+  );
+}
+
+function PairIcon({
+  token,
+  size,
+  style,
+}: {
+  token: LpPosition["tokenX"];
+  size: number;
+  style: React.CSSProperties;
+}) {
+  // Deterministic fallback: small inline SVG with the token's first two
+  // characters, used when the provider didn't supply an icon URL. We don't
+  // attach an onError handler here — that would force a "use client" boundary
+  // on this server-renderable module. If a provider URL ever returns 404
+  // the broken-image glyph is fine for a leg of a pair display.
+  const placeholder = `data:image/svg+xml;utf8,${encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='12' fill='%23262626'/><text x='50%' y='55%' font-size='10' text-anchor='middle' fill='%23a3a3a3' font-family='sans-serif'>${(token.symbol ?? "?").slice(0, 2)}</text></svg>`,
+  )}`;
+  const src = token.icon ?? placeholder;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={token.symbol ?? token.mint}
+      width={size}
+      height={size}
+      className="absolute rounded-full bg-neutral-800 ring-2 ring-neutral-900"
+      style={{ width: size, height: size, ...style }}
+    />
   );
 }
 

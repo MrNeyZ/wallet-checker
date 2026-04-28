@@ -12,6 +12,7 @@ import {
   LazyLp,
   LazyPnlOverview,
   LazyPortfolio,
+  LazySmartSignals,
   LazyTokenActivity,
   LazyTrades,
 } from "./lazy";
@@ -133,6 +134,7 @@ export default async function GroupDetailPage({
       {tab === "activity" && (
         <div className="space-y-3">
           <TradeFilters groupId={id} filters={filters} />
+          <LazySmartSignals groupId={id} />
           <LazyTokenActivity groupId={id} />
           <LazyTrades groupId={id} filters={filters} hasFilters={hasFilters} />
         </div>

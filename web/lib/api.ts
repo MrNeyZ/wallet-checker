@@ -168,6 +168,26 @@ export interface CleanupScanResult {
   unknownTokenAccounts: ScannedTokenAccount[];
 }
 
+export interface BuildCloseEmptyTxResult {
+  wallet: string;
+  transactionVersion: "legacy";
+  feePayer: string;
+  requiresSignatureFrom: string;
+  maxInstructionsPerTx: number;
+  includedAccounts: ScannedTokenAccount[];
+  totalEmpty: number;
+  skippedAccounts: number;
+  estimatedReclaimSol: number;
+  estimatedBaseFeeSol: number;
+  estimatedPriorityFeeSol: number;
+  estimatedFeeSol: number;
+  estimatedNetReclaimSol: number;
+  computeUnitLimit: number;
+  priorityFeeMicrolamports: number;
+  transactionBase64: string | null;
+  warning: string;
+}
+
 export interface BurnCandidate {
   tokenAccount: string;
   mint: string;
@@ -355,10 +375,17 @@ export const api = {
     }).then((res) => {
       if (!res.ok) throw new Error(`Backend ${res.status}`);
     }),
-  getCleanupScan: (wallet: string) =>
-    request<CleanupScanResult>(`/api/wallet/${wallet}/cleanup-scan`),
+  getCleanupScan: (wallet: string, opts: { refresh?: boolean } = {}) =>
+    request<CleanupScanResult>(
+      `/api/wallet/${wallet}/cleanup-scan${opts.refresh ? "?refresh=true" : ""}`,
+    ),
   getBurnCandidates: (wallet: string) =>
     request<BurnCandidatesResult>(`/api/wallet/${wallet}/burn-candidates`),
+  buildCloseEmptyTx: (wallet: string) =>
+    request<BuildCloseEmptyTxResult>(`/api/wallet/${wallet}/close-empty-tx`, {
+      method: "POST",
+      body: "{}",
+    }),
   getGroupLpPositions: (groupId: string) =>
     request<GroupLpResponse>(`/api/groups/${groupId}/lp-positions`),
   getGroupAirdrops: async (groupId: string): Promise<AirdropsState> => {

@@ -7,6 +7,7 @@
     "start": "next start -p 3003"
   },
   "dependencies": {
+    "@solana/web3.js": "^1.98.4",
     "next": "^15.0.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

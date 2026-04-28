@@ -113,8 +113,39 @@ export async function deleteAlertRuleAction(
   }
 }
 
+export async function buildCloseEmptyTxAction(
+  wallet: string,
+): Promise<
+  | { ok: true; result: import("@/lib/api").BuildCloseEmptyTxResult }
+  | { ok: false; error: string }
+> {
+  // [cleaner-debug] temporary diagnostic logs — remove after triage.
+  const dev = process.env.NODE_ENV !== "production";
+  if (dev) console.debug("[cleaner-debug] buildCloseEmptyTxAction start", { wallet });
+  try {
+    const result = await api.buildCloseEmptyTx(wallet);
+    if (dev) {
+      console.debug("[cleaner-debug] buildCloseEmptyTxAction ok", {
+        wallet,
+        feePayer: result.feePayer,
+        requiresSignatureFrom: result.requiresSignatureFrom,
+        included: result.includedAccounts.length,
+        totalEmpty: result.totalEmpty,
+        skipped: result.skippedAccounts,
+        txB64Length: result.transactionBase64?.length ?? null,
+        txVersion: result.transactionVersion,
+      });
+    }
+    return { ok: true, result };
+  } catch (err) {
+    if (dev) console.debug("[cleaner-debug] buildCloseEmptyTxAction error", { wallet, err });
+    return { ok: false, error: err instanceof Error ? err.message : "Build failed" };
+  }
+}
+
 export async function scanCleanupAction(
   wallet: string,
+  opts: { refresh?: boolean } = {},
 ): Promise<
   | {
       ok: true;
@@ -125,7 +156,9 @@ export async function scanCleanupAction(
 > {
   try {
     const [scan, burn] = await Promise.all([
-      api.getCleanupScan(wallet),
+      api.getCleanupScan(wallet, opts),
+      // Burn-candidates internally calls scanWalletForCleanup, so it shares
+      // the same cache and refresh semantics — no separate flag needed.
       api.getBurnCandidates(wallet),
     ]);
     return { ok: true, scan, burn };
