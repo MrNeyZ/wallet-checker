@@ -6,3 +6,15 @@ dist
 .DS_Store
 data/
 backups/
+
+# Incremental build artifacts (TS project references)
+*.tsbuildinfo
+web/tsconfig.tsbuildinfo
+
+# Next.js build output
+web/.next/
+
+# Stale data tempfiles (data/ is already ignored above; this entry is
+# kept explicit so any future un-ignoring of data/*.json doesn't expose
+# in-flight tempfiles).
+data/*.tmp
