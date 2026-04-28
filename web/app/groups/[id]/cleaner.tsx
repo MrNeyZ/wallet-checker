@@ -1928,6 +1928,56 @@ function CleanerDetails({
   );
   const reclaimCtx = useMemo(() => ({ report: reportReclaim }), [reportReclaim]);
 
+  // Unified open/collapsed state for the four destructive burn cards.
+  // Default: all collapsed. Close-empty is rendered inline and always
+  // visible. State is lifted to CleanerDetails so the action-plan panel
+  // (rendered below ReclaimSummary) can expand a target section in one
+  // click. Discovery state still lives inside each section component, so
+  // toggling never re-fires the network call.
+  const [openSpl, setOpenSpl] = useState(false);
+  const [openLegacy, setOpenLegacy] = useState(false);
+  const [openPnft, setOpenPnft] = useState(false);
+  const [openCore, setOpenCore] = useState(false);
+
+  // Refs used by the action-plan "Go to / Expand" buttons to scroll the
+  // chosen section into view.
+  const closeEmptyRef = useRef<HTMLDivElement | null>(null);
+  const splRef = useRef<HTMLDivElement | null>(null);
+  const legacyRef = useRef<HTMLDivElement | null>(null);
+  const pnftRef = useRef<HTMLDivElement | null>(null);
+  const coreRef = useRef<HTMLDivElement | null>(null);
+
+  // Open the target section (if it's collapsible) and scroll its card into
+  // view. Pure UI: no fetch, no build, no sign.
+  const focusSection = useCallback((key: ReclaimKey) => {
+    let ref: React.RefObject<HTMLDivElement | null>;
+    switch (key) {
+      case "closeEmpty":
+        ref = closeEmptyRef;
+        break;
+      case "splBurn":
+        setOpenSpl(true);
+        ref = splRef;
+        break;
+      case "legacyNft":
+        setOpenLegacy(true);
+        ref = legacyRef;
+        break;
+      case "pnft":
+        setOpenPnft(true);
+        ref = pnftRef;
+        break;
+      case "core":
+        setOpenCore(true);
+        ref = coreRef;
+        break;
+    }
+    // Defer scroll one tick so the just-expanded section has rendered.
+    requestAnimationFrame(() => {
+      ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, []);
+
   function toggleSelected(mint: string): void {
     setSelectedMints((prev) => {
       const next = new Set(prev);
@@ -1956,116 +2006,143 @@ function CleanerDetails({
   return (
     <ReclaimSummaryCtx.Provider value={reclaimCtx}>
     <div className="border-t border-neutral-800 bg-neutral-950">
-      {/* SECTION 0 — Unified reclaim summary. Read-only roll-up of every
-          cleanup/burn path's discovery result. Auto-build/sign is never
-          triggered from here. */}
+      {/* SECTION 0 — Unified reclaim summary + recommended action plan.
+          Read-only roll-up of every cleanup/burn path's discovery result.
+          Auto-build/sign is never triggered from here — the plan's buttons
+          only expand and scroll. */}
       <ReclaimSummary summary={summary} />
+      <ActionPlan
+        summary={summary}
+        openSections={{
+          spl: openSpl,
+          legacy: openLegacy,
+          pnft: openPnft,
+          core: openCore,
+        }}
+        onFocus={focusSection}
+      />
 
       {/* SECTION 1 — empty accounts (closing). Plain neutral surface so this
           section reads as the "safe / implemented" path. */}
-      <SubHeader
-        label="Empty token accounts (closing)"
-        right={`${scan.emptyTokenAccounts.length} · reclaim ${fmtSol(scan.totals.estimatedReclaimSol)} SOL`}
-      />
-      {scan.emptyTokenAccounts.length === 0 ? (
-        <EmptyHint>No empty token accounts.</EmptyHint>
-      ) : (
-        <EmptyAccountsTable rows={scan.emptyTokenAccounts} />
-      )}
+      <div ref={closeEmptyRef}>
+        <SubHeader
+          label="Empty token accounts (closing)"
+          right={`${scan.emptyTokenAccounts.length} · reclaim ${fmtSol(scan.totals.estimatedReclaimSol)} SOL`}
+        />
+        {scan.emptyTokenAccounts.length === 0 ? (
+          <EmptyHint>No empty token accounts.</EmptyHint>
+        ) : (
+          <EmptyAccountsTable rows={scan.emptyTokenAccounts} />
+        )}
+      </div>
 
       {/* SECTION 2 — burn candidates. Visually quarantined inside a red-tinted
           card so it reads as a separate, dangerous surface. Preview-only:
           this UI builds an unsigned tx via the backend and renders it; sign +
           send for burns is intentionally NOT wired to the close-empty
           Sign & send button. */}
-      <div className="m-3 overflow-hidden rounded-md border-2 border-red-500/40 bg-red-500/[0.04]">
-        <div className="flex items-baseline justify-between border-b border-red-500/30 bg-red-500/10 px-3 py-1.5">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-red-300">
-            Burn candidates · destructive · preview only
-          </span>
-          <span className="text-[11px] tabular-nums text-red-300/80">
-            {burn.count} · est. reclaim {fmtSol(burn.totalEstimatedReclaimSol)} SOL
-          </span>
-        </div>
-        <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] font-semibold text-red-300">
-          ⚠ Burning tokens is destructive and irreversible.
-        </div>
-        {burn.warning && (
-          <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
-            ⚠ {burn.warning}
-          </div>
-        )}
-        {burn.candidates.length === 0 ? (
-          <EmptyHint>No fungible burn candidates.</EmptyHint>
-        ) : (
+      <div
+        ref={splRef}
+        className="m-3 overflow-hidden rounded-md border-2 border-red-500/40 bg-red-500/[0.04]"
+      >
+        <CollapsibleBurnHeader
+          collapsed={!openSpl}
+          onToggle={() => setOpenSpl((v) => !v)}
+          title="SPL burn · destructive · preview only"
+          count={`${burn.count} candidate${burn.count === 1 ? "" : "s"}`}
+          estSol={burn.totalEstimatedReclaimSol}
+          toneBorder="border-red-500/30"
+          toneBg="bg-red-500/10"
+          toneText="text-red-300"
+        />
+        {openSpl && (
           <>
-            <BurnCandidatesTable
-              rows={burn.candidates}
-              selected={selectedMints}
-              onToggle={toggleSelected}
-            />
-            <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-2">
-              <button
-                type="button"
-                onClick={handleBuildBurnTx}
-                disabled={!canBuild}
-                title={
-                  selectedMints.size === 0
-                    ? "Select at least one candidate above"
-                    : undefined
-                }
-                aria-label="Build burn transaction"
-                className={
-                  canBuild
-                    ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-4 py-2 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
-                    : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-4 py-2 text-sm font-bold text-red-300/60 cursor-not-allowed"
-                }
-              >
-                {burnBuild.status === "loading" || burnPending
-                  ? "Building…"
-                  : burnBuild.status === "ready"
-                  ? "Rebuild burn transaction"
-                  : "Build burn transaction"}
-              </button>
-              <span className="text-[11px] text-red-200/70">
-                {selectedMints.size === 0
-                  ? "Select at least one candidate to build"
-                  : `${selectedMints.size} selected`}
-              </span>
+            <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-1.5 text-[11px] font-semibold text-red-300">
+              ⚠ Burning tokens is destructive and irreversible. Manual review
+              required — sign + send is not wired in this UI.
             </div>
-            {burnBuild.status === "error" && (
-              <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                Build failed: {burnBuild.error}
+            {burn.warning && (
+              <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
+                ⚠ {burn.warning}
               </div>
             )}
-            {burnBuild.status === "ready" && (
-              <BurnTxPreview result={burnBuild.result} />
+            {burn.candidates.length === 0 ? (
+              <EmptyHint>No fungible burn candidates.</EmptyHint>
+            ) : (
+              <>
+                <BurnCandidatesTable
+                  rows={burn.candidates}
+                  selected={selectedMints}
+                  onToggle={toggleSelected}
+                />
+                <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-1.5">
+                  <button
+                    type="button"
+                    onClick={handleBuildBurnTx}
+                    disabled={!canBuild}
+                    title={
+                      selectedMints.size === 0
+                        ? "Select at least one candidate above"
+                        : undefined
+                    }
+                    aria-label="Build burn transaction"
+                    className={
+                      canBuild
+                        ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
+                        : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
+                    }
+                  >
+                    {burnBuild.status === "loading" || burnPending
+                      ? "Building…"
+                      : burnBuild.status === "ready"
+                      ? "Rebuild burn transaction"
+                      : "Build burn transaction"}
+                  </button>
+                  <span className="text-[11px] text-red-200/70">
+                    {selectedMints.size === 0
+                      ? "Select at least one candidate to build"
+                      : `${selectedMints.size} selected`}
+                  </span>
+                </div>
+                {burnBuild.status === "error" && (
+                  <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+                    Build failed: {burnBuild.error}
+                  </div>
+                )}
+                {burnBuild.status === "ready" && (
+                  <BurnTxPreview result={burnBuild.result} />
+                )}
+              </>
             )}
           </>
         )}
-        <div className="border-t border-red-500/20 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
-          Manual review required. Never burn tokens automatically. Sign + send
-          for burns is intentionally not implemented in this UI.
-        </div>
       </div>
 
       {/* SECTION 3 — Legacy Metaplex NFT burn (Milestone 1).
           Distinct red-quarantined card from the SPL fungible burn above.
           Backend BurnV1 reclaims token + metadata + master edition rent. */}
-      <LegacyNftBurnSection
-        walletAddress={walletAddress}
-        nftAccountCount={scan.nftTokenAccounts.length}
-      />
+      <div ref={legacyRef}>
+        <LegacyNftBurnSection
+          walletAddress={walletAddress}
+          nftAccountCount={scan.nftTokenAccounts.length}
+          collapsed={!openLegacy}
+          onToggle={() => setOpenLegacy((v) => !v)}
+        />
+      </div>
 
       {/* SECTION 4 — Programmable NFT (pNFT) burn (Milestone 2).
           Adds token-record + collection-metadata + auth-rules accounts and
           a backend preflight simulation gate. Visually distinct from the
           legacy NFT card — a slightly deeper red border so the user can't
           confuse the two flows. */}
-      <PnftBurnSection
-        walletAddress={walletAddress}
-        nftAccountCount={scan.nftTokenAccounts.length}
-      />
+      <div ref={pnftRef}>
+        <PnftBurnSection
+          walletAddress={walletAddress}
+          nftAccountCount={scan.nftTokenAccounts.length}
+          collapsed={!openPnft}
+          onToggle={() => setOpenPnft((v) => !v)}
+        />
+      </div>
 
       {/* SECTION 5 — Metaplex Core asset burn (Milestone 3).
           Core assets are NOT held in SPL token accounts — they're standalone
@@ -2073,7 +2150,13 @@ function CleanerDetails({
           doesn't see them, so this section always probes the chain on mount
           (no nftAccountCount gate). Reclaims the Core asset account rent via
           Core BurnV1 and gates on a backend preflight simulation. */}
-      <CoreBurnSection walletAddress={walletAddress} />
+      <div ref={coreRef}>
+        <CoreBurnSection
+          walletAddress={walletAddress}
+          collapsed={!openCore}
+          onToggle={() => setOpenCore((v) => !v)}
+        />
+      </div>
     </div>
     </ReclaimSummaryCtx.Provider>
   );
@@ -2096,16 +2179,26 @@ function ReclaimSummary({ summary }: { summary: ReclaimSummaryState }) {
   ];
 
   // Sum all rows where status === "ready". loading / rejected / error /
-  // empty all contribute 0.
+  // empty all contribute 0. Also identify the single best-ROI row so it
+  // can be highlighted in the grid below.
   let total = 0;
   let anyLoading = false;
+  let bestKey: ReclaimKey | null = null;
+  let bestValue = 0;
   for (const r of rows) {
     const e = summary[r.key];
-    if (e.status === "ready" && e.value !== null) total += e.value;
+    if (e.status === "ready" && e.value !== null) {
+      total += e.value;
+      // Strict > so a single 0 doesn't become the "best".
+      if (e.value > bestValue) {
+        bestValue = e.value;
+        bestKey = r.key;
+      }
+    }
     if (e.status === "loading") anyLoading = true;
   }
 
-  function renderValue(e: ReclaimEntry): React.ReactNode {
+  function renderValue(e: ReclaimEntry, isBest: boolean): React.ReactNode {
     if (e.status === "loading") {
       return <span className="text-neutral-500">—</span>;
     }
@@ -2130,14 +2223,20 @@ function ReclaimSummary({ summary }: { summary: ReclaimSummaryState }) {
       return <span className="tabular-nums text-neutral-400">0</span>;
     }
     return (
-      <span className="tabular-nums font-semibold text-emerald-300">
+      <span
+        className={
+          isBest
+            ? "tabular-nums font-bold text-emerald-300"
+            : "tabular-nums font-semibold text-emerald-300/70"
+        }
+      >
         {fmtSol(e.value)}
       </span>
     );
   }
 
   return (
-    <div className="border-b border-neutral-800 bg-neutral-900/60 px-3 py-2">
+    <div className="border-b border-neutral-800 bg-neutral-900/60 px-3 py-1.5">
       <div className="mb-1 flex items-baseline justify-between">
         <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-300">
           Total possible reclaim
@@ -2150,17 +2249,202 @@ function ReclaimSummary({ summary }: { summary: ReclaimSummaryState }) {
           SOL
         </span>
       </div>
-      <ul className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] sm:grid-cols-3 md:grid-cols-5">
-        {rows.map((r) => (
-          <li
-            key={r.key}
-            className="flex items-baseline justify-between gap-2"
-          >
-            <span className="text-neutral-400">{r.label}</span>
-            <span>{renderValue(summary[r.key])}</span>
-          </li>
-        ))}
+      <ul className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] sm:grid-cols-3 md:grid-cols-5">
+        {rows.map((r) => {
+          const isBest = bestKey === r.key;
+          return (
+            <li
+              key={r.key}
+              className={
+                isBest
+                  ? "flex items-baseline justify-between gap-2 rounded border border-emerald-500/40 bg-emerald-500/[0.08] px-1.5 py-0.5 ring-1 ring-emerald-500/20"
+                  : "flex items-baseline justify-between gap-2 px-1.5 py-0.5"
+              }
+              title={isBest ? "Largest reclaim source" : undefined}
+            >
+              <span
+                className={
+                  isBest ? "font-semibold text-emerald-200" : "text-neutral-400"
+                }
+              >
+                {r.label}
+              </span>
+              <span>{renderValue(summary[r.key], isBest)}</span>
+            </li>
+          );
+        })}
       </ul>
+    </div>
+  );
+}
+
+// =============================================================================
+// Recommended action plan — compact ordered checklist rendered directly
+// under ReclaimSummary. Read-only: the only action surfaced is "Go to" /
+// "Expand", which scrolls the corresponding section into view (and
+// expands it if collapsible). No build, sign, or selection is triggered.
+//
+// Step order is fixed by the spec and matches the safest cleanup order:
+//   1. Close empty   (fully implemented sign+send path)
+//   2. SPL burn      (preview only)
+//   3. Legacy NFT    (preview only)
+//   4. pNFT          (preview only, simulation-gated)
+//   5. Core          (preview only, simulation-gated)
+// =============================================================================
+
+type ActionPlanStatusKind =
+  | "ready"           // close-empty has items; sign+send wired
+  | "preview"         // burn section has burnable items; preview only
+  | "scanning"        // discovery in flight
+  | "unavailable"     // empty / error / rejected
+  | "rejected";       // pNFT/Core preflight simulation failed
+
+function ActionPlan({
+  summary,
+  openSections,
+  onFocus,
+}: {
+  summary: ReclaimSummaryState;
+  openSections: { spl: boolean; legacy: boolean; pnft: boolean; core: boolean };
+  onFocus: (key: ReclaimKey) => void;
+}) {
+  // Translate a summary entry + its category into a displayable plan
+  // status. Close-empty has a real sign+send path so it gets "ready";
+  // every other category renders as "preview" when there are items.
+  function statusFor(
+    key: ReclaimKey,
+    entry: ReclaimEntry,
+  ): ActionPlanStatusKind {
+    if (entry.status === "loading") return "scanning";
+    if (entry.status === "error") return "unavailable";
+    if (entry.status === "rejected") return "rejected";
+    if (entry.status === "empty") return "unavailable";
+    if (entry.value === null || entry.value === 0) return "unavailable";
+    return key === "closeEmpty" ? "ready" : "preview";
+  }
+
+  function isOpen(key: ReclaimKey): boolean {
+    if (key === "closeEmpty") return true; // always rendered inline
+    if (key === "splBurn") return openSections.spl;
+    if (key === "legacyNft") return openSections.legacy;
+    if (key === "pnft") return openSections.pnft;
+    return openSections.core;
+  }
+
+  const steps: { key: ReclaimKey; n: number; label: string }[] = [
+    { key: "closeEmpty", n: 1, label: "Close empty accounts" },
+    { key: "splBurn", n: 2, label: "SPL burn preview" },
+    { key: "legacyNft", n: 3, label: "Legacy NFT burn preview" },
+    { key: "pnft", n: 4, label: "pNFT burn preview" },
+    { key: "core", n: 5, label: "Core burn preview" },
+  ];
+
+  function renderStatus(s: ActionPlanStatusKind): React.ReactNode {
+    switch (s) {
+      case "ready":
+        return (
+          <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300 ring-1 ring-emerald-500/30">
+            ready
+          </span>
+        );
+      case "preview":
+        return (
+          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300 ring-1 ring-amber-500/30">
+            preview only
+          </span>
+        );
+      case "scanning":
+        return (
+          <span className="rounded bg-neutral-700/40 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-neutral-300 ring-1 ring-neutral-600/40">
+            scanning…
+          </span>
+        );
+      case "rejected":
+        return (
+          <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-300 ring-1 ring-red-500/30">
+            rejected
+          </span>
+        );
+      case "unavailable":
+        return (
+          <span className="rounded bg-neutral-800/60 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500 ring-1 ring-neutral-700/40">
+            unavailable
+          </span>
+        );
+    }
+  }
+
+  return (
+    <div className="border-b border-neutral-800 bg-neutral-900/40 px-3 py-1.5">
+      <div className="mb-1 flex items-baseline justify-between">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-300">
+          Recommended plan
+        </span>
+        <span className="text-[10px] italic text-neutral-500">
+          read-only · no auto-sign
+        </span>
+      </div>
+      <ol className="space-y-0.5 text-[11px]">
+        {steps.map(({ key, n, label }) => {
+          const entry = summary[key];
+          const s = statusFor(key, entry);
+          const sol =
+            entry.status === "ready" && entry.value !== null
+              ? entry.value
+              : null;
+          const open = isOpen(key);
+          // Disable the action button only when there's nothing to do
+          // (unavailable / rejected). Scanning still allows scrolling so
+          // the user can watch progress in-section.
+          const actionDisabled = s === "unavailable" || s === "rejected";
+          // Close-empty is always inline-expanded → label is "Go to".
+          // Otherwise label flips on whether the target is open.
+          const actionLabel =
+            key === "closeEmpty"
+              ? "Go to"
+              : open
+              ? "Scroll to →"
+              : "Expand →";
+          return (
+            <li
+              key={key}
+              className="grid grid-cols-12 items-center gap-2"
+            >
+              <span className="col-span-1 text-neutral-500 tabular-nums">
+                {n}.
+              </span>
+              <span className="col-span-4 truncate text-neutral-200">
+                {label}
+              </span>
+              <span className="col-span-2">{renderStatus(s)}</span>
+              <span className="col-span-3 text-right tabular-nums">
+                {sol === null ? (
+                  <span className="text-neutral-500">—</span>
+                ) : (
+                  <span className="font-semibold text-emerald-300">
+                    {fmtSol(sol)} SOL
+                  </span>
+                )}
+              </span>
+              <span className="col-span-2 text-right">
+                <button
+                  type="button"
+                  onClick={() => onFocus(key)}
+                  disabled={actionDisabled}
+                  aria-label={`${actionLabel} ${label}`}
+                  className={
+                    actionDisabled
+                      ? "rounded border border-neutral-700/50 bg-neutral-800/40 px-2 py-0.5 text-[10px] font-semibold text-neutral-500 cursor-not-allowed"
+                      : "rounded border border-emerald-500/40 bg-emerald-500/[0.08] px-2 py-0.5 text-[10px] font-semibold text-emerald-200 transition-colors duration-100 hover:bg-emerald-500/15"
+                  }
+                >
+                  {actionLabel}
+                </button>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }
@@ -2407,11 +2691,8 @@ function BurnTxPreview({ result }: { result: BuildBurnAndCloseTxResult }) {
         </span>
         <Badge variant="sell">unsigned · destructive</Badge>
       </div>
-      <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-200">
-        ⚠ Burning tokens is destructive and irreversible.
-      </div>
       {result.warning && (
-        <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+        <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
           ⚠ {result.warning}
         </div>
       )}
@@ -2440,8 +2721,8 @@ function BurnTxPreview({ result }: { result: BuildBurnAndCloseTxResult }) {
           </div>
         ))}
       </dl>
-      <div className="border-t border-red-500/30 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
-        Preview only. Sign + send for burns is intentionally not wired in this UI.
+      <div className="border-t border-red-500/30 bg-neutral-950 px-3 py-1 text-center text-[10px] text-red-300/70">
+        Preview only · sign + send not wired
       </div>
     </div>
   );
@@ -2469,9 +2750,13 @@ type LegacyBuildState =
 function LegacyNftBurnSection({
   walletAddress,
   nftAccountCount,
+  collapsed,
+  onToggle,
 }: {
   walletAddress: string;
   nftAccountCount: number;
+  collapsed: boolean;
+  onToggle: () => void;
 }) {
   const [discover, setDiscover] = useState<LegacyDiscoverState>(
     nftAccountCount === 0 ? { status: "empty" } : { status: "loading" },
@@ -2574,108 +2859,119 @@ function LegacyNftBurnSection({
     build.status !== "loading" &&
     !buildPending;
 
+  // Collapsed/onToggle are controlled by the parent (CleanerDetails) so the
+  // unified action-plan panel above can expand a specific section on demand.
+  // Discovery state stays local to this component, so toggling never
+  // re-fires the network call.
+
+  // Header summary numbers — count of burnable items and an upper-bound
+  // SOL estimate (per-NFT × totalBurnable). Falls back to "scanning…" while
+  // discovery is in flight.
+  const headerCount =
+    discover.status === "ready"
+      ? `${discover.result.totalBurnable} burnable`
+      : discover.status === "loading"
+      ? null
+      : "0 burnable";
+  const headerSol =
+    discover.status === "ready"
+      ? (discover.result.includedNfts[0]?.estimatedGrossReclaimSol ?? 0) *
+        discover.result.totalBurnable
+      : null;
+
   return (
     <div className="m-3 overflow-hidden rounded-md border-2 border-red-500/40 bg-red-500/[0.04]">
-      <div className="flex items-baseline justify-between border-b border-red-500/30 bg-red-500/10 px-3 py-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-red-300">
-          Legacy NFT burn · max reclaim
-        </span>
-        <span className="text-[11px] tabular-nums text-red-300/80">
-          {discover.status === "ready"
-            ? `${discover.result.totalBurnable} burnable · est. ${fmtSol(
-                (discover.result.includedNfts[0]?.estimatedGrossReclaimSol ?? 0) *
-                  discover.result.totalBurnable,
-              )} SOL`
-            : discover.status === "loading"
-            ? "scanning…"
-            : ""}
-        </span>
-      </div>
-      <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] font-semibold text-red-300">
-        ⚠ Burning NFTs is destructive and irreversible.
-      </div>
-      <div className="border-b border-red-500/15 bg-red-950/30 px-3 py-1.5 text-[11px] text-red-200/80">
-        ℹ Uses Metaplex BurnV1 and reclaims token account + metadata + master
-        edition rent.
-      </div>
-
-      {discover.status === "empty" && (
-        <EmptyHint>No NFT-shaped token accounts found in this wallet.</EmptyHint>
-      )}
-
-      {discover.status === "loading" && (
-        <EmptyHint>Discovering legacy NFTs…</EmptyHint>
-      )}
-
-      {discover.status === "error" && (
-        <div className="bg-red-500/10 px-3 py-2 text-xs text-red-300">
-          Discovery failed: {discover.error}
-        </div>
-      )}
-
-      {discover.status === "ready" && candidates && (
+      <CollapsibleBurnHeader
+        collapsed={collapsed}
+        onToggle={onToggle}
+        title="Legacy NFT burn · max reclaim"
+        count={headerCount}
+        estSol={headerSol}
+        toneBorder="border-red-500/30"
+        toneBg="bg-red-500/10"
+        toneText="text-red-300"
+      />
+      {!collapsed && (
         <>
-          {candidates.burnable.length === 0 ? (
+          <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-1.5 text-[11px] font-semibold text-red-300">
+            ⚠ Destructive and irreversible. Manual review required — sign +
+            send is not wired in this UI.
+          </div>
+
+          {discover.status === "empty" && (
             <EmptyHint>
-              No legacy Metaplex NFTs eligible for BurnV1. See skipped reasons
-              below for non-burnable items.
+              No NFT-shaped token accounts found in this wallet.
             </EmptyHint>
-          ) : (
+          )}
+          {discover.status === "loading" && (
+            <EmptyHint>Discovering legacy NFTs…</EmptyHint>
+          )}
+          {discover.status === "error" && (
+            <div className="bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+              Discovery failed: {discover.error}
+            </div>
+          )}
+
+          {discover.status === "ready" && candidates && (
             <>
-              <LegacyNftCandidatesTable
-                rows={candidates.burnable}
-                selected={selectedMints}
-                onToggle={toggleSelected}
-              />
-              <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-2">
-                <button
-                  type="button"
-                  onClick={handleBuild}
-                  disabled={!canBuild}
-                  title={
-                    selectedMints.size === 0
-                      ? "Select at least one NFT above"
-                      : undefined
-                  }
-                  aria-label="Build legacy NFT burn transaction"
-                  className={
-                    canBuild
-                      ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-4 py-2 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
-                      : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-4 py-2 text-sm font-bold text-red-300/60 cursor-not-allowed"
-                  }
-                >
-                  {build.status === "loading" || buildPending
-                    ? "Building…"
-                    : build.status === "ready"
-                    ? "Rebuild legacy NFT burn"
-                    : "Build legacy NFT burn"}
-                </button>
-                <span className="text-[11px] text-red-200/70">
-                  {selectedMints.size === 0
-                    ? "Select at least one NFT to build"
-                    : `${selectedMints.size} selected · backend caps at 3 per tx`}
-                </span>
-              </div>
-              {build.status === "error" && (
-                <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                  Build failed: {build.error}
-                </div>
+              {candidates.burnable.length === 0 ? (
+                <EmptyHint>
+                  No legacy Metaplex NFTs eligible for BurnV1. See skipped
+                  reasons below for non-burnable items.
+                </EmptyHint>
+              ) : (
+                <>
+                  <LegacyNftCandidatesTable
+                    rows={candidates.burnable}
+                    selected={selectedMints}
+                    onToggle={toggleSelected}
+                  />
+                  <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-1.5">
+                    <button
+                      type="button"
+                      onClick={handleBuild}
+                      disabled={!canBuild}
+                      title={
+                        selectedMints.size === 0
+                          ? "Select at least one NFT above"
+                          : undefined
+                      }
+                      aria-label="Build legacy NFT burn transaction"
+                      className={
+                        canBuild
+                          ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
+                          : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
+                      }
+                    >
+                      {build.status === "loading" || buildPending
+                        ? "Building…"
+                        : build.status === "ready"
+                        ? "Rebuild legacy NFT burn"
+                        : "Build legacy NFT burn"}
+                    </button>
+                    <span className="text-[11px] text-red-200/70">
+                      {selectedMints.size === 0
+                        ? "Select at least one NFT to build"
+                        : `${selectedMints.size} selected · backend caps at 3 per tx`}
+                    </span>
+                  </div>
+                  {build.status === "error" && (
+                    <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+                      Build failed: {build.error}
+                    </div>
+                  )}
+                  {build.status === "ready" && (
+                    <LegacyNftBurnPreview result={build.result} />
+                  )}
+                </>
               )}
-              {build.status === "ready" && (
-                <LegacyNftBurnPreview result={build.result} />
+              {candidates.nonBurnable.length > 0 && (
+                <NonBurnableNftSummary entries={candidates.nonBurnable} />
               )}
             </>
           )}
-          {candidates.nonBurnable.length > 0 && (
-            <NonBurnableNftSummary entries={candidates.nonBurnable} />
-          )}
         </>
       )}
-
-      <div className="border-t border-red-500/20 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
-        Manual review required. Sign + send for legacy NFT burn is not yet
-        wired in this UI.
-      </div>
     </div>
   );
 }
@@ -2986,11 +3282,8 @@ function LegacyNftBurnPreview({
         </span>
         <Badge variant="sell">unsigned · destructive</Badge>
       </div>
-      <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-200">
-        ⚠ Burning NFTs is destructive and irreversible.
-      </div>
       {result.warning && (
-        <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+        <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
           ⚠ {result.warning}
         </div>
       )}
@@ -3050,9 +3343,8 @@ function LegacyNftBurnPreview({
           </div>
         ))}
       </dl>
-      <div className="border-t border-red-500/30 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
-        Preview only. Sign + send for legacy NFT burn is intentionally not
-        wired in this UI.
+      <div className="border-t border-red-500/30 bg-neutral-950 px-3 py-1 text-center text-[10px] text-red-300/70">
+        Preview only · sign + send not wired
       </div>
     </div>
   );
@@ -3082,9 +3374,13 @@ type PnftBuildState =
 function PnftBurnSection({
   walletAddress,
   nftAccountCount,
+  collapsed,
+  onToggle,
 }: {
   walletAddress: string;
   nftAccountCount: number;
+  collapsed: boolean;
+  onToggle: () => void;
 }) {
   const [discover, setDiscover] = useState<PnftDiscoverState>(
     nftAccountCount === 0 ? { status: "empty" } : { status: "loading" },
@@ -3189,107 +3485,116 @@ function PnftBurnSection({
     build.status !== "loading" &&
     !buildPending;
 
+  // collapsed/onToggle come from CleanerDetails so the action-plan panel
+  // above can drive expansion. Local discovery/build state is unaffected.
+
+  const headerCount =
+    discover.status === "ready"
+      ? `${discover.result.totalBurnable} burnable`
+      : discover.status === "loading"
+      ? null
+      : "0 burnable";
+  const headerSol =
+    discover.status === "ready"
+      ? (discover.result.includedPnfts[0]?.estimatedGrossReclaimSol ?? 0) *
+        discover.result.totalBurnable
+      : null;
+
   return (
     <div className="m-3 overflow-hidden rounded-md border-2 border-red-600/50 bg-red-500/[0.05]">
-      <div className="flex items-baseline justify-between border-b border-red-600/40 bg-red-600/15 px-3 py-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
-          pNFT burn · max reclaim
-        </span>
-        <span className="text-[11px] tabular-nums text-red-200/80">
-          {discover.status === "ready"
-            ? `${discover.result.totalBurnable} burnable · est. ${fmtSol(
-                (discover.result.includedPnfts[0]?.estimatedGrossReclaimSol ?? 0) *
-                  discover.result.totalBurnable,
-              )} SOL`
-            : discover.status === "loading"
-            ? "scanning…"
-            : ""}
-        </span>
-      </div>
-      <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-200">
-        ⚠ Burning pNFTs is destructive and irreversible.
-      </div>
-      <div className="border-b border-red-500/15 bg-red-950/30 px-3 py-1.5 text-[11px] text-red-200/80">
-        ℹ Uses Metaplex BurnV1 with token record, collection metadata, and
-        auth-rules when required.
-      </div>
-
-      {discover.status === "empty" && (
-        <EmptyHint>No NFT-shaped token accounts found in this wallet.</EmptyHint>
-      )}
-      {discover.status === "loading" && (
-        <EmptyHint>Discovering pNFTs…</EmptyHint>
-      )}
-      {discover.status === "error" && (
-        <div className="bg-red-500/10 px-3 py-2 text-xs text-red-300">
-          Discovery failed: {discover.error}
-        </div>
-      )}
-
-      {discover.status === "ready" && candidates && (
+      <CollapsibleBurnHeader
+        collapsed={collapsed}
+        onToggle={onToggle}
+        title="pNFT burn · max reclaim"
+        count={headerCount}
+        estSol={headerSol}
+        toneBorder="border-red-600/40"
+        toneBg="bg-red-600/15"
+        toneText="text-red-200"
+      />
+      {!collapsed && (
         <>
-          {candidates.burnable.length === 0 ? (
+          <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-1.5 text-[11px] font-semibold text-red-200">
+            ⚠ Destructive and irreversible. Uses Metaplex BurnV1 with token
+            record, collection metadata, and auth-rules. Sign + send is not
+            wired in this UI.
+          </div>
+
+          {discover.status === "empty" && (
             <EmptyHint>
-              No pNFTs eligible for BurnV1 in this wallet. See skipped reasons
-              below — pNFTs with missing token records or unsupported standards
-              don't qualify in this milestone.
+              No NFT-shaped token accounts found in this wallet.
             </EmptyHint>
-          ) : (
+          )}
+          {discover.status === "loading" && (
+            <EmptyHint>Discovering pNFTs…</EmptyHint>
+          )}
+          {discover.status === "error" && (
+            <div className="bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+              Discovery failed: {discover.error}
+            </div>
+          )}
+
+          {discover.status === "ready" && candidates && (
             <>
-              <PnftCandidatesTable
-                rows={candidates.burnable}
-                selected={selectedMints}
-                onToggle={toggleSelected}
-              />
-              <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-2">
-                <button
-                  type="button"
-                  onClick={handleBuild}
-                  disabled={!canBuild}
-                  title={
-                    selectedMints.size === 0
-                      ? "Select at least one pNFT above"
-                      : undefined
-                  }
-                  aria-label="Build pNFT burn transaction"
-                  className={
-                    canBuild
-                      ? "inline-flex items-center rounded-lg border-2 border-red-600/70 bg-red-700 px-4 py-2 text-sm font-bold text-white shadow shadow-red-700/40 transition-colors duration-100 hover:bg-red-600"
-                      : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-4 py-2 text-sm font-bold text-red-300/60 cursor-not-allowed"
-                  }
-                >
-                  {build.status === "loading" || buildPending
-                    ? "Building…"
-                    : build.status === "ready"
-                    ? "Rebuild pNFT burn"
-                    : "Build pNFT burn"}
-                </button>
-                <span className="text-[11px] text-red-200/70">
-                  {selectedMints.size === 0
-                    ? "Select at least one pNFT to build"
-                    : `${selectedMints.size} selected · backend caps at 2 per tx`}
-                </span>
-              </div>
-              {build.status === "error" && (
-                <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                  Build failed: {build.error}
-                </div>
+              {candidates.burnable.length === 0 ? (
+                <EmptyHint>
+                  No pNFTs eligible for BurnV1 in this wallet. See skipped
+                  reasons below — pNFTs with missing token records or
+                  unsupported standards don't qualify in this milestone.
+                </EmptyHint>
+              ) : (
+                <>
+                  <PnftCandidatesTable
+                    rows={candidates.burnable}
+                    selected={selectedMints}
+                    onToggle={toggleSelected}
+                  />
+                  <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-1.5">
+                    <button
+                      type="button"
+                      onClick={handleBuild}
+                      disabled={!canBuild}
+                      title={
+                        selectedMints.size === 0
+                          ? "Select at least one pNFT above"
+                          : undefined
+                      }
+                      aria-label="Build pNFT burn transaction"
+                      className={
+                        canBuild
+                          ? "inline-flex items-center rounded-lg border-2 border-red-600/70 bg-red-700 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-700/40 transition-colors duration-100 hover:bg-red-600"
+                          : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
+                      }
+                    >
+                      {build.status === "loading" || buildPending
+                        ? "Building…"
+                        : build.status === "ready"
+                        ? "Rebuild pNFT burn"
+                        : "Build pNFT burn"}
+                    </button>
+                    <span className="text-[11px] text-red-200/70">
+                      {selectedMints.size === 0
+                        ? "Select at least one pNFT to build"
+                        : `${selectedMints.size} selected · backend caps at 2 per tx`}
+                    </span>
+                  </div>
+                  {build.status === "error" && (
+                    <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+                      Build failed: {build.error}
+                    </div>
+                  )}
+                  {build.status === "ready" && (
+                    <PnftBurnPreview result={build.result} />
+                  )}
+                </>
               )}
-              {build.status === "ready" && (
-                <PnftBurnPreview result={build.result} />
+              {candidates.nonBurnable.length > 0 && (
+                <NonBurnableNftSummary entries={candidates.nonBurnable} />
               )}
             </>
           )}
-          {candidates.nonBurnable.length > 0 && (
-            <NonBurnableNftSummary entries={candidates.nonBurnable} />
-          )}
         </>
       )}
-
-      <div className="border-t border-red-500/20 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
-        Manual review required. Sign + send for pNFT burn is not yet wired in
-        this UI.
-      </div>
     </div>
   );
 }
@@ -3466,11 +3771,8 @@ function PnftBurnPreview({ result }: { result: BuildPnftBurnTxResult }) {
         </span>
         <Badge variant="sell">unsigned · destructive</Badge>
       </div>
-      <div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-200">
-        ⚠ Burning pNFTs is destructive and irreversible.
-      </div>
       {result.warning && (
-        <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+        <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
           ⚠ {result.warning}
         </div>
       )}
@@ -3526,9 +3828,8 @@ function PnftBurnPreview({ result }: { result: BuildPnftBurnTxResult }) {
           </div>
         ))}
       </dl>
-      <div className="border-t border-red-600/30 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
-        Preview only. Sign + send for pNFT burn is intentionally not wired in
-        this UI.
+      <div className="border-t border-red-600/30 bg-neutral-950 px-3 py-1 text-center text-[10px] text-red-300/70">
+        Preview only · sign + send not wired
       </div>
     </div>
   );
@@ -3557,7 +3858,15 @@ type CoreBuildState =
   | { status: "ready"; result: BuildCoreBurnTxResult }
   | { status: "error"; error: string };
 
-function CoreBurnSection({ walletAddress }: { walletAddress: string }) {
+function CoreBurnSection({
+  walletAddress,
+  collapsed,
+  onToggle,
+}: {
+  walletAddress: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
   const [discover, setDiscover] = useState<CoreDiscoverState>({
     status: "loading",
   });
@@ -3656,105 +3965,115 @@ function CoreBurnSection({ walletAddress }: { walletAddress: string }) {
     build.status !== "loading" &&
     !buildPending;
 
+  // collapsed/onToggle come from CleanerDetails (see other burn sections).
+
+  const headerCount =
+    discover.status === "ready"
+      ? `${discover.result.totalBurnable} burnable`
+      : discover.status === "loading"
+      ? null
+      : "0 burnable";
+  const headerSol =
+    discover.status === "ready"
+      ? (discover.result.includedAssets[0]?.estimatedGrossReclaimSol ?? 0) *
+        discover.result.totalBurnable
+      : null;
+
   return (
     <div className="m-3 overflow-hidden rounded-md border-2 border-red-700/60 bg-red-700/[0.06]">
-      <div className="flex items-baseline justify-between border-b border-red-700/50 bg-red-700/20 px-3 py-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
-          Core asset burn · max reclaim
-        </span>
-        <span className="text-[11px] tabular-nums text-red-200/80">
-          {discover.status === "ready"
-            ? `${discover.result.totalBurnable} burnable`
-            : discover.status === "loading"
-            ? "scanning…"
-            : ""}
-        </span>
-      </div>
-      <div className="border-b border-red-600/25 bg-red-600/10 px-3 py-2 text-[11px] font-semibold text-red-200">
-        ⚠ Burning Core assets is destructive and irreversible.
-      </div>
-      <div className="border-b border-red-600/20 bg-red-950/30 px-3 py-1.5 text-[11px] text-red-200/80">
-        ℹ Uses Metaplex Core BurnV1 and reclaims the Core asset account rent.
-      </div>
-
-      {discover.status === "loading" && (
-        <EmptyHint>Discovering Core assets…</EmptyHint>
-      )}
-      {discover.status === "error" && (
-        <div className="bg-red-600/10 px-3 py-2 text-xs text-red-300">
-          Discovery failed: {discover.error}
-        </div>
-      )}
-
-      {discover.status === "ready" && candidates && (
+      <CollapsibleBurnHeader
+        collapsed={collapsed}
+        onToggle={onToggle}
+        title="Core asset burn · max reclaim"
+        count={headerCount}
+        estSol={headerSol}
+        toneBorder="border-red-700/50"
+        toneBg="bg-red-700/20"
+        toneText="text-red-200"
+      />
+      {!collapsed && (
         <>
-          {candidates.burnable.length === 0 &&
-          candidates.nonBurnable.length === 0 ? (
-            <EmptyHint>
-              No Metaplex Core assets found in this wallet.
-            </EmptyHint>
-          ) : candidates.burnable.length === 0 ? (
-            <EmptyHint>
-              No Core assets eligible for BurnV1 in this wallet. See skipped
-              reasons below — assets with permanent freeze/burn delegates or
-              unsupported plugins are not burnable here.
-            </EmptyHint>
-          ) : (
+          <div className="border-b border-red-600/25 bg-red-600/10 px-3 py-1.5 text-[11px] font-semibold text-red-200">
+            ⚠ Destructive and irreversible. Uses Metaplex Core BurnV1 and
+            reclaims the Core asset account rent. Sign + send is not wired in
+            this UI.
+          </div>
+
+          {discover.status === "loading" && (
+            <EmptyHint>Discovering Core assets…</EmptyHint>
+          )}
+          {discover.status === "error" && (
+            <div className="bg-red-600/10 px-3 py-1.5 text-xs text-red-300">
+              Discovery failed: {discover.error}
+            </div>
+          )}
+
+          {discover.status === "ready" && candidates && (
             <>
-              <CoreCandidatesTable
-                rows={candidates.burnable}
-                selected={selectedAssets}
-                onToggle={toggleSelected}
-              />
-              <div className="flex flex-wrap items-center gap-2 border-t border-red-600/25 px-3 py-2">
-                <button
-                  type="button"
-                  onClick={handleBuild}
-                  disabled={!canBuild}
-                  title={
-                    selectedAssets.size === 0
-                      ? "Select at least one Core asset above"
-                      : undefined
-                  }
-                  aria-label="Build Core asset burn transaction"
-                  className={
-                    canBuild
-                      ? "inline-flex items-center rounded-lg border-2 border-red-700/80 bg-red-800 px-4 py-2 text-sm font-bold text-white shadow shadow-red-800/40 transition-colors duration-100 hover:bg-red-700"
-                      : "inline-flex items-center rounded-lg border-2 border-red-600/30 bg-red-900/30 px-4 py-2 text-sm font-bold text-red-300/60 cursor-not-allowed"
-                  }
-                >
-                  {build.status === "loading" || buildPending
-                    ? "Building…"
-                    : build.status === "ready"
-                    ? "Rebuild Core burn"
-                    : "Build Core burn"}
-                </button>
-                <span className="text-[11px] text-red-200/70">
-                  {selectedAssets.size === 0
-                    ? "Select at least one Core asset to build"
-                    : `${selectedAssets.size} selected · backend caps per tx`}
-                </span>
-              </div>
-              {build.status === "error" && (
-                <div className="border-t border-red-600/30 bg-red-600/10 px-3 py-2 text-xs text-red-300">
-                  Build failed: {build.error}
-                </div>
+              {candidates.burnable.length === 0 &&
+              candidates.nonBurnable.length === 0 ? (
+                <EmptyHint>
+                  No Metaplex Core assets found in this wallet.
+                </EmptyHint>
+              ) : candidates.burnable.length === 0 ? (
+                <EmptyHint>
+                  No Core assets eligible for BurnV1 in this wallet. See
+                  skipped reasons below — assets with permanent freeze/burn
+                  delegates or unsupported plugins are not burnable here.
+                </EmptyHint>
+              ) : (
+                <>
+                  <CoreCandidatesTable
+                    rows={candidates.burnable}
+                    selected={selectedAssets}
+                    onToggle={toggleSelected}
+                  />
+                  <div className="flex flex-wrap items-center gap-2 border-t border-red-600/25 px-3 py-1.5">
+                    <button
+                      type="button"
+                      onClick={handleBuild}
+                      disabled={!canBuild}
+                      title={
+                        selectedAssets.size === 0
+                          ? "Select at least one Core asset above"
+                          : undefined
+                      }
+                      aria-label="Build Core asset burn transaction"
+                      className={
+                        canBuild
+                          ? "inline-flex items-center rounded-lg border-2 border-red-700/80 bg-red-800 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-800/40 transition-colors duration-100 hover:bg-red-700"
+                          : "inline-flex items-center rounded-lg border-2 border-red-600/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
+                      }
+                    >
+                      {build.status === "loading" || buildPending
+                        ? "Building…"
+                        : build.status === "ready"
+                        ? "Rebuild Core burn"
+                        : "Build Core burn"}
+                    </button>
+                    <span className="text-[11px] text-red-200/70">
+                      {selectedAssets.size === 0
+                        ? "Select at least one Core asset to build"
+                        : `${selectedAssets.size} selected · backend caps per tx`}
+                    </span>
+                  </div>
+                  {build.status === "error" && (
+                    <div className="border-t border-red-600/30 bg-red-600/10 px-3 py-1.5 text-xs text-red-300">
+                      Build failed: {build.error}
+                    </div>
+                  )}
+                  {build.status === "ready" && (
+                    <CoreBurnPreview result={build.result} />
+                  )}
+                </>
               )}
-              {build.status === "ready" && (
-                <CoreBurnPreview result={build.result} />
+              {candidates.nonBurnable.length > 0 && (
+                <NonBurnableNftSummary entries={candidates.nonBurnable} />
               )}
             </>
           )}
-          {candidates.nonBurnable.length > 0 && (
-            <NonBurnableNftSummary entries={candidates.nonBurnable} />
-          )}
         </>
       )}
-
-      <div className="border-t border-red-600/25 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
-        Manual review required. Sign + send for Core asset burn is not yet
-        wired in this UI.
-      </div>
     </div>
   );
 }
@@ -3936,11 +4255,8 @@ function CoreBurnPreview({ result }: { result: BuildCoreBurnTxResult }) {
         </span>
         <Badge variant="sell">unsigned · destructive</Badge>
       </div>
-      <div className="border-b border-red-600/25 bg-red-600/10 px-3 py-2 text-[11px] font-semibold text-red-200">
-        ⚠ Burning Core assets is destructive and irreversible.
-      </div>
       {result.warning && (
-        <div className="border-b border-red-600/20 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+        <div className="border-b border-red-600/20 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
           ⚠ {result.warning}
         </div>
       )}
@@ -3996,9 +4312,8 @@ function CoreBurnPreview({ result }: { result: BuildCoreBurnTxResult }) {
           </div>
         ))}
       </dl>
-      <div className="border-t border-red-700/40 bg-neutral-950 px-3 py-2 text-center text-[11px] font-medium text-red-300/80">
-        Preview only. Sign + send for Core asset burn is intentionally not
-        wired in this UI.
+      <div className="border-t border-red-700/40 bg-neutral-950 px-3 py-1 text-center text-[10px] text-red-300/70">
+        Preview only · sign + send not wired
       </div>
     </div>
   );
@@ -4020,6 +4335,60 @@ function SubHeader({ label, right }: { label: string; right?: string }) {
 function EmptyHint({ children }: { children: React.ReactNode }) {
   return (
     <div className="px-3 py-4 text-center text-xs text-neutral-500">{children}</div>
+  );
+}
+
+// Clickable header for the four destructive burn sections (SPL / Legacy /
+// pNFT / Core). Toggles the section open/closed without remounting the
+// section body — discovery state is preserved by virtue of the parent
+// keeping the section component mounted; only the inner content is
+// conditionally rendered. Pure UI; no fetch is triggered.
+function CollapsibleBurnHeader({
+  collapsed,
+  onToggle,
+  title,
+  count,
+  estSol,
+  toneBorder,
+  toneBg,
+  toneText,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+  title: string;
+  // `count` and `estSol` are nullable so loading/error states can render
+  // a placeholder ("scanning…") rather than zeroes.
+  count: string | null;
+  estSol: number | null;
+  toneBorder: string;
+  toneBg: string;
+  toneText: string;
+}) {
+  const summary =
+    count === null
+      ? "scanning…"
+      : estSol === null
+      ? count
+      : `${count} · ${fmtSol(estSol)} SOL`;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      className={`flex w-full items-baseline justify-between border-b ${toneBorder} ${toneBg} px-3 py-1.5 text-left transition-colors hover:brightness-125`}
+    >
+      <span
+        className={`flex items-baseline gap-2 text-[10px] font-bold uppercase tracking-wider ${toneText}`}
+      >
+        <span className="inline-block w-2 text-[9px] opacity-70">
+          {collapsed ? "▶" : "▼"}
+        </span>
+        {title}
+      </span>
+      <span className={`text-[11px] tabular-nums ${toneText} opacity-80`}>
+        {summary}
+      </span>
+    </button>
   );
 }
 
