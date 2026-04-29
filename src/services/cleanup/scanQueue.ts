@@ -29,7 +29,7 @@ const RETRY_BACKOFFS_MS = [10_000, 30_000, 60_000];
 const RATE_LIMIT_PATTERN = /\b429\b|rate[\s-]?limit|too many requests/i;
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
 const BURN_WARNING =
-  "Burn is destructive and irreversible. Burn transactions are NOT implemented yet — this endpoint only lists candidates.";
+  "Burn is destructive and irreversible. Review every line of the preview, then explicitly sign to confirm.";
 
 // Mirrors the inline shape returned by /api/wallet/:address/burn-candidates.
 // Kept here so the batch endpoint and the per-wallet endpoint stay in lockstep.

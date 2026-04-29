@@ -22,7 +22,7 @@ import { fetchAssetMetadataBatch } from "../services/helius/das.js";
 
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
 const BURN_WARNING =
-  "Burn is destructive and irreversible. Burn transactions are NOT implemented yet — this endpoint only lists candidates.";
+  "Burn is destructive and irreversible. Review every line of the preview, then explicitly sign to confirm.";
 
 const router = Router();
 

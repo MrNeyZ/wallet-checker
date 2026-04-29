@@ -2473,7 +2473,8 @@ function ReclaimSummary({ summary }: { summary: ReclaimSummaryState }) {
 type ActionPlanStatusKind =
   | "ready"           // section has items; sign+send wired
   | "scanning"        // discovery in flight
-  | "unavailable"     // empty / error
+  | "unavailable"     // legitimately nothing to do (empty / 0 reclaim)
+  | "error"           // discovery call failed — recoverable via Retry
   | "rejected";       // pNFT/Core preflight simulation failed
 
 function ActionPlan({
@@ -2494,7 +2495,7 @@ function ActionPlan({
     entry: ReclaimEntry,
   ): ActionPlanStatusKind {
     if (entry.status === "loading") return "scanning";
-    if (entry.status === "error") return "unavailable";
+    if (entry.status === "error") return "error";
     if (entry.status === "rejected") return "rejected";
     if (entry.status === "empty") return "unavailable";
     if (entry.value === null || entry.value === 0) return "unavailable";
@@ -2537,6 +2538,15 @@ function ActionPlan({
             rejected
           </span>
         );
+      case "error":
+        return (
+          <span
+            className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-300 ring-1 ring-red-500/40"
+            title="Discovery call failed — open the section and click Retry discovery"
+          >
+            discovery failed
+          </span>
+        );
       case "unavailable":
         return (
           <span className="rounded bg-neutral-800/60 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500 ring-1 ring-neutral-700/40">
@@ -2571,13 +2581,21 @@ function ActionPlan({
           // Toggling a card with no items is harmless.
           const actionDisabled = false;
           // Close-empty is always inline-expanded → label is "Go to".
-          // Otherwise label flips on whether the target is open.
+          // Discovery-failed sections route to the in-section Retry button —
+          // lead the user there explicitly. Otherwise label flips on whether
+          // the target is open.
           const actionLabel =
             key === "closeEmpty"
               ? "Go to"
+              : s === "error"
+              ? "Open & retry →"
               : open
               ? "Scroll to →"
               : "Expand →";
+          const actionTone =
+            s === "error"
+              ? "rounded border border-red-500/40 bg-red-500/[0.10] px-2 py-0.5 text-[10px] font-semibold text-red-200 transition-colors duration-100 hover:bg-red-500/20"
+              : "rounded border border-emerald-500/40 bg-emerald-500/[0.08] px-2 py-0.5 text-[10px] font-semibold text-emerald-200 transition-colors duration-100 hover:bg-emerald-500/15";
           return (
             <li
               key={key}
@@ -2605,7 +2623,7 @@ function ActionPlan({
                   onClick={() => onFocus(key)}
                   disabled={actionDisabled}
                   aria-label={`${actionLabel} ${label}`}
-                  className="rounded border border-emerald-500/40 bg-emerald-500/[0.08] px-2 py-0.5 text-[10px] font-semibold text-emerald-200 transition-colors duration-100 hover:bg-emerald-500/15"
+                  className={actionTone}
                 >
                   {actionLabel}
                 </button>
