@@ -32,6 +32,7 @@ import { Badge } from "@/ui-kit/components/Badge";
 import { WalletLink } from "@/ui-kit/components/WalletLink";
 import { btnPrimary, btnSecondary } from "@/lib/buttonStyles";
 import { prettifyApiError } from "@/lib/prettifyError";
+import { proxyImageUrl } from "@/lib/imageProxy";
 import {
   auditBurnAndCloseTx,
   auditCloseEmptyTx,
@@ -336,10 +337,14 @@ function GroupAllActions({
   async function runScanAll(opts: { force?: boolean } = {}) {
     cancelRef.current = false;
     const total = wallets.length;
-    // Single backend call. Cancel between batch start and response just
-    // means we ignore the result on completion — there's no per-wallet
-    // mid-flight state to roll back. The scan itself runs on the server
-    // queue with a 45s per-wallet budget so it always terminates.
+    // Single backend call. The scan-all action is a Next.js server action
+    // (no client-side AbortController hook) so cancelling can't actually
+    // tear down the in-flight server request — but the user-facing
+    // experience only requires the UI to break out of "Scanning…" state
+    // immediately. We set cancelled state in cancel() the moment the user
+    // clicks the button; the post-await handler then merges any successful
+    // wallet results into the scan registry (per spec: "Keep already
+    // completed wallet results") without overwriting the cancelled state.
     setScanAll({
       status: "running",
       completed: 0,
@@ -352,17 +357,21 @@ function GroupAllActions({
       force: opts.force,
     });
     if (cancelRef.current) {
-      // User clicked Cancel mid-flight — discard the result, treat as
-      // cancelled. Server-side scans already completed (they ran to
-      // their natural conclusion), but the UI doesn't reflect them.
-      setScanAll({
-        status: "done",
-        total,
-        succeeded: 0,
-        failed: [],
-        counts: { ok: 0, cached: 0, timeout: 0, rateLimited: 0, error: 0 },
-        cancelled: true,
-      });
+      // User cancelled mid-flight — UI state was already set to cancelled
+      // in cancel(). Hydrate the scan registry with any successful results
+      // so completed wallets aren't lost; do NOT overwrite scanAll state.
+      if (res.ok) {
+        for (const w of res.result.wallets) {
+          if (w.scan && w.burn && (w.status === "ok" || w.status === "cached")) {
+            setScan(w.address, {
+              empty: w.scan.emptyTokenAccounts.length,
+              reclaimSol: w.scan.totals.estimatedReclaimSol,
+              fungible: w.burn.count,
+              nft: w.scan.nftTokenAccounts.length,
+            });
+          }
+        }
+      }
       return;
     }
     if (!res.ok) {
@@ -570,6 +579,33 @@ function GroupAllActions({
 
   function cancel() {
     cancelRef.current = true;
+    // Snap the UI out of "running" state immediately. The backend scan-all
+    // call may still resolve later — the post-await handler in runScanAll
+    // detects the cancelled flag and skips the state overwrite (it merges
+    // any completed wallets into the scan registry instead).
+    setScanAll((prev) => {
+      if (prev.status !== "running") return prev;
+      return {
+        status: "done",
+        total: prev.total,
+        succeeded: 0,
+        failed: [],
+        counts: { ok: 0, cached: 0, timeout: 0, rateLimited: 0, error: 0 },
+        cancelled: true,
+      };
+    });
+    // Clean-all is a per-wallet frontend loop that polls cancelRef on each
+    // iteration, so it self-terminates — but still flush the running state
+    // here so the UI doesn't have to wait for the in-flight wallet's tx
+    // round-trip to finish before it visibly stops.
+    setCleanAll((prev) => {
+      if (prev.status !== "running") return prev;
+      return {
+        status: "done",
+        results: prev.results ?? [],
+        cancelled: true,
+      };
+    });
   }
 
   // ---- render ----
@@ -673,41 +709,54 @@ function GroupAllActions({
       {scanAll.status === "done" && (
         <div className="border-t border-neutral-800 bg-neutral-900 px-3 py-1.5 text-[11px]">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-neutral-300">
-            <span>
-              Scan all:{" "}
-              <span className="font-semibold text-white">
-                {scanAll.succeeded}
-              </span>{" "}
-              ok
-              {scanAll.counts.cached > 0 && (
-                <span className="ml-1 text-emerald-300/80">
-                  ({scanAll.counts.cached} cached)
+            {scanAll.cancelled ? (
+              // When cancelled the counts are 0/unknown (the backend may
+              // still finish but we no longer wait for the result). The
+              // scan registry still holds any per-wallet results that
+              // landed before / after cancel, so completed scans aren't
+              // lost — they just aren't counted in this header.
+              <span className="font-semibold text-amber-300">
+                Scan cancelled
+                <span className="ml-1 text-neutral-500">
+                  · already-scanned wallets are kept
                 </span>
-              )}
-              ,{" "}
-              <span
-                className={
-                  scanAll.failed.length > 0
-                    ? "font-semibold text-red-300"
-                    : "text-neutral-400"
-                }
-              >
-                {scanAll.failed.length}
-              </span>{" "}
-              failed
-            </span>
-            {scanAll.counts.timeout > 0 && (
-              <span className="text-amber-300">
-                · {scanAll.counts.timeout} timed out
               </span>
-            )}
-            {scanAll.counts.rateLimited > 0 && (
-              <span className="text-amber-300">
-                · {scanAll.counts.rateLimited} rate-limited
-              </span>
-            )}
-            {scanAll.cancelled && (
-              <span className="text-neutral-500">· (cancelled)</span>
+            ) : (
+              <>
+                <span>
+                  Scan all:{" "}
+                  <span className="font-semibold text-white">
+                    {scanAll.succeeded}
+                  </span>{" "}
+                  ok
+                  {scanAll.counts.cached > 0 && (
+                    <span className="ml-1 text-emerald-300/80">
+                      ({scanAll.counts.cached} cached)
+                    </span>
+                  )}
+                  ,{" "}
+                  <span
+                    className={
+                      scanAll.failed.length > 0
+                        ? "font-semibold text-red-300"
+                        : "text-neutral-400"
+                    }
+                  >
+                    {scanAll.failed.length}
+                  </span>{" "}
+                  failed
+                </span>
+                {scanAll.counts.timeout > 0 && (
+                  <span className="text-amber-300">
+                    · {scanAll.counts.timeout} timed out
+                  </span>
+                )}
+                {scanAll.counts.rateLimited > 0 && (
+                  <span className="text-amber-300">
+                    · {scanAll.counts.rateLimited} rate-limited
+                  </span>
+                )}
+              </>
             )}
           </div>
           {scanAll.failed.length > 0 && (
@@ -1849,7 +1898,8 @@ function ScanAllProgress({
             Scanning {state.total} wallet{state.total === 1 ? "" : "s"}…
           </span>
           <span className="ml-1 text-neutral-500">
-            backend processes wallets one at a time (max 45s each)
+            summary scan only — backend processes wallets one at a time
+            (max 30s each, NFT/Core discovery runs lazily on expand)
           </span>
         </span>
         {state.activeAddress && (
@@ -3914,9 +3964,11 @@ function LegacyNftCandidatesTable({
   );
 }
 
-// Tiny image cell for NFT/Core candidate rows. Renders nothing (placeholder
-// box) when image is null, so layout stays consistent. `loading="lazy"` so
-// rendering 50+ candidates doesn't blast the network on first paint.
+// Tiny image cell for NFT/Core candidate rows. Renders a fixed-size neutral
+// placeholder box when image is null OR errors, so layout stays consistent
+// and broken-image icons never flash. Lazy + async decode + no-referrer keep
+// rendering 200+ candidates from blasting the network on first paint or
+// leaking the wallet page URL to image hosts.
 function NftThumbnail({
   src,
   alt,
@@ -3927,7 +3979,14 @@ function NftThumbnail({
   size?: "sm" | "lg";
 }) {
   const cls = size === "lg" ? "h-16 w-16" : "h-7 w-7";
-  if (!src) {
+  // Hide-on-error needs state so the placeholder takes over reliably across
+  // re-renders (style.visibility hack survived for one render only).
+  const [errored, setErrored] = useState(false);
+  // Prefer the same-origin proxy URL — caches by hash, serves the second
+  // and subsequent visits instantly. Falls back to null for non-http(s)
+  // sources (which the placeholder branch handles).
+  const proxied = proxyImageUrl(src);
+  if (!src || !proxied || errored) {
     return (
       <span
         aria-hidden
@@ -3938,17 +3997,15 @@ function NftThumbnail({
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={src}
+      src={proxied}
       alt={alt}
       loading="lazy"
       decoding="async"
+      referrerPolicy="no-referrer"
+      width={size === "lg" ? 64 : 28}
+      height={size === "lg" ? 64 : 28}
       className={`${cls} shrink-0 rounded bg-neutral-800 object-cover`}
-      onError={(e) => {
-        // Hide broken images cleanly — many off-chain JSON URIs serve
-        // expired or 404'd image URLs. Replacing with the neutral box
-        // prevents a broken-image icon flashing in the row.
-        (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
-      }}
+      onError={() => setErrored(true)}
     />
   );
 }
@@ -3970,6 +4027,8 @@ interface BurnCandidateItem {
 // `CoreCandidatesTable` components and folds in the per-collection
 // "Select all" toggle. No artificial selection cap — the user can pick
 // every burnable item; the backend slices into per-tx batches.
+const GRID_PAGE_SIZE = 50;
+
 function BurnCandidateGroupGrid({
   items,
   selected,
@@ -3983,12 +4042,25 @@ function BurnCandidateGroupGrid({
   onToggleGroup: (ids: string[], selectAll: boolean) => void;
   itemKindLabel: string; // "NFT" / "pNFT" / "asset"
 }) {
+  // Pagination cap: render at most `visibleCount` thumbnails so a 200-item
+  // wallet doesn't fire 200 cross-origin image requests on first paint.
+  // Selection state is lifted (the `selected` Set), so it persists across
+  // "Show more" clicks even though hidden items aren't rendered.
+  // "Select all in group" still operates on every id in that group, not
+  // just the rendered subset — see `groups` below for the full list.
+  const [visibleCount, setVisibleCount] = useState(GRID_PAGE_SIZE);
+  const totalCount = items.length;
+  const visibleItems = useMemo(
+    () => items.slice(0, visibleCount),
+    [items, visibleCount],
+  );
+
   // Group by collection mint. Items with no verified collection fall into
   // an "Uncollected" bucket shown last. Within each group, items keep
   // their input order (already collection-locality-sorted in practice).
   const groups = useMemo(() => {
     const map = new Map<string, BurnCandidateItem[]>();
-    for (const item of items) {
+    for (const item of visibleItems) {
       const key = item.collection ?? "_uncollected";
       const list = map.get(key) ?? [];
       list.push(item);
@@ -4003,6 +4075,20 @@ function BurnCandidateGroupGrid({
       return b[1].length - a[1].length;
     });
     return entries;
+  }, [visibleItems]);
+
+  // Full per-group ids — used by "Select all in group" so the toggle
+  // operates on every item in the collection, not just the currently-
+  // visible page. Built from the raw `items` list, not `visibleItems`.
+  const fullGroupIds = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const item of items) {
+      const key = item.collection ?? "_uncollected";
+      const list = map.get(key) ?? [];
+      list.push(item.id);
+      map.set(key, list);
+    }
+    return map;
   }, [items]);
 
   return (
@@ -4022,9 +4108,14 @@ function BurnCandidateGroupGrid({
         const label = isUncollected
           ? "Uncollected"
           : sym ?? namePrefix ?? `Collection ${shortAddr(groupKey, 4, 4)}`;
-        const ids = groupItems.map((i) => i.id);
+        // Toggle "Select all" against the FULL group, not just the rendered
+        // (paged) subset, so it stays useful when items spill past the page.
+        const allIds = fullGroupIds.get(groupKey) ?? groupItems.map((i) => i.id);
+        const ids = allIds;
         const allSelected = ids.every((id) => selected.has(id));
         const anySelected = ids.some((id) => selected.has(id));
+        const fullGroupCount = ids.length;
+        const visibleGroupCount = groupItems.length;
         return (
           <div
             key={groupKey}
@@ -4036,7 +4127,9 @@ function BurnCandidateGroupGrid({
                   {label}
                 </span>
                 <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-200/90">
-                  {groupItems.length}
+                  {visibleGroupCount < fullGroupCount
+                    ? `${visibleGroupCount} / ${fullGroupCount}`
+                    : fullGroupCount}
                 </span>
                 {!isUncollected && (
                   <span className="font-mono text-[10px] text-neutral-500">
@@ -4055,7 +4148,7 @@ function BurnCandidateGroupGrid({
                 {allSelected
                   ? "Deselect all"
                   : anySelected
-                    ? `Select all (+${ids.length - groupItems.filter((i) => selected.has(i.id)).length})`
+                    ? `Select all (+${ids.length - ids.filter((id) => selected.has(id)).length})`
                     : "Select all"}
               </button>
             </div>
@@ -4116,6 +4209,36 @@ function BurnCandidateGroupGrid({
           </div>
         );
       })}
+      {visibleCount < totalCount && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-500/15 bg-red-500/[0.03] px-3 py-2 text-[11px]">
+          <span className="text-neutral-400">
+            Showing{" "}
+            <span className="font-semibold text-neutral-200">
+              {visibleCount}
+            </span>{" "}
+            of{" "}
+            <span className="font-semibold text-neutral-200">{totalCount}</span>{" "}
+            {itemKindLabel}
+            {totalCount === 1 ? "" : "s"} — extra thumbnails are hidden until
+            requested to keep the page snappy.
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              setVisibleCount((c) =>
+                Math.min(c + GRID_PAGE_SIZE, totalCount),
+              )
+            }
+            aria-label={`Show ${Math.min(
+              GRID_PAGE_SIZE,
+              totalCount - visibleCount,
+            )} more`}
+            className="rounded border border-red-500/40 bg-red-500/[0.10] px-2 py-1 text-[11px] font-semibold text-red-200 transition-colors duration-100 hover:bg-red-500/20"
+          >
+            Show {Math.min(GRID_PAGE_SIZE, totalCount - visibleCount)} more
+          </button>
+        </div>
+      )}
     </div>
   );
 }

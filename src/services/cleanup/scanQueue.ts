@@ -25,6 +25,10 @@ import {
 import { fetchAssetMetadataBatch } from "../helius/das.js";
 
 const PER_WALLET_BUDGET_MS = 45_000;
+// Summary scans skip DAS metadata enrichment so they finish much faster on
+// average — a 30s budget is plenty and lets the group scan-all cap its
+// total wall-clock at (wallets × 30s) instead of (wallets × 45s).
+const PER_WALLET_BUDGET_MS_SUMMARY = 30_000;
 const RETRY_BACKOFFS_MS = [10_000, 30_000, 60_000];
 const RATE_LIMIT_PATTERN = /\b429\b|rate[\s-]?limit|too many requests/i;
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
@@ -90,7 +94,7 @@ async function withDeadline<T>(p: Promise<T>, deadline: number): Promise<T> {
     p,
     new Promise<T>((_, reject) =>
       setTimeout(
-        () => reject(new Error("Per-wallet budget exceeded (45s)")),
+        () => reject(new Error("Per-wallet budget exceeded")),
         remaining,
       ),
     ),
@@ -100,6 +104,7 @@ async function withDeadline<T>(p: Promise<T>, deadline: number): Promise<T> {
 async function buildBurnCandidates(
   address: string,
   scan: CleanupScanResult,
+  opts: { summary?: boolean } = {},
 ): Promise<BurnCandidatesResult> {
   const baseCandidates: BurnCandidate[] = scan.fungibleTokenAccounts
     .filter((acc) => acc.mint !== WSOL_MINT)
@@ -121,21 +126,27 @@ async function buildBurnCandidates(
       reason: "Manual review required before destructive burn.",
     }));
 
-  // Same DAS enrichment the per-wallet route uses. Cached server-side so
-  // repeat lookups within 10 minutes are free.
-  const dasMap = await fetchAssetMetadataBatch(
-    baseCandidates.map((c) => c.mint),
-  );
-  const candidates = baseCandidates.map((c) => {
-    const m = dasMap.get(c.mint);
-    if (!m) return c;
-    return {
-      ...c,
-      name: c.name ?? m.name,
-      symbol: c.symbol ?? m.symbol,
-      image: c.image ?? m.image,
-    };
-  });
+  // Summary mode (group scan-all) skips DAS — the consumer of that path
+  // (CleanerRow scan registry) only reads count + total reclaim, so the
+  // ~1 RPC-per-wallet DAS round-trip is pure overhead. Per-wallet detailed
+  // scan (CleanerRow.handleScan) calls /burn-candidates directly and
+  // hydrates names/symbols/images there.
+  let candidates = baseCandidates;
+  if (!opts.summary) {
+    const dasMap = await fetchAssetMetadataBatch(
+      baseCandidates.map((c) => c.mint),
+    );
+    candidates = baseCandidates.map((c) => {
+      const m = dasMap.get(c.mint);
+      if (!m) return c;
+      return {
+        ...c,
+        name: c.name ?? m.name,
+        symbol: c.symbol ?? m.symbol,
+        image: c.image ?? m.image,
+      };
+    });
+  }
 
   return {
     wallet: address,
@@ -154,8 +165,14 @@ export interface ScanWalletQueuedOptions {
   // on-chain scan. Burn-candidate enrichment still uses its own DAS
   // cache (separate concern).
   force?: boolean;
-  // Override per-wallet wall-clock budget. Defaults to PER_WALLET_BUDGET_MS.
+  // Override per-wallet wall-clock budget. Defaults to PER_WALLET_BUDGET_MS
+  // (or PER_WALLET_BUDGET_MS_SUMMARY when summary mode is on).
   budgetMs?: number;
+  // Summary mode: skip DAS metadata enrichment for SPL burn candidates.
+  // Used by the group scan-all batch endpoint where the consumer only
+  // needs counts + reclaim totals. Per-wallet detailed scans
+  // (/api/wallet/:address/burn-candidates) keep DAS on.
+  summary?: boolean;
 }
 
 export async function scanWalletQueued(
@@ -163,7 +180,9 @@ export async function scanWalletQueued(
   opts: ScanWalletQueuedOptions = {},
 ): Promise<ScanWalletResult> {
   const start = Date.now();
-  const budgetMs = opts.budgetMs ?? PER_WALLET_BUDGET_MS;
+  const budgetMs =
+    opts.budgetMs ??
+    (opts.summary ? PER_WALLET_BUDGET_MS_SUMMARY : PER_WALLET_BUDGET_MS);
   const deadline = start + budgetMs;
   const wasCached = !opts.force && isCleanupScanCached(address);
 
@@ -176,7 +195,7 @@ export async function scanWalletQueued(
         deadline,
       );
       const burn = await withDeadline(
-        buildBurnCandidates(address, scan),
+        buildBurnCandidates(address, scan, { summary: opts.summary }),
         deadline,
       );
       return {
@@ -197,7 +216,7 @@ export async function scanWalletQueued(
         return {
           address,
           status: "timeout",
-          error: "Per-wallet 45s budget exceeded",
+          error: `Per-wallet ${Math.round(budgetMs / 1000)}s budget exceeded`,
           durationMs: Date.now() - start,
         };
       }
@@ -235,7 +254,7 @@ export async function scanWalletQueued(
   return {
     address,
     status: "timeout",
-    error: lastErr ?? "Per-wallet 45s budget exceeded",
+    error: lastErr ?? `Per-wallet ${Math.round(budgetMs / 1000)}s budget exceeded`,
     durationMs: Date.now() - start,
   };
 }

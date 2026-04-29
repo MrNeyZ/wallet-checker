@@ -521,9 +521,30 @@ router.post("/:groupId/cleanup-scan-all", async (req, res) => {
   // Sequential — concurrency=1 by design. The scanner.ts in-flight
   // dedupe handles concurrent same-wallet requests if any sneak in
   // (e.g. a single-wallet scan kicked off in parallel by the user).
+  // Summary mode: skips DAS metadata enrichment per wallet — the consumer
+  // (CleanerRow scan registry) only reads counts + reclaim totals, so DAS
+  // is pure overhead at the batch level. Per-wallet detailed scans hit a
+  // separate endpoint that does enrich.
   for (const wlt of group.wallets) {
-    const r = await scanWalletQueued(wlt.address, { force });
-    results.push({ ...r, label: wlt.label });
+    // Outer try/catch so any unexpected throw (RPC layer, JSON parsing,
+    // memory) doesn't abort the whole group — that wallet just gets a
+    // status="error" entry and we move on.
+    try {
+      const r = await scanWalletQueued(wlt.address, { force, summary: true });
+      results.push({ ...r, label: wlt.label });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[cleanupScan] uncaught error on ${wlt.address}: ${msg}`,
+      );
+      results.push({
+        address: wlt.address,
+        status: "error",
+        error: msg,
+        durationMs: 0,
+        label: wlt.label,
+      });
+    }
   }
   res.json({
     groupId: group.id,

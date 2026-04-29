@@ -11,7 +11,10 @@ import {
 } from "@solana/spl-token";
 import { connection } from "./solana.js";
 import { scanWalletForCleanup, type ScannedTokenAccount } from "./scanner.js";
-import { fetchAssetMetadataBatch } from "../services/helius/das.js";
+import {
+  fetchAssetMetadataBatch,
+  fetchCoreAssetsByOwner,
+} from "../services/helius/das.js";
 
 export const MAX_CLOSE_IX_PER_TX = 10;
 
@@ -2909,7 +2912,155 @@ function parseCoreAssetData(
   return { owner, collection, name, uri };
 }
 
+// Per-wallet Core discovery cache (10 min TTL + in-flight dedupe). Identical
+// pattern to the cleanup-scan cache in scanner.ts. Bumped to 10 min because
+// the underlying call is more expensive than the SPL scan and the user spec
+// for the burner explicitly asks for a 10-minute cache window.
+const CORE_DISCOVERY_TTL_MS = 10 * 60 * 1000;
+const coreDiscoveryCache = new Map<
+  string,
+  { ts: number; promise: Promise<CoreAssetParsed[]> }
+>();
+
 async function findCoreAssets(owner: PublicKey): Promise<CoreAssetParsed[]> {
+  const ownerStr = owner.toBase58();
+  const now = Date.now();
+  const cached = coreDiscoveryCache.get(ownerStr);
+  if (cached && now - cached.ts < CORE_DISCOVERY_TTL_MS) {
+    return cached.promise;
+  }
+  const promise = doFindCoreAssets(owner);
+  coreDiscoveryCache.set(ownerStr, { ts: now, promise });
+  // If the underlying discovery rejects, drop the entry so the next call
+  // retries instead of returning the cached failure forever.
+  promise.catch(() => {
+    if (coreDiscoveryCache.get(ownerStr)?.promise === promise) {
+      coreDiscoveryCache.delete(ownerStr);
+    }
+  });
+  return promise;
+}
+
+// Two-tier discovery: prefer Helius DAS (server-side wallet index — much
+// faster than scanning the whole Core program) and fall back to the on-chain
+// program scan when DAS is unavailable, errors, or returns nothing. DAS
+// gives us asset id + metadata + image url; we hydrate per-asset lamports
+// via getMultipleAccountsInfo on the discovered ids since DAS doesn't
+// expose raw account state.
+async function doFindCoreAssets(owner: PublicKey): Promise<CoreAssetParsed[]> {
+  const ownerStr = owner.toBase58();
+  console.log(`[coreBurn] DAS start for ${ownerStr}`);
+  let dasResult: Awaited<ReturnType<typeof fetchCoreAssetsByOwner>>;
+  try {
+    dasResult = await fetchCoreAssetsByOwner(ownerStr);
+  } catch (err) {
+    const msg = (err as Error)?.message ?? String(err);
+    console.warn(
+      `[coreBurn] DAS getAssetsByOwner threw for ${ownerStr}: ${msg}`,
+    );
+    dasResult = {
+      ok: false,
+      reason: "exception",
+      detail: msg,
+      durationMs: 0,
+    };
+  }
+  if (dasResult.ok) {
+    console.log(
+      `[coreBurn] DAS ok count=${dasResult.assets.length} raw=${dasResult.rawCount} pages=${dasResult.pagesFetched} ms=${dasResult.durationMs} for ${ownerStr}`,
+    );
+    const hydrateStart = Date.now();
+    const hydrated = await hydrateCoreAssetsFromDas(owner, dasResult.assets);
+    console.log(
+      `[coreBurn] hydrate ok count=${hydrated.length} ms=${Date.now() - hydrateStart} for ${ownerStr}`,
+    );
+    return hydrated;
+  }
+  console.warn(
+    `[coreBurn] DAS miss/fail reason=${dasResult.reason}${dasResult.detail ? ` detail=${dasResult.detail}` : ""} ms=${dasResult.durationMs} for ${ownerStr}`,
+  );
+  console.log(
+    `[coreBurn] fallback getProgramAccounts start for ${ownerStr}`,
+  );
+  const fallbackStart = Date.now();
+  const fallback = await findCoreAssetsViaProgramScan(owner);
+  console.log(
+    `[coreBurn] fallback ok count=${fallback.length} ms=${Date.now() - fallbackStart} for ${ownerStr}`,
+  );
+  return fallback;
+}
+
+// DAS gives us metadata + collection but no rent lamports. Pull lamports in
+// chunks of 100 via getMultipleAccountsInfo so the discovered list still has
+// accurate per-asset reclaim values. Chunk-level RPC failures are tolerated:
+// affected entries are dropped from the result rather than throwing.
+async function hydrateCoreAssetsFromDas(
+  owner: PublicKey,
+  das: import("../services/helius/das.js").CoreAssetFromDas[],
+): Promise<CoreAssetParsed[]> {
+  if (das.length === 0) return [];
+  const pks: PublicKey[] = [];
+  for (const a of das) {
+    try {
+      pks.push(new PublicKey(a.asset));
+    } catch {
+      // Malformed id from DAS — skip.
+    }
+  }
+  const lamportsByIdx: (number | null)[] = [];
+  // Owner of the program account — must be MPL_CORE_PROGRAM_ID for a real
+  // Core AssetV1. DAS already filters by ownerAddress + interface, but
+  // we do the cheap on-chain double-check while we're here for lamports.
+  const programOwnerByIdx: (string | null)[] = [];
+  for (let i = 0; i < pks.length; i += 100) {
+    const chunk = pks.slice(i, i + 100);
+    try {
+      const res = await connection.getMultipleAccountsInfo(chunk);
+      for (const info of res) {
+        lamportsByIdx.push(info?.lamports ?? null);
+        programOwnerByIdx.push(info?.owner.toBase58() ?? null);
+      }
+    } catch (err) {
+      console.warn(
+        `[coreBurn] hydrate lamports chunk RPC failed (offset=${i}, size=${chunk.length}): ${(err as Error)?.message ?? err}`,
+      );
+      for (let j = 0; j < chunk.length; j++) {
+        lamportsByIdx.push(null);
+        programOwnerByIdx.push(null);
+      }
+    }
+  }
+  const out: CoreAssetParsed[] = [];
+  const corePid = MPL_CORE_PROGRAM_ID.toBase58();
+  for (let i = 0; i < pks.length; i++) {
+    const lp = lamportsByIdx[i];
+    const ownerProg = programOwnerByIdx[i];
+    if (lp === null) continue; // account not found / RPC failure — skip
+    if (ownerProg !== null && ownerProg !== corePid) continue; // not Core
+    let collection: PublicKey | null = null;
+    if (das[i].collection) {
+      try {
+        collection = new PublicKey(das[i].collection as string);
+      } catch {
+        collection = null;
+      }
+    }
+    out.push({
+      asset: pks[i],
+      owner,
+      collection,
+      name: das[i].name?.replace(/\0+$/, "").trim() || null,
+      uri: das[i].uri?.replace(/\0+$/, "").trim() || null,
+      lamports: lp,
+      image: das[i].image ?? null,
+    });
+  }
+  return out;
+}
+
+async function findCoreAssetsViaProgramScan(
+  owner: PublicKey,
+): Promise<CoreAssetParsed[]> {
   // bs58 of single byte 0x01 is "2" (constant). Used for the AssetV1 key
   // filter at offset 0. The owner filter at offset 1 narrows to just the
   // user's assets.
@@ -2935,14 +3086,6 @@ async function findCoreAssets(owner: PublicKey): Promise<CoreAssetParsed[]> {
       lamports: a.account.lamports,
       image: null,
     });
-    // Diagnostic: confirm whether per-asset lamports / data sizes actually
-    // vary across a same-collection set. If lamports are uniform here but
-    // the wallet-simulated payer delta varies, the discrepancy is on the
-    // program side (rent redirection); if lamports vary here, the UI grid
-    // is collapsing to a shared value.
-    console.log(
-      `[coreBurn] asset ${a.pubkey.toBase58()} lamports ${a.account.lamports} dataSize ${buf.length}`,
-    );
   }
   return out;
 }
@@ -3055,7 +3198,11 @@ export async function buildCoreBurnTx(
       : null;
 
   const skippedAssets: CoreBurnSkippedEntry[] = [];
+  const discoveryStart = Date.now();
   const allAssets = await findCoreAssets(owner);
+  console.log(
+    `[coreBurn] discovery total ms=${Date.now() - discoveryStart} count=${allAssets.length} for ${ownerStr}`,
+  );
 
   // Walk all Core assets — allowSet is intentionally NOT applied at this
   // stage so burnableCandidates reflects the full wallet. The user's
@@ -3099,6 +3246,46 @@ export async function buildCoreBurnTx(
     ? candidates.filter((a) => allowSet.has(a.asset.toBase58()))
     : candidates;
   let included = selected.slice(0, MAX_CORE_BURN_PER_TX);
+
+  // Live-state refresh for the SELECTED batch only. The discovery cache
+  // (10 min) keeps `candidates` fresh enough for grid display, but a real
+  // burn tx must be built from current on-chain state — never from cached
+  // DAS rows. Verify each selected asset still exists, is still owned by
+  // the Core program, and update its lamports to the on-chain value.
+  if (allowSet && included.length > 0) {
+    try {
+      const refreshKeys = included.map((a) => a.asset);
+      const fresh = await connection.getMultipleAccountsInfo(refreshKeys);
+      const corePid = MPL_CORE_PROGRAM_ID.toBase58();
+      const verified: CoreAssetParsed[] = [];
+      for (let i = 0; i < included.length; i++) {
+        const cur = included[i];
+        const info = fresh[i];
+        if (!info) {
+          skippedAssets.push({
+            asset: cur.asset.toBase58(),
+            reason: "Asset account not found at build time — already burned or transferred",
+          });
+          continue;
+        }
+        if (info.owner.toBase58() !== corePid) {
+          skippedAssets.push({
+            asset: cur.asset.toBase58(),
+            reason: "Asset no longer owned by Metaplex Core program at build time",
+          });
+          continue;
+        }
+        verified.push({ ...cur, lamports: info.lamports });
+      }
+      included = verified;
+    } catch (err) {
+      // Refresh failed (RPC busy). Fall back to cached lamports rather
+      // than 500 — sim will still catch any inconsistency.
+      console.warn(
+        `[coreBurn] live refresh failed for ${ownerStr}: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
 
   const priorityFeeMicrolamports = readPriorityFeeMicrolamports();
   const burnableByAsset = new Map(
