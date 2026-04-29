@@ -3750,10 +3750,18 @@ function LegacyNftBurnSection({
           {discover.status === "ready" && candidates && (
             <>
               {candidates.burnable.length === 0 ? (
-                <EmptyHint>
-                  No legacy Metaplex NFTs eligible for BurnV1 in this wallet.
-                  See skipped reasons below for non-burnable items.
-                </EmptyHint>
+                <>
+                  {/* Surface skipped reasons FIRST when nothing is burnable —
+                      that's the "why" the user came here for. */}
+                  {candidates.nonBurnable.length > 0 && (
+                    <NonBurnableNftSummary entries={candidates.nonBurnable} />
+                  )}
+                  <EmptyHint>
+                    {candidates.nonBurnable.length > 0
+                      ? "0 legacy Metaplex NFTs eligible for BurnV1. See the skipped-reason counts above."
+                      : "No legacy NFT-shape token accounts found in this wallet. If you hold Metaplex Core assets or pNFTs, try those sections."}
+                  </EmptyHint>
+                </>
               ) : (
                 <>
                   <BurnCandidateGroupGrid
@@ -3813,10 +3821,10 @@ function LegacyNftBurnSection({
                       onBuildBatch={handleBuildBatch}
                     />
                   )}
+                  {candidates.nonBurnable.length > 0 && (
+                    <NonBurnableNftSummary entries={candidates.nonBurnable} />
+                  )}
                 </>
-              )}
-              {candidates.nonBurnable.length > 0 && (
-                <NonBurnableNftSummary entries={candidates.nonBurnable} />
               )}
             </>
           )}
@@ -4150,10 +4158,16 @@ function NonBurnableNftSummary({
     for (const e of entries) m.set(e.reason, (m.get(e.reason) ?? 0) + 1);
     return [...m.entries()].sort((a, b) => b[1] - a[1]);
   }, [entries]);
+  const total = entries.length;
   return (
     <div className="border-t border-red-500/20 bg-red-950/20 px-3 py-2">
-      <div className="text-[10px] font-bold uppercase tracking-wider text-red-300/80">
-        Skipped (not burnable in Milestone 1)
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-red-300/80">
+          Skipped — counts by reason
+        </div>
+        <div className="text-[10px] tabular-nums text-red-300/60">
+          {total} item{total === 1 ? "" : "s"}
+        </div>
       </div>
       <ul className="mt-1 space-y-0.5 text-[11px] text-red-200/70">
         {byReason.map(([reason, count]) => (
@@ -4751,11 +4765,18 @@ function PnftBurnSection({
           {discover.status === "ready" && candidates && (
             <>
               {candidates.burnable.length === 0 ? (
-                <EmptyHint>
-                  No pNFTs eligible for BurnV1 in this wallet. See skipped
-                  reasons below — pNFTs with missing token records or
-                  unsupported standards don't qualify in this milestone.
-                </EmptyHint>
+                <>
+                  {/* Surface skipped reasons FIRST when nothing is burnable —
+                      that's the "why" the user came here for. */}
+                  {candidates.nonBurnable.length > 0 && (
+                    <NonBurnableNftSummary entries={candidates.nonBurnable} />
+                  )}
+                  <EmptyHint>
+                    {candidates.nonBurnable.length > 0
+                      ? "0 pNFTs eligible for BurnV1. See the skipped-reason counts above."
+                      : "No NFT-shape token accounts found in this wallet. If you hold Metaplex Core assets or legacy NFTs, try those sections."}
+                  </EmptyHint>
+                </>
               ) : (
                 <>
                   <BurnCandidateGroupGrid
@@ -4815,10 +4836,10 @@ function PnftBurnSection({
                       onBuildBatch={handleBuildBatch}
                     />
                   )}
+                  {candidates.nonBurnable.length > 0 && (
+                    <NonBurnableNftSummary entries={candidates.nonBurnable} />
+                  )}
                 </>
-              )}
-              {candidates.nonBurnable.length > 0 && (
-                <NonBurnableNftSummary entries={candidates.nonBurnable} />
               )}
             </>
           )}

@@ -1001,8 +1001,11 @@ async function confirmLegacyNfts(
         owner: TOKEN_METADATA_PROGRAM_ID,
         rentEpoch: 0,
       });
-      tokenStandard =
-        decoded.tokenStandard !== null ? decoded.tokenStandard : null;
+      // Nullish coalescing — older Metaplex metadata (pre-tokenStandard era)
+      // returns `undefined` here, which slipped through the previous
+      // `!== null` guard and produced misleading "Unsupported tokenStandard
+      // undefined" skip reasons.
+      tokenStandard = decoded.tokenStandard ?? null;
       name = stripPadding(decoded.data?.name ?? null);
       symbol = stripPadding(decoded.data?.symbol ?? null);
       verifiedCollectionMint = extractVerifiedCollectionMint(decoded.collection);
@@ -1331,6 +1334,37 @@ async function buildLegacyNftBurnTxImpl(
         reason: c.unburnableReason ?? "Not burnable in this milestone",
       });
     }
+  }
+
+  // Diagnostic — surface why the burnable count came out as it did. One
+  // concise line per discovery, dumped to backend logs so we can see the
+  // wallet-level classification breakdown without a UI roundtrip.
+  {
+    const tsBuckets: Record<string, number> = {};
+    for (const c of confirmations) {
+      const ts =
+        c.isProgrammable
+          ? c.isEdition
+            ? "ProgrammableNonFungibleEdition"
+            : "ProgrammableNonFungible"
+          : c.isEdition
+            ? "NonFungibleEdition"
+            : c.isLegacy
+              ? "NonFungible"
+              : c.unburnableReason?.startsWith("Failed to decode")
+                ? "decodeFailed"
+                : c.unburnableReason?.startsWith("Metadata account not found")
+                  ? "noMetadataAccount"
+                  : "nullOrOther";
+      tsBuckets[ts] = (tsBuckets[ts] ?? 0) + 1;
+    }
+    const reasonBuckets: Record<string, number> = {};
+    for (const s of skippedNfts) {
+      reasonBuckets[s.reason] = (reasonBuckets[s.reason] ?? 0) + 1;
+    }
+    console.log(
+      `[legacyNftBurn] classify ${ownerStr}: scan.nft=${scan.nftTokenAccounts.length} coarse=${coarse.length} confirmed=${confirmations.length} burnable=${burnable.length} tokenStandard=${JSON.stringify(tsBuckets)} skipReasons=${JSON.stringify(reasonBuckets)}`,
+    );
   }
 
   // Token-account lookup needed for both reclaim-SOL math and buildTx's
@@ -1867,8 +1901,8 @@ async function confirmPnfts(
         owner: TOKEN_METADATA_PROGRAM_ID,
         rentEpoch: 0,
       });
-      tokenStandard =
-        decoded.tokenStandard !== null ? decoded.tokenStandard : null;
+      // Same nullish-coalescing fix as confirmLegacyNfts — handles undefined.
+      tokenStandard = decoded.tokenStandard ?? null;
       ruleSet = extractRuleSet(decoded.programmableConfig);
       name = stripPadding(decoded.data?.name ?? null);
       symbol = stripPadding(decoded.data?.symbol ?? null);
@@ -2288,6 +2322,38 @@ async function buildPnftBurnTxImpl(
         reason: c.unburnableReason ?? "Not burnable in this milestone",
       });
     }
+  }
+
+  // Diagnostic — see buildLegacyNftBurnTxImpl. One concise line summarising
+  // why the pNFT burnable count came out as it did.
+  {
+    const tsBuckets: Record<string, number> = {};
+    let withTokenRecord = 0;
+    for (const c of confirmations) {
+      const ts =
+        c.isProgrammable
+          ? "ProgrammableNonFungible"
+          : c.isProgrammableEdition
+            ? "ProgrammableNonFungibleEdition"
+            : c.unburnableReason?.startsWith("Failed to decode")
+              ? "decodeFailed"
+              : c.unburnableReason?.startsWith("Metadata account not found")
+                ? "noMetadataAccount"
+                : c.unburnableReason?.startsWith("Legacy Metaplex NFT")
+                  ? "NonFungibleOrEdition"
+                  : c.unburnableReason?.startsWith("Metadata has no tokenStandard")
+                    ? "nullTokenStandard"
+                    : "other";
+      tsBuckets[ts] = (tsBuckets[ts] ?? 0) + 1;
+      if (c.hasTokenRecord) withTokenRecord++;
+    }
+    const reasonBuckets: Record<string, number> = {};
+    for (const s of skippedPnfts) {
+      reasonBuckets[s.reason] = (reasonBuckets[s.reason] ?? 0) + 1;
+    }
+    console.log(
+      `[pnftBurn] classify ${ownerStr}: scan.nft=${scan.nftTokenAccounts.length} coarse=${coarse.length} confirmed=${confirmations.length} hasTokenRecord=${withTokenRecord} burnable=${burnable.length} tokenStandard=${JSON.stringify(tsBuckets)} skipReasons=${JSON.stringify(reasonBuckets)}`,
+    );
   }
 
   // Token-account lookup needed for both reclaim-SOL math and buildTx's
