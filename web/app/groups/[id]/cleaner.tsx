@@ -2565,10 +2565,11 @@ function ActionPlan({
               ? entry.value
               : null;
           const open = isOpen(key);
-          // Disable the action button only when there's nothing to do
-          // (unavailable / rejected). Scanning still allows scrolling so
-          // the user can watch progress in-section.
-          const actionDisabled = s === "unavailable" || s === "rejected";
+          // Always allow Expand/Scroll. Even for unavailable/rejected, the
+          // target section may carry the discovery error message or the
+          // preflight rejection reason — the user needs to see those.
+          // Toggling a card with no items is harmless.
+          const actionDisabled = false;
           // Close-empty is always inline-expanded → label is "Go to".
           // Otherwise label flips on whether the target is open.
           const actionLabel =
@@ -2604,11 +2605,7 @@ function ActionPlan({
                   onClick={() => onFocus(key)}
                   disabled={actionDisabled}
                   aria-label={`${actionLabel} ${label}`}
-                  className={
-                    actionDisabled
-                      ? "rounded border border-neutral-700/50 bg-neutral-800/40 px-2 py-0.5 text-[10px] font-semibold text-neutral-500 cursor-not-allowed"
-                      : "rounded border border-emerald-500/40 bg-emerald-500/[0.08] px-2 py-0.5 text-[10px] font-semibold text-emerald-200 transition-colors duration-100 hover:bg-emerald-500/15"
-                  }
+                  className="rounded border border-emerald-500/40 bg-emerald-500/[0.08] px-2 py-0.5 text-[10px] font-semibold text-emerald-200 transition-colors duration-100 hover:bg-emerald-500/15"
                 >
                   {actionLabel}
                 </button>
@@ -3538,6 +3535,34 @@ function LegacyNftBurnSection({
   const [build, setBuild] = useState<LegacyBuildState>({ status: "idle" });
   const [buildPending, startBuildTransition] = useTransition();
   const [selectedMints, setSelectedMints] = useState<Set<string>>(new Set());
+  // Cancel handle for any in-flight discovery so the unmount path / retry
+  // click never races with a stale response landing into setDiscover.
+  const discoverCancelRef = useRef<(() => void) | null>(null);
+
+  // Section-scoped discovery. Called once on mount and again on Retry. Does
+  // not trigger a wallet rescan — only re-fires this section's backend
+  // discovery call. Selection is cleared because a new discovery may not
+  // include the previously-selected mints.
+  const runDiscover = useCallback(() => {
+    if (nftAccountCount === 0) {
+      setDiscover({ status: "empty" });
+      return;
+    }
+    discoverCancelRef.current?.();
+    let cancelled = false;
+    discoverCancelRef.current = () => {
+      cancelled = true;
+    };
+    setDiscover({ status: "loading" });
+    setSelectedMints(new Set());
+    setBuild({ status: "idle" });
+    (async () => {
+      const res = await buildLegacyNftBurnTxAction(walletAddress, []);
+      if (cancelled) return;
+      if (res.ok) setDiscover({ status: "ready", result: res.result });
+      else setDiscover({ status: "error", error: res.error });
+    })();
+  }, [walletAddress, nftAccountCount]);
 
   // Discovery: one call with no mints on mount. Captures the candidate list
   // (includedNfts have full metadata; cap-skipped entries surface mint only).
@@ -3545,18 +3570,11 @@ function LegacyNftBurnSection({
   // a side-effect of the backend always building a tx for the first ≤3
   // burnable NFTs. The user's *real* preview comes from the Build phase.
   useEffect(() => {
-    if (nftAccountCount === 0) return;
-    let cancelled = false;
-    (async () => {
-      const res = await buildLegacyNftBurnTxAction(walletAddress, []);
-      if (cancelled) return;
-      if (res.ok) setDiscover({ status: "ready", result: res.result });
-      else setDiscover({ status: "error", error: res.error });
-    })();
+    runDiscover();
     return () => {
-      cancelled = true;
+      discoverCancelRef.current?.();
     };
-  }, [walletAddress, nftAccountCount]);
+  }, [runDiscover]);
 
   // Report this section's discovery to the parent reclaim-summary panel.
   // We use per-NFT × totalBurnable as the upper bound (matches this card's
@@ -3695,8 +3713,19 @@ function LegacyNftBurnSection({
             <EmptyHint>Discovering legacy NFTs…</EmptyHint>
           )}
           {discover.status === "error" && (
-            <div className="bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
-              Discovery failed: {discover.error}
+            <div className="flex flex-wrap items-center justify-between gap-2 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+              <span>
+                <span className="font-semibold">Discovery failed:</span>{" "}
+                {prettifyApiError(discover.error)}
+              </span>
+              <button
+                type="button"
+                onClick={runDiscover}
+                aria-label="Retry legacy NFT discovery"
+                className="rounded border border-red-500/40 bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-100 transition-colors duration-100 hover:bg-red-500/25"
+              >
+                Retry discovery
+              </button>
             </div>
           )}
 
@@ -4528,25 +4557,38 @@ function PnftBurnSection({
   const [build, setBuild] = useState<PnftBuildState>({ status: "idle" });
   const [buildPending, startBuildTransition] = useTransition();
   const [selectedMints, setSelectedMints] = useState<Set<string>>(new Set());
+  const discoverCancelRef = useRef<(() => void) | null>(null);
 
-  // Discovery: one no-mints call on mount. Returns up to N pNFTs in
-  // includedPnfts (with full metadata) plus the rest in skippedPnfts.
-  // We ignore the discovery call's transactionBase64 — that's a tx for a
-  // default 2-pNFT batch the user didn't choose. The build phase fires the
-  // user's actual selection.
-  useEffect(() => {
-    if (nftAccountCount === 0) return;
+  // Section-scoped discovery. See LegacyNftBurnSection.runDiscover for the
+  // pattern — Retry uses this same callback to re-fire only this section's
+  // backend call without triggering a wallet rescan.
+  const runDiscover = useCallback(() => {
+    if (nftAccountCount === 0) {
+      setDiscover({ status: "empty" });
+      return;
+    }
+    discoverCancelRef.current?.();
     let cancelled = false;
+    discoverCancelRef.current = () => {
+      cancelled = true;
+    };
+    setDiscover({ status: "loading" });
+    setSelectedMints(new Set());
+    setBuild({ status: "idle" });
     (async () => {
       const res = await buildPnftBurnTxAction(walletAddress, []);
       if (cancelled) return;
       if (res.ok) setDiscover({ status: "ready", result: res.result });
       else setDiscover({ status: "error", error: res.error });
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [walletAddress, nftAccountCount]);
+
+  useEffect(() => {
+    runDiscover();
+    return () => {
+      discoverCancelRef.current?.();
+    };
+  }, [runDiscover]);
 
   // Report this section's discovery to the parent reclaim-summary panel.
   // pNFT has a preflight simulation gate — if discovery's simulationOk is
@@ -4672,8 +4714,19 @@ function PnftBurnSection({
             <EmptyHint>Discovering pNFTs…</EmptyHint>
           )}
           {discover.status === "error" && (
-            <div className="bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
-              Discovery failed: {discover.error}
+            <div className="flex flex-wrap items-center justify-between gap-2 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
+              <span>
+                <span className="font-semibold">Discovery failed:</span>{" "}
+                {prettifyApiError(discover.error)}
+              </span>
+              <button
+                type="button"
+                onClick={runDiscover}
+                aria-label="Retry pNFT discovery"
+                className="rounded border border-red-500/40 bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-100 transition-colors duration-100 hover:bg-red-500/25"
+              >
+                Retry discovery
+              </button>
             </div>
           )}
 
@@ -5124,6 +5177,27 @@ function CoreBurnSection({
   const [build, setBuild] = useState<CoreBuildState>({ status: "idle" });
   const [buildPending, startBuildTransition] = useTransition();
   const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set());
+  const discoverCancelRef = useRef<(() => void) | null>(null);
+
+  // Section-scoped discovery. See LegacyNftBurnSection.runDiscover for the
+  // pattern — Retry uses this same callback to re-fire only this section's
+  // backend call without triggering a wallet rescan.
+  const runDiscover = useCallback(() => {
+    discoverCancelRef.current?.();
+    let cancelled = false;
+    discoverCancelRef.current = () => {
+      cancelled = true;
+    };
+    setDiscover({ status: "loading" });
+    setSelectedAssets(new Set());
+    setBuild({ status: "idle" });
+    (async () => {
+      const res = await buildCoreBurnTxAction(walletAddress, []);
+      if (cancelled) return;
+      if (res.ok) setDiscover({ status: "ready", result: res.result });
+      else setDiscover({ status: "error", error: res.error });
+    })();
+  }, [walletAddress]);
 
   // Discovery: one no-assetIds call on mount. Backend probes the Core
   // program for AssetV1 accounts owned by the wallet and returns up to N
@@ -5131,17 +5205,11 @@ function CoreBurnSection({
   // discovery tx is for a default batch — we ignore it and rebuild against
   // the user's selection in the build phase.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const res = await buildCoreBurnTxAction(walletAddress, []);
-      if (cancelled) return;
-      if (res.ok) setDiscover({ status: "ready", result: res.result });
-      else setDiscover({ status: "error", error: res.error });
-    })();
+    runDiscover();
     return () => {
-      cancelled = true;
+      discoverCancelRef.current?.();
     };
-  }, [walletAddress]);
+  }, [runDiscover]);
 
   // Report this section's discovery to the parent reclaim-summary panel.
   // Core also has a preflight simulation gate (Permanent Freeze /
@@ -5256,8 +5324,19 @@ function CoreBurnSection({
             <EmptyHint>Discovering Core assets…</EmptyHint>
           )}
           {discover.status === "error" && (
-            <div className="bg-red-600/10 px-3 py-1.5 text-xs text-red-300">
-              Discovery failed: {discover.error}
+            <div className="flex flex-wrap items-center justify-between gap-2 bg-red-600/10 px-3 py-1.5 text-xs text-red-300">
+              <span>
+                <span className="font-semibold">Discovery failed:</span>{" "}
+                {prettifyApiError(discover.error)}
+              </span>
+              <button
+                type="button"
+                onClick={runDiscover}
+                aria-label="Retry Core asset discovery"
+                className="rounded border border-red-500/40 bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-100 transition-colors duration-100 hover:bg-red-500/25"
+              >
+                Retry discovery
+              </button>
             </div>
           )}
 

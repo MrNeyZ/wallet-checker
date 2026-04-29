@@ -2583,6 +2583,14 @@ async function findCoreAssets(owner: PublicKey): Promise<CoreAssetParsed[]> {
       lamports: a.account.lamports,
       image: null,
     });
+    // Diagnostic: confirm whether per-asset lamports / data sizes actually
+    // vary across a same-collection set. If lamports are uniform here but
+    // the wallet-simulated payer delta varies, the discrepancy is on the
+    // program side (rent redirection); if lamports vary here, the UI grid
+    // is collapsing to a shared value.
+    console.log(
+      `[coreBurn] asset ${a.pubkey.toBase58()} lamports ${a.account.lamports} dataSize ${buf.length}`,
+    );
   }
   return out;
 }
