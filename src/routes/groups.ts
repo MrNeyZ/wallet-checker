@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   addWalletToGroup,
   createGroup,
+  deleteGroup,
   getGroup,
   listGroups,
   removeWalletFromGroup,
@@ -19,6 +20,7 @@ import { buildGroupDashboard } from "../services/groups/groupDashboard.js";
 import { buildGroupLpPositions } from "../services/groups/groupLp.js";
 import { buildGroupAirdrops } from "../services/groups/groupAirdrops.js";
 import { evaluateGroupSignals } from "../services/groups/groupSignals.js";
+import { scanWalletQueued } from "../services/cleanup/scanQueue.js";
 import {
   DEFAULT_INTERVAL_MS as SIGNAL_DEFAULT_INTERVAL_MS,
   MAX_INTERVAL_MS as SIGNAL_MAX_INTERVAL_MS,
@@ -81,6 +83,18 @@ router.post("/", (req, res) => {
 
 router.get("/", (_req, res) => {
   res.json({ groups: listGroups() });
+});
+
+// Hard delete. Group is removed from the in-memory map and persisted
+// (atomic write). Per-group runtime state (signal/alert pollers, caches)
+// keyed by the deleted id will simply have no targets after this — the
+// pollers self-noop without a matching group.
+router.delete("/:groupId", (req, res) => {
+  const result = deleteGroup(req.params.groupId);
+  if (result === "not_found") {
+    return res.status(404).json({ ok: false, error: "Group not found" });
+  }
+  res.json({ ok: true });
 });
 
 router.post("/:groupId/wallets", (req, res) => {
@@ -484,6 +498,45 @@ router.get("/:groupId/signals/status", (req, res) => {
   if (!group) return res.status(404).json({ error: "Group not found" });
   const status = getSignalPollerStatus(group.id);
   res.json({ groupId: group.id, ...status });
+});
+
+// Batch cleanup-scan for every wallet in a group. Replaces the prior
+// frontend-driven worker pool, which was unreliable for groups with 5+
+// large wallets (per-wallet RPC retries stacking up, no shared cache,
+// blocked by network jitter). Server-side processing gets us:
+//   - sequential per-wallet processing under one HTTP roundtrip
+//   - shared 10-minute scanner cache hits (instant on repeat)
+//   - per-wallet 45s wall-clock budget so one slow wallet doesn't block
+//     the whole group
+//   - 429 retry with backoffs from the spec, capped to fit the budget
+// Returns a status per wallet so the UI can display ok/cached/timeout/
+// rate-limited/error counts. No streaming — single blocking response.
+router.post("/:groupId/cleanup-scan-all", async (req, res) => {
+  const group = getGroup(req.params.groupId);
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  const force = req.body?.force === true;
+  const results: Array<
+    Awaited<ReturnType<typeof scanWalletQueued>> & { label: string | null }
+  > = [];
+  // Sequential — concurrency=1 by design. The scanner.ts in-flight
+  // dedupe handles concurrent same-wallet requests if any sneak in
+  // (e.g. a single-wallet scan kicked off in parallel by the user).
+  for (const wlt of group.wallets) {
+    const r = await scanWalletQueued(wlt.address, { force });
+    results.push({ ...r, label: wlt.label });
+  }
+  res.json({
+    groupId: group.id,
+    total: results.length,
+    counts: {
+      ok: results.filter((r) => r.status === "ok").length,
+      cached: results.filter((r) => r.status === "cached").length,
+      timeout: results.filter((r) => r.status === "timeout").length,
+      rateLimited: results.filter((r) => r.status === "rate-limited").length,
+      error: results.filter((r) => r.status === "error").length,
+    },
+    wallets: results,
+  });
 });
 
 export default router;

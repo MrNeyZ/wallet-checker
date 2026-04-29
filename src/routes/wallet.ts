@@ -18,6 +18,7 @@ import {
   ProviderError,
 } from "../services/pnl/solanaTrackerProvider.js";
 import { fetchWalletTrades } from "../services/trades/solanaTrackerTrades.js";
+import { fetchAssetMetadataBatch } from "../services/helius/das.js";
 
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
 const BURN_WARNING =
@@ -80,7 +81,7 @@ router.get("/:address/burn-candidates", async (req, res) => {
 
   try {
     const scan = await scanWalletForCleanup(parsed.data);
-    const candidates = scan.fungibleTokenAccounts
+    const baseCandidates = scan.fungibleTokenAccounts
       .filter((acc) => acc.mint !== WSOL_MINT)
       .map((acc) => ({
         tokenAccount: acc.tokenAccount,
@@ -92,12 +93,34 @@ router.get("/:address/burn-candidates", async (req, res) => {
         lamports: acc.lamports,
         programId: acc.programId,
         estimatedReclaimSolAfterBurnAndClose: acc.lamports / LAMPORTS_PER_SOL,
-        symbol: null,
-        name: null,
+        symbol: null as string | null,
+        name: null as string | null,
+        image: null as string | null,
         riskLevel: "unknown" as const,
         burnRecommended: false,
         reason: "Manual review required before destructive burn.",
       }));
+
+    // Enrich with token metadata via Helius DAS — same call path the NFT
+    // burn flows use. DAS supports SPL fungible tokens (interface
+    // "FungibleToken" / "FungibleAsset") and returns the same content
+    // shape we already extract: name, symbol, image. Cached in-process
+    // for 10 minutes; fails open (returns empty map) if HELIUS_API_KEY
+    // is missing, so candidates degrade gracefully to the existing
+    // shortAddr-only display the frontend now uses as fallback.
+    const dasMap = await fetchAssetMetadataBatch(
+      baseCandidates.map((c) => c.mint),
+    );
+    const candidates = baseCandidates.map((c) => {
+      const m = dasMap.get(c.mint);
+      if (!m) return c;
+      return {
+        ...c,
+        name: c.name ?? m.name,
+        symbol: c.symbol ?? m.symbol,
+        image: c.image ?? m.image,
+      };
+    });
 
     res.json({
       wallet: parsed.data,

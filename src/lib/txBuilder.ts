@@ -461,7 +461,11 @@ import {
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import { SystemProgram, SYSVAR_INSTRUCTIONS_PUBKEY } from "@solana/web3.js";
 
-export const MAX_NFT_BURN_PER_TX = 3;
+// Safety cap, NOT the primary limit — actual included count is decided by
+// tx-size + simulation outcome. The sim-trim loop in buildLegacyNftBurnTx
+// will bring this down further whenever needed; this cap just bounds the
+// initial attempt so we don't waste a full-wallet simulation pass.
+export const MAX_NFT_BURN_PER_TX = 8;
 const CU_PER_NFT_BURN = 50_000;
 const STANDARD_NFT_BURN_WARNING =
   "Burns Metaplex NFTs irreversibly and closes their Metadata + Master Edition accounts. Verify each mint manually before signing — burned NFTs and their on-chain state cannot be recovered.";
@@ -893,6 +897,16 @@ export interface LegacyNftConfirmation {
   // Off-chain JSON metadata (image URL). Populated by the Helius DAS
   // enrichment pass in buildLegacyNftBurnTx; null on confirm-time.
   image: string | null;
+  // Set when the legacy NFT belongs to a verified Metaplex collection AND
+  // that collection's Metadata account exists on-chain. BurnV1 requires
+  // this PDA in the `collectionMetadata` slot for collection-verified NFTs;
+  // omitting it triggers Phantom's "transaction reverted during simulation"
+  // warning (and fails on-chain with a missing-collection-metadata error).
+  collectionMetadataPda: string | null;
+  // Verified collection MINT (not the metadata PDA). Used by the frontend
+  // to group candidates by collection in the selection UI. Null when the
+  // NFT is not part of a verified collection.
+  collection: string | null;
 }
 
 async function confirmLegacyNfts(
@@ -919,6 +933,10 @@ async function confirmLegacyNfts(
     }
   }
 
+  // Indexed by candidates[]; populated in Pass 1, consumed in Pass 2 for
+  // verified-collection NFTs. Same shape as confirmPnfts.
+  const collectionMintByCandidateIdx = new Map<number, PublicKey>();
+
   const out: LegacyNftConfirmation[] = [];
   for (let i = 0; i < candidates.length; i++) {
     const acc = candidates[i];
@@ -934,6 +952,8 @@ async function confirmLegacyNfts(
       name: null as string | null,
       symbol: null as string | null,
       image: null as string | null,
+      collectionMetadataPda: null as string | null,
+      collection: null as string | null,
     };
     if (!metaInfo) {
       out.push({
@@ -950,6 +970,7 @@ async function confirmLegacyNfts(
     let tokenStandard: number | null = null;
     let name: string | null = null;
     let symbol: string | null = null;
+    let verifiedCollectionMint: PublicKey | null = null;
     try {
       const [decoded] = Metadata.fromAccountInfo({
         data: metaInfo.data,
@@ -962,6 +983,7 @@ async function confirmLegacyNfts(
         decoded.tokenStandard !== null ? decoded.tokenStandard : null;
       name = stripPadding(decoded.data?.name ?? null);
       symbol = stripPadding(decoded.data?.symbol ?? null);
+      verifiedCollectionMint = extractVerifiedCollectionMint(decoded.collection);
     } catch (err) {
       out.push({
         ...base,
@@ -996,6 +1018,10 @@ async function confirmLegacyNfts(
       isBurnable = true;
     }
 
+    if (verifiedCollectionMint && isBurnable) {
+      collectionMintByCandidateIdx.set(i, verifiedCollectionMint);
+    }
+
     out.push({
       ...base,
       name,
@@ -1005,8 +1031,52 @@ async function confirmLegacyNfts(
       isEdition,
       isBurnable,
       unburnableReason,
+      collection: verifiedCollectionMint
+        ? verifiedCollectionMint.toBase58()
+        : null,
     });
   }
+
+  // Pass 2: fetch each verified collection's parent Metadata account. If it
+  // exists on-chain, hand its PDA to BurnV1 via `collectionMetadata` so the
+  // Token Metadata program can do the sized-collection bookkeeping at burn
+  // time. If it doesn't exist, mark the NFT non-burnable to avoid the
+  // "Missing collection metadata" revert (Phantom's "reverted during
+  // simulation" warning). Same shape as confirmPnfts.
+  const collectionEntries = [...collectionMintByCandidateIdx.entries()];
+  if (collectionEntries.length > 0) {
+    const collectionPdas = collectionEntries.map(([, mint]) =>
+      deriveMetadataPda(mint),
+    );
+    const collectionInfos: ({ data: Buffer; lamports: number } | null)[] = [];
+    for (let i = 0; i < collectionPdas.length; i += 100) {
+      const chunk = collectionPdas.slice(i, i + 100);
+      const res = await connection.getMultipleAccountsInfo(chunk);
+      for (const info of res) {
+        collectionInfos.push(
+          info
+            ? { data: Buffer.from(info.data), lamports: info.lamports }
+            : null,
+        );
+      }
+    }
+    for (let k = 0; k < collectionEntries.length; k++) {
+      const [candidateIdx] = collectionEntries[k];
+      const colInfo = collectionInfos[k];
+      const colPda = collectionPdas[k].toBase58();
+      const conf = out[candidateIdx];
+      if (!colInfo) {
+        if (conf.isBurnable) {
+          conf.isBurnable = false;
+          conf.unburnableReason =
+            "Verified collection metadata account not found on-chain — can't safely build BurnV1";
+        }
+      } else {
+        conf.collectionMetadataPda = colPda;
+      }
+    }
+  }
+
   return out;
 }
 
@@ -1030,15 +1100,35 @@ export interface LegacyNftBurnSkippedEntry {
   mint: string;
   tokenAccount: string;
   reason: string;
-  // Populated only for cap-overflow / tx-size-trimmed entries (the NFT is
-  // burnable, just didn't fit this batch). Truly non-burnable skips leave
-  // these undefined so the frontend can keep their summary minimal.
+  // Optional metadata fields — historically populated for cap-overflow /
+  // tx-size-trimmed entries. With the new burnableCandidates field, those
+  // entries no longer appear in skippedNfts (they're surfaced via
+  // burnableCandidates instead). Kept optional for backwards-compat.
   name?: string | null;
   symbol?: string | null;
   image?: string | null;
   estimatedGrossReclaimSol?: number;
   metadata?: string;
   masterEdition?: string;
+}
+
+// Full burnable candidate — every NFT/asset that passed all static checks
+// and CAN be included in a burn tx. The frontend uses this list to render
+// the selectable candidate table; the user can pick any combination, and
+// includedNfts is whatever subset of the user's selection actually fit
+// the per-tx cap on the build call.
+export interface BurnableLegacyCandidate {
+  mint: string;
+  tokenAccount: string;
+  name: string | null;
+  symbol: string | null;
+  image: string | null;
+  estimatedGrossReclaimSol: number;
+  metadata: string;
+  masterEdition: string;
+  // Verified collection mint (or null). Drives frontend grouping in the
+  // selectable candidate list.
+  collection: string | null;
 }
 
 export interface BuildLegacyNftBurnTxResult {
@@ -1058,6 +1148,30 @@ export interface BuildLegacyNftBurnTxResult {
   feePayer: string;
   requiresSignatureFrom: string;
   warning: string;
+  // Backend preflight simulation outcome. `simulationOk` is true when the
+  // unsigned tx simulated successfully end-to-end; false if the chain
+  // would have rejected (most common cause: verified-collection NFTs whose
+  // collection metadata account is missing, or token-record / freeze
+  // delegate state we couldn't catch statically). When false, all
+  // includedNfts move to skippedNfts and transactionBase64 is null per
+  // the same all-or-nothing pattern as pNFT/Core.
+  simulationOk: boolean;
+  simulationError?: string;
+  // Full list of burnable NFTs in the wallet — independent of which ones
+  // fit this tx. Frontend renders the selectable candidate table from
+  // this; the user picks any combination and the build call returns
+  // includedNfts containing the largest chosen subset that fits + sims.
+  burnableCandidates: BurnableLegacyCandidate[];
+  // Safety cap on the INITIAL build attempt. Actual included count is
+  // decided by tx size + simulation; the sim-trim loop may produce a
+  // smaller batch than maxPerTx. Frontend uses this to display "select
+  // up to N per transaction" as a hint, not a hard gate.
+  maxPerTx: number;
+  // Items the user selected (or in discovery, all burnable items past the
+  // safety cap) that did NOT fit this batch and were NOT sim-isolated.
+  // Drives the "Build next batch" button — no rescan required between
+  // batches when the same selection still has leftovers.
+  nextBatchCandidates: BurnableLegacyCandidate[];
 }
 
 export async function buildLegacyNftBurnTx(
@@ -1108,7 +1222,9 @@ export async function buildLegacyNftBurnTx(
       });
       continue;
     }
-    if (mintsAllowed && !mintsAllowed.has(acc.mint)) continue;
+    // mintsAllowed is intentionally NOT applied here — we walk every NFT
+    // so burnableCandidates reflects the full wallet. The user-selected
+    // subset is filtered post-confirmation when picking included items.
     if (seen.has(acc.tokenAccount)) continue;
     seen.add(acc.tokenAccount);
     coarse.push(acc);
@@ -1135,19 +1251,15 @@ export async function buildLegacyNftBurnTx(
     }
   }
 
-  // Built early so cap-overflow / trim skip entries can include reclaim-SOL
-  // (which needs the SPL token-account lamports alongside metadata + master
-  // edition rent).
+  // Token-account lookup needed for both reclaim-SOL math and buildTx's
+  // per-NFT account list.
   const tokenAccountByMint = new Map<string, ScannedTokenAccount>();
   for (const acc of coarse) tokenAccountByMint.set(acc.mint, acc);
 
-  // Helper: enrich a cap-skipped / trim-skipped entry with the metadata that
-  // discovery already confirmed. Burnable NFTs are still burnable, just
-  // didn't fit this batch — the frontend should show them with full info.
-  const enrichSkip = (
-    c: LegacyNftConfirmation,
-    reason: string,
-  ): LegacyNftBurnSkippedEntry => {
+  // Full burnable candidate list — what the frontend renders in the
+  // selectable table. Includes every NFT that passed static checks,
+  // regardless of which subset will fit the current tx.
+  const burnableCandidates: BurnableLegacyCandidate[] = burnable.map((c) => {
     const acc = tokenAccountByMint.get(c.mint);
     const reclaimLamports = acc
       ? acc.lamports + c.metadataLamports + c.masterEditionLamports
@@ -1155,26 +1267,39 @@ export async function buildLegacyNftBurnTx(
     return {
       mint: c.mint,
       tokenAccount: c.tokenAccount,
-      reason,
       name: c.name,
       symbol: c.symbol,
       image: c.image,
       estimatedGrossReclaimSol: reclaimLamports / LAMPORTS_PER_SOL,
       metadata: c.metadataPda,
       masterEdition: c.masterEditionPda,
+      collection: c.collection,
     };
-  };
+  });
 
-  let included = burnable.slice(0, MAX_NFT_BURN_PER_TX);
-  for (const trimmed of burnable.slice(MAX_NFT_BURN_PER_TX)) {
-    skippedNfts.push(
-      enrichSkip(
-        trimmed,
-        `Cap of ${MAX_NFT_BURN_PER_TX} NFTs per tx — rebuild after this batch confirms`,
-      ),
-    );
-  }
+  // Pick the user-selected subset (or fall back to all burnable on
+  // discovery calls), then cap at MAX_NFT_BURN_PER_TX as a safety bound
+  // on the initial attempt. The actual included count is decided by the
+  // tx-size + sim-trim loops below.
+  const selected = mintsAllowed
+    ? burnable.filter((c) => mintsAllowed.has(c.mint))
+    : burnable;
+  let included = selected.slice(0, MAX_NFT_BURN_PER_TX);
   const priorityFeeMicrolamports = readPriorityFeeMicrolamports();
+  const burnableByMint = new Map(burnableCandidates.map((c) => [c.mint, c]));
+  // Helper: compute the leftover items the user can try in the next
+  // batch — anything they selected (or all on discovery) that isn't in
+  // the final `included` and isn't isolated as a sim failure.
+  const computeNextBatch = (
+    finalIncluded: LegacyNftConfirmation[],
+    isolatedMint: string | null,
+  ): BurnableLegacyCandidate[] => {
+    const includedSet = new Set(finalIncluded.map((c) => c.mint));
+    return selected
+      .filter((c) => !includedSet.has(c.mint) && c.mint !== isolatedMint)
+      .map((c) => burnableByMint.get(c.mint))
+      .filter((c): c is BurnableLegacyCandidate => c !== undefined);
+  };
 
   if (included.length === 0) {
     return {
@@ -1194,6 +1319,10 @@ export async function buildLegacyNftBurnTx(
       feePayer: ownerStr,
       requiresSignatureFrom: ownerStr,
       warning: LEGACY_NFT_BURN_WARNING,
+      simulationOk: true,
+      burnableCandidates,
+      maxPerTx: MAX_NFT_BURN_PER_TX,
+      nextBatchCandidates: computeNextBatch([], null),
     };
   }
 
@@ -1221,6 +1350,10 @@ export async function buildLegacyNftBurnTx(
       const masterEdition = new PublicKey(c.masterEditionPda);
       // BurnV1 / TokenStandard.NonFungible — see comment in
       // buildStandardNftBurnTx for the full account-set rationale.
+      // Verified-collection NFTs need the parent collection's Metadata PDA
+      // in `collectionMetadata`; confirmLegacyNfts has already validated
+      // the account exists on-chain and recorded the PDA. Without this
+      // slot, Phantom flags the tx as "reverted during simulation".
       t.add(
         createMetaplexBurnInstruction(
           {
@@ -1232,6 +1365,9 @@ export async function buildLegacyNftBurnTx(
             sysvarInstructions: SYSVAR_INSTRUCTIONS_PUBKEY,
             splTokenProgram: TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
+            ...(c.collectionMetadataPda
+              ? { collectionMetadata: new PublicKey(c.collectionMetadataPda) }
+              : {}),
           },
           { burnArgs: { __kind: "V1", amount: 1n } },
         ),
@@ -1246,14 +1382,8 @@ export async function buildLegacyNftBurnTx(
 
   let computeUnitLimit = CU_PER_NFT_BURN * included.length + CU_HEADROOM;
   let built = buildTx(included, computeUnitLimit);
+  // Tx-size trim (cheap, no RPC).
   while (built.serialized.length > MAX_TX_SIZE_BYTES && included.length > 1) {
-    const dropped = included[included.length - 1];
-    skippedNfts.push(
-      enrichSkip(
-        dropped,
-        "Trimmed to fit 1232-byte tx cap — rebuild after this batch confirms",
-      ),
-    );
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_NFT_BURN * included.length + CU_HEADROOM;
     built = buildTx(included, computeUnitLimit);
@@ -1262,6 +1392,82 @@ export async function buildLegacyNftBurnTx(
     throw new Error(
       `Legacy NFT burn transaction exceeds ${MAX_TX_SIZE_BYTES}-byte packet cap even with one NFT (got ${built.serialized.length} bytes)`,
     );
+  }
+
+  // ============================================================================
+  // Preflight simulation — sim-trim loop.
+  // Each iteration: simulate the current `included` batch. On success, exit.
+  // On failure, trim the tail by one and rebuild. If the loop bottoms out at
+  // size 1 with a still-failing tx, isolate that single item to skippedNfts
+  // with a reason — the next batch will try the rest. Each sim is one RPC
+  // call, so worst case = MAX_NFT_BURN_PER_TX RPCs (rare; only when one bad
+  // item sits at or near the head of the selection).
+  // ============================================================================
+  let simulationOk = false;
+  let simulationError: string | undefined;
+  let isolated: LegacyNftBurnSkippedEntry | null = null;
+  while (included.length > 0) {
+    let simErr: string | undefined;
+    try {
+      const sim = await connection.simulateTransaction(built.tx);
+      if (!sim.value.err) {
+        simulationOk = true;
+        break;
+      }
+      simErr = parseSimulationError(sim.value.err, sim.value.logs ?? []);
+      console.warn(
+        `[legacyNftBurn] preflight rejected for ${ownerStr} at batch=${included.length}: friendly="${simErr}" rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
+      );
+    } catch (err) {
+      simErr =
+        err instanceof Error ? err.message : "Simulation request failed";
+      console.warn(
+        `[legacyNftBurn] preflight call failed for ${ownerStr} at batch=${included.length}: ${(err as Error)?.message ?? err}`,
+      );
+    }
+    if (included.length === 1) {
+      isolated = {
+        mint: included[0].mint,
+        tokenAccount: included[0].tokenAccount,
+        reason: `Preflight rejected: ${simErr}`,
+      };
+      simulationError = simErr;
+      included = [];
+      break;
+    }
+    included = included.slice(0, -1);
+    computeUnitLimit = CU_PER_NFT_BURN * included.length + CU_HEADROOM;
+    built = buildTx(included, computeUnitLimit);
+  }
+
+  if (isolated) skippedNfts.push(isolated);
+
+  // No items survived simulation — empty envelope with the isolated reason
+  // so the UI can explain why nothing built.
+  if (included.length === 0) {
+    return {
+      burnCount: 0,
+      totalBurnable: burnable.length,
+      includedNfts: [],
+      skippedNfts,
+      estimatedGrossReclaimSol: 0,
+      estimatedBaseFeeSol: 0,
+      estimatedPriorityFeeSol: 0,
+      estimatedFeeSol: 0,
+      estimatedNetReclaimSol: 0,
+      computeUnitLimit: 0,
+      priorityFeeMicrolamports,
+      transactionBase64: null,
+      transactionVersion: "legacy",
+      feePayer: ownerStr,
+      requiresSignatureFrom: ownerStr,
+      warning: LEGACY_NFT_BURN_WARNING,
+      simulationOk: false,
+      simulationError,
+      burnableCandidates,
+      maxPerTx: MAX_NFT_BURN_PER_TX,
+      nextBatchCandidates: computeNextBatch([], isolated?.mint ?? null),
+    };
   }
 
   const baseFeeLamports = BASE_FEE_LAMPORTS_PER_SIGNATURE;
@@ -1312,6 +1518,10 @@ export async function buildLegacyNftBurnTx(
     feePayer: ownerStr,
     requiresSignatureFrom: ownerStr,
     warning: LEGACY_NFT_BURN_WARNING,
+    simulationOk,
+    burnableCandidates,
+    maxPerTx: MAX_NFT_BURN_PER_TX,
+    nextBatchCandidates: computeNextBatch(included, isolated?.mint ?? null),
   };
 }
 
@@ -1339,7 +1549,11 @@ export async function buildLegacyNftBurnTx(
 const PNFT_BURN_WARNING =
   "Burns Programmable NFTs irreversibly via BurnV1 and closes their Metadata + Master Edition + Token Record accounts. Verify each mint manually before signing — burned NFTs cannot be recovered.";
 
-export const MAX_PNFT_BURN_PER_TX = 2;
+// Safety cap — see MAX_NFT_BURN_PER_TX comment. pNFT ix carries token
+// record + (optional) auth-rules + collection metadata, so it's wider than
+// legacy; lower safety cap reflects that. Sim-trim loop trims further as
+// needed.
+export const MAX_PNFT_BURN_PER_TX = 6;
 
 // Metaplex Token Auth Rules program. Required as account #14 in BurnV1
 // when the pNFT's metadata.programmableConfig.ruleSet is set. The v2.13.0
@@ -1413,6 +1627,9 @@ export interface PnftConfirmation {
   // omitting it results in a "Missing collection metadata account" error
   // (Custom 103 from the Token Metadata program).
   collectionMetadataPda: string | null;
+  // Verified collection MINT. Used by the frontend to group candidates by
+  // collection in the selection UI.
+  collection: string | null;
 }
 
 // Pulls verified-collection key out of decoded metadata. Returns null when
@@ -1499,6 +1716,7 @@ async function confirmPnfts(
         unburnableReason:
           "Metadata account not found — not a Metaplex NFT or already burned",
         collectionMetadataPda: null,
+        collection: null,
       });
       continue;
     }
@@ -1532,6 +1750,7 @@ async function confirmPnfts(
         isBurnable: false,
         unburnableReason: `Failed to decode Metadata: ${(err as Error).message}`,
         collectionMetadataPda: null,
+        collection: null,
       });
       continue;
     }
@@ -1581,6 +1800,9 @@ async function confirmPnfts(
       isBurnable,
       unburnableReason,
       collectionMetadataPda: null, // populated in Pass 2 below for verified collections
+      collection: verifiedCollectionMint
+        ? verifiedCollectionMint.toBase58()
+        : null,
     });
   }
 
@@ -1651,9 +1873,9 @@ export interface PnftBurnSkippedEntry {
   mint: string;
   tokenAccount: string;
   reason: string;
-  // Populated only for cap-overflow / tx-size-trimmed entries (the pNFT is
-  // burnable, just didn't fit this batch). Truly non-burnable skips leave
-  // these undefined.
+  // Optional metadata fields — historically populated for cap-overflow /
+  // tx-size-trimmed entries. Now redundant since burnableCandidates carries
+  // the full pNFT list; kept optional for backwards-compat.
   name?: string | null;
   symbol?: string | null;
   image?: string | null;
@@ -1663,6 +1885,23 @@ export interface PnftBurnSkippedEntry {
   tokenRecord?: string;
   ruleSet?: string | null;
   collectionMetadata?: string | null;
+}
+
+export interface BurnablePnftCandidate {
+  mint: string;
+  tokenAccount: string;
+  name: string | null;
+  symbol: string | null;
+  image: string | null;
+  estimatedGrossReclaimSol: number;
+  metadata: string;
+  masterEdition: string;
+  tokenRecord: string;
+  ruleSet: string | null;
+  collectionMetadata: string | null;
+  // Verified collection MINT — drives frontend grouping in the
+  // selectable candidate list. Null when the pNFT is standalone.
+  collection: string | null;
 }
 
 export interface BuildPnftBurnTxResult {
@@ -1689,6 +1928,11 @@ export interface BuildPnftBurnTxResult {
   // transactionBase64 is null per spec.
   simulationOk: boolean;
   simulationError?: string;
+  // Full burnable list — see BuildLegacyNftBurnTxResult.burnableCandidates.
+  burnableCandidates: BurnablePnftCandidate[];
+  maxPerTx: number;
+  // See BuildLegacyNftBurnTxResult.nextBatchCandidates.
+  nextBatchCandidates: BurnablePnftCandidate[];
 }
 
 // Friendly mapping for the most common Token Metadata / auth-rules custom
@@ -1843,7 +2087,7 @@ export async function buildPnftBurnTx(
       });
       continue;
     }
-    if (mintsAllowed && !mintsAllowed.has(acc.mint)) continue;
+    // mintsAllowed intentionally NOT applied here — see legacy comment.
     if (seen.has(acc.tokenAccount)) continue;
     seen.add(acc.tokenAccount);
     coarse.push(acc);
@@ -1866,16 +2110,13 @@ export async function buildPnftBurnTx(
     }
   }
 
-  // Lifted early so cap-overflow / trim entries can include reclaim-SOL
-  // and the auth-rules / token-record / collection PDAs the frontend
-  // already needs to render the row.
+  // Token-account lookup needed for both reclaim-SOL math and buildTx's
+  // per-NFT account list.
   const tokenAccountByMint = new Map<string, ScannedTokenAccount>();
   for (const acc of coarse) tokenAccountByMint.set(acc.mint, acc);
 
-  const enrichSkip = (
-    c: PnftConfirmation,
-    reason: string,
-  ): PnftBurnSkippedEntry => {
+  // Full burnable candidate list — what the frontend renders.
+  const burnableCandidates: BurnablePnftCandidate[] = burnable.map((c) => {
     const acc = tokenAccountByMint.get(c.mint);
     const reclaimLamports = acc
       ? acc.lamports +
@@ -1886,7 +2127,6 @@ export async function buildPnftBurnTx(
     return {
       mint: c.mint,
       tokenAccount: c.tokenAccount,
-      reason,
       name: c.name,
       symbol: c.symbol,
       image: c.image,
@@ -1896,19 +2136,28 @@ export async function buildPnftBurnTx(
       tokenRecord: c.tokenRecordPda,
       ruleSet: c.ruleSet,
       collectionMetadata: c.collectionMetadataPda,
+      collection: c.collection,
     };
-  };
+  });
 
-  let included = burnable.slice(0, MAX_PNFT_BURN_PER_TX);
-  for (const trimmed of burnable.slice(MAX_PNFT_BURN_PER_TX)) {
-    skippedPnfts.push(
-      enrichSkip(
-        trimmed,
-        `Cap of ${MAX_PNFT_BURN_PER_TX} pNFTs per tx — rebuild after this batch confirms`,
-      ),
-    );
-  }
+  // User-selected subset (or all on discovery), capped at MAX_PNFT_BURN_PER_TX
+  // for the initial attempt. Sim-trim loop below shrinks further as needed.
+  const selected = mintsAllowed
+    ? burnable.filter((c) => mintsAllowed.has(c.mint))
+    : burnable;
+  let included = selected.slice(0, MAX_PNFT_BURN_PER_TX);
   const priorityFeeMicrolamports = readPriorityFeeMicrolamports();
+  const burnableByMint = new Map(burnableCandidates.map((c) => [c.mint, c]));
+  const computeNextBatch = (
+    finalIncluded: PnftConfirmation[],
+    isolatedMint: string | null,
+  ): BurnablePnftCandidate[] => {
+    const includedSet = new Set(finalIncluded.map((c) => c.mint));
+    return selected
+      .filter((c) => !includedSet.has(c.mint) && c.mint !== isolatedMint)
+      .map((c) => burnableByMint.get(c.mint))
+      .filter((c): c is BurnablePnftCandidate => c !== undefined);
+  };
 
   if (included.length === 0) {
     return {
@@ -1929,6 +2178,9 @@ export async function buildPnftBurnTx(
       requiresSignatureFrom: ownerStr,
       warning: PNFT_BURN_WARNING,
       simulationOk: true,
+      burnableCandidates,
+      maxPerTx: MAX_PNFT_BURN_PER_TX,
+      nextBatchCandidates: computeNextBatch([], null),
     };
   }
 
@@ -2012,14 +2264,8 @@ export async function buildPnftBurnTx(
 
   let computeUnitLimit = CU_PER_PNFT_BURN * included.length + CU_HEADROOM;
   let built = buildTx(included, computeUnitLimit);
+  // Tx-size trim (cheap, no RPC).
   while (built.serialized.length > MAX_TX_SIZE_BYTES && included.length > 1) {
-    const dropped = included[included.length - 1];
-    skippedPnfts.push(
-      enrichSkip(
-        dropped,
-        "Trimmed to fit 1232-byte tx cap — rebuild after this batch confirms",
-      ),
-    );
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_PNFT_BURN * included.length + CU_HEADROOM;
     built = buildTx(included, computeUnitLimit);
@@ -2030,6 +2276,77 @@ export async function buildPnftBurnTx(
     );
   }
 
+  // ============================================================================
+  // Preflight simulation — sim-trim loop. See buildLegacyNftBurnTx for the
+  // pattern. Each fail trims the tail and retries; size-1 fail isolates the
+  // bad item with a per-item skip reason.
+  // ============================================================================
+  let simulationOk = false;
+  let simulationError: string | undefined;
+  let isolated: PnftBurnSkippedEntry | null = null;
+  while (included.length > 0) {
+    let simErr: string | undefined;
+    try {
+      const sim = await connection.simulateTransaction(built.tx);
+      if (!sim.value.err) {
+        simulationOk = true;
+        break;
+      }
+      simErr = parseSimulationError(sim.value.err, sim.value.logs ?? []);
+      console.warn(
+        `[pnftBurn] preflight rejected for ${ownerStr} at batch=${included.length}: friendly="${simErr}" rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
+      );
+    } catch (err) {
+      simErr =
+        err instanceof Error ? err.message : "Simulation request failed";
+      console.warn(
+        `[pnftBurn] preflight call failed for ${ownerStr} at batch=${included.length}: ${(err as Error)?.message ?? err}`,
+      );
+    }
+    if (included.length === 1) {
+      isolated = {
+        mint: included[0].mint,
+        tokenAccount: included[0].tokenAccount,
+        reason: `Preflight rejected: ${simErr}`,
+      };
+      simulationError = simErr;
+      included = [];
+      break;
+    }
+    included = included.slice(0, -1);
+    computeUnitLimit = CU_PER_PNFT_BURN * included.length + CU_HEADROOM;
+    built = buildTx(included, computeUnitLimit);
+  }
+
+  if (isolated) skippedPnfts.push(isolated);
+
+  if (included.length === 0) {
+    return {
+      burnCount: 0,
+      totalBurnable: burnable.length,
+      includedPnfts: [],
+      skippedPnfts,
+      estimatedGrossReclaimSol: 0,
+      estimatedBaseFeeSol: 0,
+      estimatedPriorityFeeSol: 0,
+      estimatedFeeSol: 0,
+      estimatedNetReclaimSol: 0,
+      computeUnitLimit: 0,
+      priorityFeeMicrolamports,
+      transactionBase64: null,
+      transactionVersion: "legacy",
+      feePayer: ownerStr,
+      requiresSignatureFrom: ownerStr,
+      warning: PNFT_BURN_WARNING,
+      simulationOk: false,
+      simulationError,
+      burnableCandidates,
+      maxPerTx: MAX_PNFT_BURN_PER_TX,
+      nextBatchCandidates: computeNextBatch([], isolated?.mint ?? null),
+    };
+  }
+
+  // Compute fees + included entries from the FINAL `included` (post sim-trim).
   const baseFeeLamports = BASE_FEE_LAMPORTS_PER_SIGNATURE;
   const priorityFeeLamports =
     priorityFeeMicrolamports > 0
@@ -2066,68 +2383,6 @@ export async function buildPnftBurnTx(
   const estimatedFeeSol = totalFeeLamports / LAMPORTS_PER_SOL;
   const estimatedNetReclaimSol = Math.max(0, grossReclaimSol - estimatedFeeSol);
 
-  // ============================================================================
-  // Preflight simulation — all-or-nothing.
-  // Catches ruleset rejections that the static confirmation can't see (e.g.
-  // rulesets that ban burns outright, locked token-record state, etc.). When
-  // it fails, every included pNFT moves to skippedPnfts with a parsed reason
-  // and we return the empty-tx envelope per spec.
-  // ============================================================================
-  let simulationOk = true;
-  let simulationError: string | undefined;
-  try {
-    const sim = await connection.simulateTransaction(built.tx);
-    if (sim.value.err) {
-      simulationOk = false;
-      simulationError = parseSimulationError(
-        sim.value.err,
-        sim.value.logs ?? [],
-      );
-      // Raw payload lives only in backend logs, never in the response.
-      // Useful for support / debugging when the friendly mapping doesn't
-      // match what the user actually hit.
-      console.warn(
-        `[pnftBurn] preflight rejected for ${ownerStr}: friendly="${simulationError}" rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
-      );
-    }
-  } catch (err) {
-    simulationOk = false;
-    simulationError = err instanceof Error ? err.message : "Simulation request failed";
-    console.warn(
-      `[pnftBurn] preflight call failed for ${ownerStr}: ${(err as Error)?.message ?? err}`,
-    );
-  }
-
-  if (!simulationOk) {
-    for (const c of included) {
-      skippedPnfts.push({
-        mint: c.mint,
-        tokenAccount: c.tokenAccount,
-        reason: `Preflight rejected: ${simulationError}`,
-      });
-    }
-    return {
-      burnCount: 0,
-      totalBurnable: burnable.length,
-      includedPnfts: [],
-      skippedPnfts,
-      estimatedGrossReclaimSol: 0,
-      estimatedBaseFeeSol: 0,
-      estimatedPriorityFeeSol: 0,
-      estimatedFeeSol: 0,
-      estimatedNetReclaimSol: 0,
-      computeUnitLimit: 0,
-      priorityFeeMicrolamports,
-      transactionBase64: null,
-      transactionVersion: "legacy",
-      feePayer: ownerStr,
-      requiresSignatureFrom: ownerStr,
-      warning: PNFT_BURN_WARNING,
-      simulationOk: false,
-      simulationError,
-    };
-  }
-
   return {
     burnCount: includedPnfts.length,
     totalBurnable: burnable.length,
@@ -2145,7 +2400,10 @@ export async function buildPnftBurnTx(
     feePayer: ownerStr,
     requiresSignatureFrom: ownerStr,
     warning: PNFT_BURN_WARNING,
-    simulationOk: true,
+    simulationOk,
+    burnableCandidates,
+    maxPerTx: MAX_PNFT_BURN_PER_TX,
+    nextBatchCandidates: computeNextBatch(included, isolated?.mint ?? null),
   };
 }
 
@@ -2185,7 +2443,10 @@ const CORE_KEY_ASSET_V1 = 1;
 // closure — just the asset itself.
 const CU_PER_CORE_BURN = 30_000;
 
-export const MAX_CORE_BURN_PER_TX = 5;
+// Safety cap — see MAX_NFT_BURN_PER_TX comment. Core BurnV1 ix is
+// narrower than pNFT (no token record, no auth rules) so we can fit
+// more per tx.
+export const MAX_CORE_BURN_PER_TX = 10;
 
 const CORE_BURN_WARNING =
   "Burns Metaplex Core assets irreversibly and closes the asset account to reclaim its rent. Verify each asset manually before signing — burned assets cannot be recovered.";
@@ -2343,13 +2604,22 @@ export interface CoreBurnIncludedEntry {
 export interface CoreBurnSkippedEntry {
   asset: string;
   reason: string;
-  // Populated only for cap-overflow / tx-size-trimmed entries — the asset is
-  // burnable, just didn't fit this batch.
+  // Optional metadata fields — kept for backwards compat (cap-overflow
+  // entries are no longer pushed here; they live in burnableCandidates).
   collection?: string | null;
   name?: string | null;
   uri?: string | null;
   image?: string | null;
   estimatedGrossReclaimSol?: number;
+}
+
+export interface BurnableCoreCandidate {
+  asset: string;
+  collection: string | null;
+  name: string | null;
+  uri: string | null;
+  image: string | null;
+  estimatedGrossReclaimSol: number;
 }
 
 export interface BuildCoreBurnTxResult {
@@ -2371,6 +2641,11 @@ export interface BuildCoreBurnTxResult {
   warning: string;
   simulationOk: boolean;
   simulationError?: string;
+  // Full burnable list — see BuildLegacyNftBurnTxResult.burnableCandidates.
+  burnableCandidates: BurnableCoreCandidate[];
+  maxPerTx: number;
+  // See BuildLegacyNftBurnTxResult.nextBatchCandidates.
+  nextBatchCandidates: BurnableCoreCandidate[];
 }
 
 export async function buildCoreBurnTx(
@@ -2387,11 +2662,13 @@ export async function buildCoreBurnTx(
   const skippedAssets: CoreBurnSkippedEntry[] = [];
   const allAssets = await findCoreAssets(owner);
 
+  // Walk all Core assets — allowSet is intentionally NOT applied at this
+  // stage so burnableCandidates reflects the full wallet. The user's
+  // selection is applied after enrichment when picking included items.
   const seen = new Set<string>();
   const candidates: CoreAssetParsed[] = [];
   for (const a of allAssets) {
     const id = a.asset.toBase58();
-    if (allowSet && !allowSet.has(id)) continue;
     if (seen.has(id)) continue;
     seen.add(id);
     candidates.push(a);
@@ -2411,20 +2688,40 @@ export async function buildCoreBurnTx(
     if (m.image) a.image = m.image;
   }
 
-  let included = candidates.slice(0, MAX_CORE_BURN_PER_TX);
-  for (const trimmed of candidates.slice(MAX_CORE_BURN_PER_TX)) {
-    skippedAssets.push({
-      asset: trimmed.asset.toBase58(),
-      reason: `Cap of ${MAX_CORE_BURN_PER_TX} assets per tx — rebuild after this batch confirms`,
-      collection: trimmed.collection ? trimmed.collection.toBase58() : null,
-      name: trimmed.name,
-      uri: trimmed.uri,
-      image: trimmed.image,
-      estimatedGrossReclaimSol: trimmed.lamports / LAMPORTS_PER_SOL,
-    });
-  }
+  // Full burnable candidate list — what the frontend renders.
+  const burnableCandidates: BurnableCoreCandidate[] = candidates.map((a) => ({
+    asset: a.asset.toBase58(),
+    collection: a.collection ? a.collection.toBase58() : null,
+    name: a.name,
+    uri: a.uri,
+    image: a.image,
+    estimatedGrossReclaimSol: a.lamports / LAMPORTS_PER_SOL,
+  }));
+
+  // User-selected subset (or all on discovery), capped at MAX_CORE_BURN_PER_TX
+  // for the initial attempt. Sim-trim loop below shrinks further as needed.
+  const selected = allowSet
+    ? candidates.filter((a) => allowSet.has(a.asset.toBase58()))
+    : candidates;
+  let included = selected.slice(0, MAX_CORE_BURN_PER_TX);
 
   const priorityFeeMicrolamports = readPriorityFeeMicrolamports();
+  const burnableByAsset = new Map(
+    burnableCandidates.map((c) => [c.asset, c]),
+  );
+  const computeNextBatch = (
+    finalIncluded: CoreAssetParsed[],
+    isolatedAssetId: string | null,
+  ): BurnableCoreCandidate[] => {
+    const includedSet = new Set(
+      finalIncluded.map((a) => a.asset.toBase58()),
+    );
+    return selected
+      .map((a) => a.asset.toBase58())
+      .filter((id) => !includedSet.has(id) && id !== isolatedAssetId)
+      .map((id) => burnableByAsset.get(id))
+      .filter((c): c is BurnableCoreCandidate => c !== undefined);
+  };
 
   if (included.length === 0) {
     return {
@@ -2445,6 +2742,9 @@ export async function buildCoreBurnTx(
       requiresSignatureFrom: ownerStr,
       warning: CORE_BURN_WARNING,
       simulationOk: true,
+      burnableCandidates,
+      maxPerTx: MAX_CORE_BURN_PER_TX,
+      nextBatchCandidates: computeNextBatch([], null),
     };
   }
 
@@ -2479,18 +2779,8 @@ export async function buildCoreBurnTx(
 
   let computeUnitLimit = CU_PER_CORE_BURN * included.length + CU_HEADROOM;
   let built = buildTx(included, computeUnitLimit);
+  // Tx-size trim (cheap, no RPC).
   while (built.serialized.length > MAX_TX_SIZE_BYTES && included.length > 1) {
-    const dropped = included[included.length - 1];
-    skippedAssets.push({
-      asset: dropped.asset.toBase58(),
-      reason:
-        "Trimmed to fit 1232-byte tx cap — rebuild after this batch confirms",
-      collection: dropped.collection ? dropped.collection.toBase58() : null,
-      name: dropped.name,
-      uri: dropped.uri,
-      image: dropped.image,
-      estimatedGrossReclaimSol: dropped.lamports / LAMPORTS_PER_SOL,
-    });
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_CORE_BURN * included.length + CU_HEADROOM;
     built = buildTx(included, computeUnitLimit);
@@ -2499,6 +2789,75 @@ export async function buildCoreBurnTx(
     throw new Error(
       `Core burn transaction exceeds ${MAX_TX_SIZE_BYTES}-byte packet cap even with one asset (got ${built.serialized.length} bytes)`,
     );
+  }
+
+  // ============================================================================
+  // Preflight simulation — sim-trim loop. See buildLegacyNftBurnTx for the
+  // pattern. Catches plugin-level rejections (Frozen, Royalty, etc.) and any
+  // other chain-side issue.
+  // ============================================================================
+  let simulationOk = false;
+  let simulationError: string | undefined;
+  let isolated: CoreBurnSkippedEntry | null = null;
+  while (included.length > 0) {
+    let simErr: string | undefined;
+    try {
+      const sim = await connection.simulateTransaction(built.tx);
+      if (!sim.value.err) {
+        simulationOk = true;
+        break;
+      }
+      simErr = parseSimulationError(sim.value.err, sim.value.logs ?? []);
+      console.warn(
+        `[coreBurn] preflight rejected for ${ownerStr} at batch=${included.length}: friendly="${simErr}" rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
+      );
+    } catch (err) {
+      simErr =
+        err instanceof Error ? err.message : "Simulation request failed";
+      console.warn(
+        `[coreBurn] preflight call failed for ${ownerStr} at batch=${included.length}: ${(err as Error)?.message ?? err}`,
+      );
+    }
+    if (included.length === 1) {
+      isolated = {
+        asset: included[0].asset.toBase58(),
+        reason: `Preflight rejected: ${simErr}`,
+      };
+      simulationError = simErr;
+      included = [];
+      break;
+    }
+    included = included.slice(0, -1);
+    computeUnitLimit = CU_PER_CORE_BURN * included.length + CU_HEADROOM;
+    built = buildTx(included, computeUnitLimit);
+  }
+
+  if (isolated) skippedAssets.push(isolated);
+
+  if (included.length === 0) {
+    return {
+      burnCount: 0,
+      totalBurnable: candidates.length,
+      includedAssets: [],
+      skippedAssets,
+      estimatedGrossReclaimSol: 0,
+      estimatedBaseFeeSol: 0,
+      estimatedPriorityFeeSol: 0,
+      estimatedFeeSol: 0,
+      estimatedNetReclaimSol: 0,
+      computeUnitLimit: 0,
+      priorityFeeMicrolamports,
+      transactionBase64: null,
+      transactionVersion: "legacy",
+      feePayer: ownerStr,
+      requiresSignatureFrom: ownerStr,
+      warning: CORE_BURN_WARNING,
+      simulationOk: false,
+      simulationError,
+      burnableCandidates,
+      maxPerTx: MAX_CORE_BURN_PER_TX,
+      nextBatchCandidates: computeNextBatch([], isolated?.asset ?? null),
+    };
   }
 
   const baseFeeLamports = BASE_FEE_LAMPORTS_PER_SIGNATURE;
@@ -2526,61 +2885,6 @@ export async function buildCoreBurnTx(
   const estimatedFeeSol = totalFeeLamports / LAMPORTS_PER_SOL;
   const estimatedNetReclaimSol = Math.max(0, grossReclaimSol - estimatedFeeSol);
 
-  // Preflight simulation — same all-or-nothing pattern as the pNFT builder.
-  // Catches plugin-level rejections (Frozen, Royalty, etc.) and any other
-  // chain-side issue before the tx is returned.
-  let simulationOk = true;
-  let simulationError: string | undefined;
-  try {
-    const sim = await connection.simulateTransaction(built.tx);
-    if (sim.value.err) {
-      simulationOk = false;
-      simulationError = parseSimulationError(
-        sim.value.err,
-        sim.value.logs ?? [],
-      );
-      console.warn(
-        `[coreBurn] preflight rejected for ${ownerStr}: friendly="${simulationError}" rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
-      );
-    }
-  } catch (err) {
-    simulationOk = false;
-    simulationError =
-      err instanceof Error ? err.message : "Simulation request failed";
-    console.warn(
-      `[coreBurn] preflight call failed for ${ownerStr}: ${(err as Error)?.message ?? err}`,
-    );
-  }
-
-  if (!simulationOk) {
-    for (const a of included) {
-      skippedAssets.push({
-        asset: a.asset.toBase58(),
-        reason: `Preflight rejected: ${simulationError}`,
-      });
-    }
-    return {
-      burnCount: 0,
-      totalBurnable: candidates.length,
-      includedAssets: [],
-      skippedAssets,
-      estimatedGrossReclaimSol: 0,
-      estimatedBaseFeeSol: 0,
-      estimatedPriorityFeeSol: 0,
-      estimatedFeeSol: 0,
-      estimatedNetReclaimSol: 0,
-      computeUnitLimit: 0,
-      priorityFeeMicrolamports,
-      transactionBase64: null,
-      transactionVersion: "legacy",
-      feePayer: ownerStr,
-      requiresSignatureFrom: ownerStr,
-      warning: CORE_BURN_WARNING,
-      simulationOk: false,
-      simulationError,
-    };
-  }
-
   return {
     burnCount: includedAssets.length,
     totalBurnable: candidates.length,
@@ -2598,6 +2902,9 @@ export async function buildCoreBurnTx(
     feePayer: ownerStr,
     requiresSignatureFrom: ownerStr,
     warning: CORE_BURN_WARNING,
-    simulationOk: true,
+    simulationOk,
+    burnableCandidates,
+    maxPerTx: MAX_CORE_BURN_PER_TX,
+    nextBatchCandidates: computeNextBatch(included, isolated?.asset ?? null),
   };
 }

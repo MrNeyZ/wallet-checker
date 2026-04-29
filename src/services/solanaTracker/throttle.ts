@@ -6,17 +6,16 @@
 //   2. There is at least MIN_SPACING_MS between request starts.
 //   3. HTTP 429 responses are transparently retried with backoff.
 //
-// Why: group-open fans out per-wallet PnL/Trades requests; on large groups
-// this trips the upstream limiter (HTTP 429). A single in-process queue
-// keeps fan-out under control without per-call-site logic.
+// Tuned conservatively for the upstream limiter we actually see in prod
+// (~1 req/sec sustained before 429s start). Earlier 2/350ms tuning hit
+// the cap on group-open fan-out for medium+ groups; this 1/1200ms ladder
+// trades a bit of group-open latency for reliability. The retry ladder
+// (5s/15s/30s) absorbs occasional spikes — even one full retry chain
+// (5+15+30=50s) is preferable to a hard error in the UI.
 
-// Bumped from 1/750ms to 2/350ms to roughly halve group-open latency on
-// large groups while staying under SolanaTracker's free-tier rate cap. The
-// retry-on-429 ladder below is the safety net if the tighter pacing trips
-// the upstream limiter.
-const MIN_SPACING_MS = 350;
-const MAX_CONCURRENCY = 2;
-const RETRY_BACKOFFS_MS = [2000, 5000, 10000]; // 3 retries on 429
+const MIN_SPACING_MS = 1200;
+const MAX_CONCURRENCY = 1;
+const RETRY_BACKOFFS_MS = [5000, 15000, 30000]; // 3 retries on 429
 
 let inFlight = 0;
 let lastStartedAt = 0;
@@ -58,7 +57,21 @@ export async function solanaTrackerFetch(
     }
     // Drain body so the underlying connection can be reused.
     await res.text().catch(() => "");
-    await sleep(RETRY_BACKOFFS_MS[attempt]);
+    const backoffMs = RETRY_BACKOFFS_MS[attempt];
+    // Visibility on the throttle's behavior in prod logs. Helps explain
+    // why a particular request took 5-50s to return when the upstream
+    // limiter is hot. Path is enough — full URL may include API keys.
+    const path = (() => {
+      try {
+        return new URL(url).pathname;
+      } catch {
+        return url;
+      }
+    })();
+    console.warn(
+      `[SolanaTracker] retry 429 attempt ${attempt + 1}/${RETRY_BACKOFFS_MS.length} on ${path} in ${Math.round(backoffMs / 1000)}s`,
+    );
+    await sleep(backoffMs);
   }
   throw new Error("solanaTrackerFetch: unreachable");
 }

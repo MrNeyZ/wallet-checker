@@ -184,15 +184,27 @@ export interface LegacyNftBurnSkippedEntry {
   mint: string;
   tokenAccount: string;
   reason: string;
-  // Populated only for cap-overflow / tx-size-trimmed entries — the NFT is
-  // burnable, just didn't fit this batch. Truly non-burnable skips leave
-  // these undefined.
+  // Optional metadata fields — kept for backwards compat. Cap-overflow
+  // entries used to land here; they're now in burnableCandidates instead.
   name?: string | null;
   symbol?: string | null;
   image?: string | null;
   estimatedGrossReclaimSol?: number;
   metadata?: string;
   masterEdition?: string;
+}
+
+export interface BurnableLegacyCandidate {
+  mint: string;
+  tokenAccount: string;
+  name: string | null;
+  symbol: string | null;
+  image: string | null;
+  estimatedGrossReclaimSol: number;
+  metadata: string;
+  masterEdition: string;
+  // Verified collection mint — drives the candidate grid's grouping.
+  collection: string | null;
 }
 
 export interface BuildLegacyNftBurnTxResult {
@@ -212,6 +224,21 @@ export interface BuildLegacyNftBurnTxResult {
   feePayer: string;
   requiresSignatureFrom: string;
   warning: string;
+  // Backend preflight simulation outcome — same shape as pNFT/Core. UI
+  // disables Sign & send when false to keep Phantom from receiving a tx
+  // the chain would reject.
+  simulationOk: boolean;
+  simulationError?: string;
+  // Full burnable list — what the frontend renders in the candidate
+  // table. includedNfts is a subset of this (the chosen current-tx batch).
+  burnableCandidates: BurnableLegacyCandidate[];
+  // Safety cap on the initial build attempt. Actual included count is
+  // decided by tx-size + simulation. Frontend uses this as a display hint.
+  maxPerTx: number;
+  // Items the user selected (or in discovery, all burnable beyond the
+  // safety cap) that did NOT fit this batch and were NOT sim-isolated.
+  // Drives the "Build next batch" button.
+  nextBatchCandidates: BurnableLegacyCandidate[];
 }
 
 export interface PnftBurnIncludedEntry {
@@ -231,8 +258,8 @@ export interface PnftBurnSkippedEntry {
   mint: string;
   tokenAccount: string;
   reason: string;
-  // Populated only for cap-overflow / tx-size-trimmed entries — the pNFT is
-  // burnable, just didn't fit this batch.
+  // Optional metadata fields — kept for backwards compat. Cap-overflow
+  // entries used to land here; they're now in burnableCandidates instead.
   name?: string | null;
   symbol?: string | null;
   image?: string | null;
@@ -242,6 +269,22 @@ export interface PnftBurnSkippedEntry {
   tokenRecord?: string;
   ruleSet?: string | null;
   collectionMetadata?: string | null;
+}
+
+export interface BurnablePnftCandidate {
+  mint: string;
+  tokenAccount: string;
+  name: string | null;
+  symbol: string | null;
+  image: string | null;
+  estimatedGrossReclaimSol: number;
+  metadata: string;
+  masterEdition: string;
+  tokenRecord: string;
+  ruleSet: string | null;
+  collectionMetadata: string | null;
+  // Verified collection mint — drives the candidate grid's grouping.
+  collection: string | null;
 }
 
 export interface BuildPnftBurnTxResult {
@@ -263,6 +306,9 @@ export interface BuildPnftBurnTxResult {
   warning: string;
   simulationOk: boolean;
   simulationError?: string;
+  burnableCandidates: BurnablePnftCandidate[];
+  maxPerTx: number;
+  nextBatchCandidates: BurnablePnftCandidate[];
 }
 
 export interface CoreBurnIncludedEntry {
@@ -278,12 +324,21 @@ export interface CoreBurnIncludedEntry {
 export interface CoreBurnSkippedEntry {
   asset: string;
   reason: string;
-  // Populated only for cap-overflow / tx-size-trimmed entries.
+  // Optional metadata fields — kept for backwards compat.
   collection?: string | null;
   name?: string | null;
   uri?: string | null;
   image?: string | null;
   estimatedGrossReclaimSol?: number;
+}
+
+export interface BurnableCoreCandidate {
+  asset: string;
+  collection: string | null;
+  name: string | null;
+  uri: string | null;
+  image: string | null;
+  estimatedGrossReclaimSol: number;
 }
 
 export interface BuildCoreBurnTxResult {
@@ -305,6 +360,9 @@ export interface BuildCoreBurnTxResult {
   warning: string;
   simulationOk: boolean;
   simulationError?: string;
+  burnableCandidates: BurnableCoreCandidate[];
+  maxPerTx: number;
+  nextBatchCandidates: BurnableCoreCandidate[];
 }
 
 export interface BuildBurnAndCloseTxResult {
@@ -360,6 +418,9 @@ export interface BurnCandidate {
   estimatedReclaimSolAfterBurnAndClose: number;
   symbol: string | null;
   name: string | null;
+  // Off-chain JSON image URL — populated by backend via Helius DAS when
+  // available. Optional in the UI (falls back to a neutral square).
+  image: string | null;
   riskLevel: "unknown" | string;
   burnRecommended: boolean;
   reason: string;
@@ -371,6 +432,38 @@ export interface BurnCandidatesResult {
   totalEstimatedReclaimSol: number;
   candidates: BurnCandidate[];
   warning: string;
+}
+
+// Per-wallet result from POST /api/groups/:groupId/cleanup-scan-all.
+// Status tags drive the progress UI (cached/timeout/rate-limited counters).
+export type GroupScanWalletStatus =
+  | "ok"
+  | "cached"
+  | "timeout"
+  | "rate-limited"
+  | "error";
+
+export interface GroupScanWalletResult {
+  address: string;
+  label: string | null;
+  status: GroupScanWalletStatus;
+  scan?: CleanupScanResult;
+  burn?: BurnCandidatesResult;
+  error?: string;
+  durationMs: number;
+}
+
+export interface GroupCleanupScanAllResult {
+  groupId: string;
+  total: number;
+  counts: {
+    ok: number;
+    cached: number;
+    timeout: number;
+    rateLimited: number;
+    error: number;
+  };
+  wallets: GroupScanWalletResult[];
 }
 
 export interface AirdropWalletItem {
@@ -497,6 +590,8 @@ export const api = {
   listGroups: () => request<{ groups: Group[] }>("/api/groups"),
   createGroup: (name: string) =>
     request<Group>("/api/groups", { method: "POST", body: JSON.stringify({ name }) }),
+  deleteGroup: (groupId: string) =>
+    request<{ ok: boolean }>(`/api/groups/${groupId}`, { method: "DELETE" }),
   getDashboard: (groupId: string) =>
     request<Dashboard>(`/api/groups/${groupId}/dashboard`),
   getOverview: (groupId: string) =>
@@ -572,6 +667,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(assetIds.length > 0 ? { assetIds } : {}),
     }),
+  scanGroupCleanupAll: (groupId: string, force = false) =>
+    request<GroupCleanupScanAllResult>(
+      `/api/groups/${groupId}/cleanup-scan-all`,
+      {
+        method: "POST",
+        body: JSON.stringify({ force }),
+      },
+    ),
   getGroupLpPositions: (groupId: string) =>
     request<GroupLpResponse>(`/api/groups/${groupId}/lp-positions`),
   getGroupAirdrops: async (groupId: string): Promise<AirdropsState> => {

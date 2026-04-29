@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, type Group, type SystemStatus } from "@/lib/api";
 
 export async function createGroupAction(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
@@ -10,6 +10,48 @@ export async function createGroupAction(formData: FormData) {
   const group = await api.createGroup(name);
   revalidatePath("/groups");
   redirect(`/groups/${group.id}`);
+}
+
+// Hard delete. Returns success/error to the client so the GroupsListClient
+// can update the list optimistically and surface a friendly error on
+// failure. revalidatePath busts the SSR cache so subsequent navigations
+// to /groups don't show the stale group.
+export async function deleteGroupAction(
+  groupId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await api.deleteGroup(groupId);
+    revalidatePath("/groups");
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Delete failed",
+    };
+  }
+}
+
+// Client-callable refresh of the /groups page payload. Returns groups +
+// status atomically (status is best-effort — degrades to null without
+// failing the whole call). Used by the GroupsListClient to power the
+// Refresh button, auto-retry on failure, and 30s polling.
+export type LoadGroupsResult =
+  | { ok: true; groups: Group[]; status: SystemStatus | null }
+  | { ok: false; error: string };
+
+export async function loadGroupsAction(): Promise<LoadGroupsResult> {
+  try {
+    const [g, s] = await Promise.all([
+      api.listGroups(),
+      api.getStatus().catch(() => null),
+    ]);
+    return { ok: true, groups: g.groups, status: s };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Failed to load groups",
+    };
+  }
 }
 
 export async function addWalletAction(groupId: string, formData: FormData) {
@@ -209,6 +251,24 @@ export async function buildCloseEmptyTxAction(
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Build failed" };
+  }
+}
+
+export async function scanGroupCleanupAllAction(
+  groupId: string,
+  opts: { force?: boolean } = {},
+): Promise<
+  | { ok: true; result: import("@/lib/api").GroupCleanupScanAllResult }
+  | { ok: false; error: string }
+> {
+  try {
+    const result = await api.scanGroupCleanupAll(groupId, opts.force ?? false);
+    return { ok: true, result };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Group scan failed",
+    };
   }
 }
 

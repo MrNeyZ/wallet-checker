@@ -1,17 +1,19 @@
-import Link from "next/link";
-import { api, type SystemStatus } from "@/lib/api";
+import { api, type Group, type SystemStatus } from "@/lib/api";
 import { createGroupAction } from "./actions";
+import { GroupsListClient } from "./groups-list-client";
 import { Card } from "@/ui-kit/components/Card";
 import { SectionHeader } from "@/ui-kit/components/SectionHeader";
-import { Badge } from "@/ui-kit/components/Badge";
 import { btnPrimary } from "@/lib/buttonStyles";
 
 export const dynamic = "force-dynamic";
 
+// Server component renders the page chrome + does the initial data
+// fetch for fast first paint. Refresh / retry / polling are handled by
+// the GroupsListClient sub-tree (which re-fetches via loadGroupsAction).
 export default async function GroupsPage() {
-  let groups: Awaited<ReturnType<typeof api.listGroups>>["groups"] = [];
+  let groups: Group[] = [];
   let status: SystemStatus | null = null;
-  let error: string | null = null;
+  let initialError: string | null = null;
   try {
     const [g, s] = await Promise.all([
       api.listGroups(),
@@ -20,7 +22,7 @@ export default async function GroupsPage() {
     groups = g.groups;
     status = s;
   } catch (err) {
-    error = err instanceof Error ? err.message : "Failed to load";
+    initialError = err instanceof Error ? err.message : "Failed to load";
   }
 
   return (
@@ -57,45 +59,11 @@ export default async function GroupsPage() {
         </Card>
       </section>
 
-      <section>
-        <div className="mb-2 flex items-baseline justify-between">
-          <SectionHeader className="mb-0">All groups</SectionHeader>
-          <Badge>{groups.length}</Badge>
-        </div>
-        {error ? (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-            {error}
-          </div>
-        ) : groups.length === 0 ? (
-          <Card className="p-8 text-center text-sm text-neutral-500">
-            No groups yet — create one above.
-          </Card>
-        ) : (
-          <Card className="overflow-hidden">
-            <ul className="divide-y divide-neutral-800">
-              {groups.map((g) => (
-                <li key={g.id}>
-                  <Link
-                    href={`/groups/${g.id}`}
-                    className="flex items-center justify-between px-4 py-3 transition-colors duration-100 hover:bg-neutral-800/60"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-white">{g.name}</div>
-                      <div className="mt-0.5 text-xs text-neutral-300">
-                        {g.wallets.length} wallet{g.wallets.length === 1 ? "" : "s"} ·
-                        created {new Date(g.createdAt).toISOString().slice(0, 10)}
-                      </div>
-                    </div>
-                    <span className="font-mono text-xs text-neutral-300">
-                      {g.id.slice(0, 8)}…
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </Card>
-        )}
-      </section>
+      <GroupsListClient
+        initialGroups={groups}
+        initialStatus={status}
+        initialError={initialError}
+      />
     </div>
   );
 }

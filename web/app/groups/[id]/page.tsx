@@ -163,6 +163,7 @@ export default async function GroupDetailPage({
       {tab === "cleaner" && (
         <div className="space-y-3">
           <CleanerSection
+            groupId={id}
             wallets={wallets.map((w) => ({ address: w.address, label: w.label }))}
           />
         </div>

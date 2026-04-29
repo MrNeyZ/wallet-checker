@@ -26,11 +26,13 @@ export interface CleanupScanResult {
   unknownTokenAccounts: ScannedTokenAccount[];
 }
 
-// 30 s scan cache. Repeated UI clicks within the window reuse the same result
-// instead of hammering the RPC. Concurrent calls for the same wallet share the
-// in-flight promise so a single user action that fans out (e.g. cleanup-scan
-// + burn-candidates fired together) only triggers one underlying scan.
-const SCAN_TTL_MS = 30_000;
+// 10-minute scan cache. Bumped from 30s so the batch group-scan endpoint
+// can serve repeat scans of the same wallet from cache instead of hitting
+// the RPC again. Concurrent calls for the same wallet share the in-flight
+// promise so a single user action that fans out (e.g. cleanup-scan +
+// burn-candidates fired together) only triggers one underlying scan.
+// The full-clean loop bypasses with `refresh: true` after each close-tx.
+const SCAN_TTL_MS = 10 * 60 * 1000;
 type CacheEntry = { ts: number; promise: Promise<CleanupScanResult> };
 const scanCache = new Map<string, CacheEntry>();
 
@@ -131,4 +133,14 @@ export async function scanWalletForCleanup(
 export function clearScanCache(address?: string): void {
   if (address) scanCache.delete(address);
   else scanCache.clear();
+}
+
+// Lets the batch scan endpoint distinguish a "cached" outcome (fast,
+// served from this in-process map) from a "ok" outcome (fresh on-chain
+// scan) when reporting progress to the UI. Returns true if a non-expired
+// entry exists for `address`.
+export function isCleanupScanCached(address: string): boolean {
+  const cached = scanCache.get(address);
+  if (!cached) return false;
+  return Date.now() - cached.ts < SCAN_TTL_MS;
 }

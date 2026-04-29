@@ -21,7 +21,10 @@ export class ProviderError extends Error {
   }
 }
 
-export const PNL_CACHE_TTL_MS = 5 * 60 * 1000;
+// Bumped from 5min to 10min. PnL aggregates change slowly relative to
+// trades; doubling the TTL halves group-open SolanaTracker pressure on
+// repeat visits without users noticing stale data.
+export const PNL_CACHE_TTL_MS = 10 * 60 * 1000;
 
 interface CacheEntry {
   data: unknown;
@@ -30,6 +33,13 @@ interface CacheEntry {
 }
 
 const pnlCache = new Map<string, CacheEntry>();
+// In-flight dedupe: when N concurrent requests come in for the same wallet,
+// only the first triggers a SolanaTracker fetch; the rest await the same
+// promise. Without this, a single user who spam-clicks Refresh or a group
+// of N wallets all sharing one address would each fire their own fetch
+// through the throttle's queue, multiplying rate-limit pressure for the
+// same data.
+const pnlInFlight = new Map<string, Promise<NormalizedPnlResponse>>();
 
 export interface NormalizedPnlResponse {
   wallet: string;
@@ -73,6 +83,7 @@ export async function fetchWalletPnl(wallet: string): Promise<NormalizedPnlRespo
   const cached = pnlCache.get(wallet);
 
   if (cached && cached.expiresAt > now) {
+    console.log(`[SolanaTracker] cache hit pnl/${wallet}`);
     return {
       wallet,
       provider: "solanatracker",
@@ -84,17 +95,32 @@ export async function fetchWalletPnl(wallet: string): Promise<NormalizedPnlRespo
     };
   }
 
-  const { data, fetchedAt } = await fetchFromProvider(wallet);
-  const expiresAt = Date.now() + PNL_CACHE_TTL_MS;
-  pnlCache.set(wallet, { data, fetchedAt, expiresAt });
+  // In-flight dedupe — see pnlInFlight comment.
+  const existing = pnlInFlight.get(wallet);
+  if (existing) {
+    console.log(`[SolanaTracker] dedupe pnl/${wallet}`);
+    return existing;
+  }
 
-  return {
-    wallet,
-    provider: "solanatracker",
-    data,
-    summary: normalizePnlSummary(data),
-    fetchedAt,
-    cacheHit: false,
-    cacheTtlSeconds: Math.ceil(PNL_CACHE_TTL_MS / 1000),
-  };
+  console.log(`[SolanaTracker] queued pnl/${wallet}`);
+  const promise = (async (): Promise<NormalizedPnlResponse> => {
+    try {
+      const { data, fetchedAt } = await fetchFromProvider(wallet);
+      const expiresAt = Date.now() + PNL_CACHE_TTL_MS;
+      pnlCache.set(wallet, { data, fetchedAt, expiresAt });
+      return {
+        wallet,
+        provider: "solanatracker",
+        data,
+        summary: normalizePnlSummary(data),
+        fetchedAt,
+        cacheHit: false,
+        cacheTtlSeconds: Math.ceil(PNL_CACHE_TTL_MS / 1000),
+      };
+    } finally {
+      pnlInFlight.delete(wallet);
+    }
+  })();
+  pnlInFlight.set(wallet, promise);
+  return promise;
 }

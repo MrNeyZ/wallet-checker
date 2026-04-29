@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 
 export interface GroupWallet {
@@ -42,13 +49,32 @@ function loadFromDisk(): void {
   }
 }
 
+// Atomic write: serialize to a tmp file then rename onto the target.
+// Protects against torn writes if the process crashes mid-write —
+// `groups.json` is the only source of truth, so a corrupt file means
+// every group is lost on next startup.
 function persist(): void {
+  const tmp = `${DATA_FILE}.tmp`;
   try {
     mkdirSync(dirname(DATA_FILE), { recursive: true });
-    const payload = JSON.stringify({ groups: Array.from(groups.values()) }, null, 2);
-    writeFileSync(DATA_FILE, payload, "utf8");
+    const payload = JSON.stringify(
+      { groups: Array.from(groups.values()) },
+      null,
+      2,
+    );
+    writeFileSync(tmp, payload, "utf8");
+    renameSync(tmp, DATA_FILE);
   } catch (err) {
-    console.warn(`[groupsStore] Failed to persist ${DATA_FILE}: ${(err as Error).message}`);
+    console.warn(
+      `[groupsStore] Failed to persist ${DATA_FILE}: ${(err as Error).message}`,
+    );
+    // Best-effort cleanup; if rename never happened, drop the tmp file
+    // so the next persist() doesn't accumulate stale tmp's.
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -92,6 +118,13 @@ export function addWalletToGroup(
   group.wallets.push(wallet);
   persist();
   return { ok: true, wallet };
+}
+
+export function deleteGroup(id: string): "ok" | "not_found" {
+  const existed = groups.delete(id);
+  if (!existed) return "not_found";
+  persist();
+  return "ok";
 }
 
 export function removeWalletFromGroup(
