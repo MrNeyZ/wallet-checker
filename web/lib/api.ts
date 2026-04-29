@@ -220,6 +220,14 @@ export interface BuildLegacyNftBurnTxResult {
   computeUnitLimit: number;
   priorityFeeMicrolamports: number;
   transactionBase64: string | null;
+  // Captured from the SAME getLatestBlockhash() call used to serialize
+  // `transactionBase64`. Required by confirmTransaction's strategy form;
+  // `lastValidBlockHeight` is NOT part of the on-wire tx message and so
+  // doesn't survive a Transaction.serialize() round-trip — frontend MUST
+  // read these from here, not from the deserialized Transaction. Both
+  // null when transactionBase64 is null.
+  blockhash: string | null;
+  lastValidBlockHeight: number | null;
   transactionVersion: "legacy";
   feePayer: string;
   requiresSignatureFrom: string;
@@ -300,6 +308,14 @@ export interface BuildPnftBurnTxResult {
   computeUnitLimit: number;
   priorityFeeMicrolamports: number;
   transactionBase64: string | null;
+  // Captured from the SAME getLatestBlockhash() call used to serialize
+  // `transactionBase64`. Required by confirmTransaction's strategy form;
+  // `lastValidBlockHeight` is NOT part of the on-wire tx message and so
+  // doesn't survive a Transaction.serialize() round-trip — frontend MUST
+  // read these from here, not from the deserialized Transaction. Both
+  // null when transactionBase64 is null.
+  blockhash: string | null;
+  lastValidBlockHeight: number | null;
   transactionVersion: "legacy";
   feePayer: string;
   requiresSignatureFrom: string;
@@ -354,6 +370,14 @@ export interface BuildCoreBurnTxResult {
   computeUnitLimit: number;
   priorityFeeMicrolamports: number;
   transactionBase64: string | null;
+  // Captured from the SAME getLatestBlockhash() call used to serialize
+  // `transactionBase64`. Required by confirmTransaction's strategy form;
+  // `lastValidBlockHeight` is NOT part of the on-wire tx message and so
+  // doesn't survive a Transaction.serialize() round-trip — frontend MUST
+  // read these from here, not from the deserialized Transaction. Both
+  // null when transactionBase64 is null.
+  blockhash: string | null;
+  lastValidBlockHeight: number | null;
   transactionVersion: "legacy";
   feePayer: string;
   requiresSignatureFrom: string;
@@ -383,6 +407,10 @@ export interface BuildBurnAndCloseTxResult {
   computeUnitLimit: number;
   priorityFeeMicrolamports: number;
   transactionBase64: string | null;
+  // Captured from the SAME getLatestBlockhash() call used to serialize
+  // `transactionBase64`. See BuildLegacyNftBurnTxResult for the rationale.
+  blockhash: string | null;
+  lastValidBlockHeight: number | null;
   warning: string;
 }
 

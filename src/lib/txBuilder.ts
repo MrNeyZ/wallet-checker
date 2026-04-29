@@ -267,6 +267,13 @@ export interface BuildBurnAndCloseTxResult {
   computeUnitLimit: number;
   priorityFeeMicrolamports: number;
   transactionBase64: string | null;
+  // Captured from the SAME getLatestBlockhash() call used to serialize
+  // `transactionBase64`. The frontend confirmTransaction strategy form
+  // requires both — `lastValidBlockHeight` is NOT part of the on-wire tx
+  // message, so it doesn't survive a Transaction.serialize() round-trip.
+  // Both null when transactionBase64 is null.
+  blockhash: string | null;
+  lastValidBlockHeight: number | null;
   warning: string;
 }
 
@@ -325,6 +332,8 @@ export async function buildBurnAndCloseTx(
       computeUnitLimit: 0,
       priorityFeeMicrolamports,
       transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
       warning: BURN_AND_CLOSE_WARNING,
     };
   }
@@ -433,6 +442,8 @@ export async function buildBurnAndCloseTx(
     computeUnitLimit,
     priorityFeeMicrolamports,
     transactionBase64: Buffer.from(built.serialized).toString("base64"),
+    blockhash,
+    lastValidBlockHeight,
     warning: BURN_AND_CLOSE_WARNING,
   };
 }
@@ -1144,6 +1155,10 @@ export interface BuildLegacyNftBurnTxResult {
   computeUnitLimit: number;
   priorityFeeMicrolamports: number;
   transactionBase64: string | null;
+  // Captured from the same getLatestBlockhash() that built the tx; both
+  // null when transactionBase64 is null. See BuildBurnAndCloseTxResult.
+  blockhash: string | null;
+  lastValidBlockHeight: number | null;
   transactionVersion: "legacy";
   feePayer: string;
   requiresSignatureFrom: string;
@@ -1315,6 +1330,8 @@ export async function buildLegacyNftBurnTx(
       computeUnitLimit: 0,
       priorityFeeMicrolamports,
       transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
       transactionVersion: "legacy",
       feePayer: ownerStr,
       requiresSignatureFrom: ownerStr,
@@ -1458,6 +1475,8 @@ export async function buildLegacyNftBurnTx(
       computeUnitLimit: 0,
       priorityFeeMicrolamports,
       transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
       transactionVersion: "legacy",
       feePayer: ownerStr,
       requiresSignatureFrom: ownerStr,
@@ -1514,6 +1533,8 @@ export async function buildLegacyNftBurnTx(
     computeUnitLimit,
     priorityFeeMicrolamports,
     transactionBase64: Buffer.from(built.serialized).toString("base64"),
+    blockhash,
+    lastValidBlockHeight,
     transactionVersion: "legacy",
     feePayer: ownerStr,
     requiresSignatureFrom: ownerStr,
@@ -1917,6 +1938,10 @@ export interface BuildPnftBurnTxResult {
   computeUnitLimit: number;
   priorityFeeMicrolamports: number;
   transactionBase64: string | null;
+  // Captured from the same getLatestBlockhash() that built the tx; both
+  // null when transactionBase64 is null. See BuildBurnAndCloseTxResult.
+  blockhash: string | null;
+  lastValidBlockHeight: number | null;
   transactionVersion: "legacy";
   feePayer: string;
   requiresSignatureFrom: string;
@@ -2173,6 +2198,8 @@ export async function buildPnftBurnTx(
       computeUnitLimit: 0,
       priorityFeeMicrolamports,
       transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
       transactionVersion: "legacy",
       feePayer: ownerStr,
       requiresSignatureFrom: ownerStr,
@@ -2334,6 +2361,8 @@ export async function buildPnftBurnTx(
       computeUnitLimit: 0,
       priorityFeeMicrolamports,
       transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
       transactionVersion: "legacy",
       feePayer: ownerStr,
       requiresSignatureFrom: ownerStr,
@@ -2396,6 +2425,8 @@ export async function buildPnftBurnTx(
     computeUnitLimit,
     priorityFeeMicrolamports,
     transactionBase64: Buffer.from(built.serialized).toString("base64"),
+    blockhash,
+    lastValidBlockHeight,
     transactionVersion: "legacy",
     feePayer: ownerStr,
     requiresSignatureFrom: ownerStr,
@@ -2635,6 +2666,10 @@ export interface BuildCoreBurnTxResult {
   computeUnitLimit: number;
   priorityFeeMicrolamports: number;
   transactionBase64: string | null;
+  // Captured from the same getLatestBlockhash() that built the tx; both
+  // null when transactionBase64 is null. See BuildBurnAndCloseTxResult.
+  blockhash: string | null;
+  lastValidBlockHeight: number | null;
   transactionVersion: "legacy";
   feePayer: string;
   requiresSignatureFrom: string;
@@ -2737,6 +2772,8 @@ export async function buildCoreBurnTx(
       computeUnitLimit: 0,
       priorityFeeMicrolamports,
       transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
       transactionVersion: "legacy",
       feePayer: ownerStr,
       requiresSignatureFrom: ownerStr,
@@ -2848,6 +2885,8 @@ export async function buildCoreBurnTx(
       computeUnitLimit: 0,
       priorityFeeMicrolamports,
       transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
       transactionVersion: "legacy",
       feePayer: ownerStr,
       requiresSignatureFrom: ownerStr,
@@ -2898,6 +2937,8 @@ export async function buildCoreBurnTx(
     computeUnitLimit,
     priorityFeeMicrolamports,
     transactionBase64: Buffer.from(built.serialized).toString("base64"),
+    blockhash,
+    lastValidBlockHeight,
     transactionVersion: "legacy",
     feePayer: ownerStr,
     requiresSignatureFrom: ownerStr,

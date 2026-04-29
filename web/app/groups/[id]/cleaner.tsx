@@ -2786,6 +2786,8 @@ type BurnSendState =
 function BurnSignAndSendBlock({
   kindLabel,
   transactionBase64,
+  blockhash,
+  lastValidBlockHeight,
   requiresSignatureFrom,
   targetWallet,
   auditPassed,
@@ -2802,6 +2804,15 @@ function BurnSignAndSendBlock({
 }: {
   kindLabel: string;
   transactionBase64: string | null;
+  // Carried from the build response. lastValidBlockHeight is NOT part of
+  // the on-wire tx message — Transaction.serialize() drops it — so we
+  // can't recover it from `transactionBase64` after a round-trip. Both
+  // null whenever transactionBase64 is null. Optional so a future caller
+  // that forgets to pass them gets the runtime "Rebuild transaction and
+  // try again." guard instead of a hard build error; today every caller
+  // (SPL, Legacy, pNFT, Core previews) passes them.
+  blockhash?: string | null;
+  lastValidBlockHeight?: number | null;
   requiresSignatureFrom: string;
   targetWallet: string;
   auditPassed: boolean;
@@ -2897,15 +2908,18 @@ function BurnSignAndSendBlock({
 
     let signature: string | undefined;
     try {
-      // Step 1: decode the tx the backend just built (its blockhash was
-      // captured by getLatestBlockhash() right before serialization).
+      // Step 1: decode the tx + sanity-check the build metadata. The
+      // blockhash + lastValidBlockHeight come from the SAME getLatestBlockhash()
+      // call the backend used at serialize-time. lastValidBlockHeight is NOT
+      // part of the on-wire tx message, so we can't read it back from the
+      // decoded transaction — backend must surface both via response props.
       const tx = decodeBase64Transaction(transactionBase64);
-      const blockhash = tx.recentBlockhash;
-      const lastValidBlockHeight = tx.lastValidBlockHeight;
-      if (!blockhash || lastValidBlockHeight === undefined) {
-        throw new Error(
-          "Built tx missing blockhash / lastValidBlockHeight; rebuild and retry.",
-        );
+      if (
+        !blockhash ||
+        lastValidBlockHeight === null ||
+        lastValidBlockHeight === undefined
+      ) {
+        throw new Error("Rebuild transaction and try again.");
       }
 
       // Step 2: hand to the wallet for signing + initial broadcast.
@@ -3260,6 +3274,24 @@ function BurnSendProgress({
   );
 }
 
+// Diagnostic badge for the build response's blockhash + lastValidBlockHeight.
+// Surfaced in each preview's Transaction details disclosure so we can confirm
+// at a glance that the backend supplied both fields. If either is missing the
+// frontend's BurnSignAndSendBlock will refuse to broadcast (see the guard in
+// handleSignAndSend) — this badge makes the cause visible without needing
+// devtools.
+function presenceBadge(present: boolean): React.ReactNode {
+  return present ? (
+    <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 ring-1 ring-emerald-500/30">
+      ✓ yes
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold text-red-300 ring-1 ring-red-500/30">
+      ✕ no
+    </span>
+  );
+}
+
 // Read-only preview for the burn-and-close transaction. Visually red /
 // destructive — distinct from the violet close-empty preview so the user
 // can never confuse the two flows.
@@ -3294,6 +3326,17 @@ function BurnTxPreview({
       ? `${tx.slice(0, 40)}…${tx.slice(-20)} (${tx.length} chars)`
       : tx;
   const rows: { label: string; value: React.ReactNode; mono?: boolean }[] = [
+    {
+      label: "blockhash present",
+      value: presenceBadge(Boolean(result.blockhash)),
+    },
+    {
+      label: "lastValidBlockHeight present",
+      value: presenceBadge(
+        result.lastValidBlockHeight !== null &&
+          result.lastValidBlockHeight !== undefined,
+      ),
+    },
     {
       label: "Burn count",
       value: (
@@ -3380,11 +3423,22 @@ function BurnTxPreview({
   ];
   return (
     <div className="border-t border-red-500/30 bg-red-950/30">
-      <div className="flex items-center justify-between border-b border-red-500/30 bg-red-600/15 px-3 py-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
-          🔥 Burn + close transaction preview
-        </span>
-        <Badge variant="sell">unsigned · destructive</Badge>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-red-500/30 bg-red-600/15 px-3 py-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+            🔥 Burn + close
+          </span>
+          <span className="text-[11px] font-semibold text-red-100">
+            {result.burnCount} selected
+          </span>
+          <span className="text-[10px] text-red-300/80">
+            · net{" "}
+            <span className="font-bold text-emerald-300">
+              {fmtSol(result.estimatedNetReclaimSol)} SOL
+            </span>
+          </span>
+        </div>
+        <Badge variant="sell">manual sign · destructive</Badge>
       </div>
       {result.warning && (
         <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
@@ -3397,28 +3451,11 @@ function BurnTxPreview({
         ackDestructive={ackDestructive}
         onToggleAck={() => setAckDestructive((v) => !v)}
       />
-      <dl className="divide-y divide-red-500/15">
-        {rows.map((r) => (
-          <div
-            key={r.label}
-            className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
-          >
-            <dt className="col-span-4 text-red-300/80">{r.label}</dt>
-            <dd
-              className={`col-span-8 min-w-0 break-all ${
-                r.mono
-                  ? "font-mono text-[11px] text-neutral-100"
-                  : "text-neutral-100"
-              }`}
-            >
-              {r.value}
-            </dd>
-          </div>
-        ))}
-      </dl>
       <BurnSignAndSendBlock
         kindLabel="SPL burn"
         transactionBase64={result.transactionBase64}
+        blockhash={result.blockhash}
+        lastValidBlockHeight={result.lastValidBlockHeight}
         requiresSignatureFrom={result.requiresSignatureFrom}
         targetWallet={walletAddress}
         auditPassed={audit?.ok === true}
@@ -3430,6 +3467,33 @@ function BurnTxPreview({
         onWalletRescan={onWalletRescan}
         rescanPending={rescanPending}
       />
+      <details className="group border-t border-red-500/15">
+        <summary className="cursor-pointer list-none bg-red-500/[0.03] px-3 py-1.5 text-[11px] font-semibold text-red-300/80 transition-colors duration-100 hover:bg-red-500/10">
+          <span className="inline-block w-3 transition-transform group-open:rotate-90">
+            ▸
+          </span>{" "}
+          Transaction details
+        </summary>
+        <dl className="divide-y divide-red-500/15">
+          {rows.map((r) => (
+            <div
+              key={r.label}
+              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+            >
+              <dt className="col-span-4 text-red-300/80">{r.label}</dt>
+              <dd
+                className={`col-span-8 min-w-0 break-all ${
+                  r.mono
+                    ? "font-mono text-[11px] text-neutral-100"
+                    : "text-neutral-100"
+                }`}
+              >
+                {r.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </details>
     </div>
   );
 }
@@ -4202,6 +4266,17 @@ function LegacyNftBurnPreview({
 
   const rows: { label: string; value: React.ReactNode; mono?: boolean }[] = [
     {
+      label: "blockhash present",
+      value: presenceBadge(Boolean(result.blockhash)),
+    },
+    {
+      label: "lastValidBlockHeight present",
+      value: presenceBadge(
+        result.lastValidBlockHeight !== null &&
+          result.lastValidBlockHeight !== undefined,
+      ),
+    },
+    {
       label: "Burn count",
       value: (
         <span className="font-bold text-red-200">
@@ -4285,11 +4360,31 @@ function LegacyNftBurnPreview({
 
   return (
     <div className="border-t border-red-500/30 bg-red-950/30">
-      <div className="flex items-center justify-between border-b border-red-500/30 bg-red-600/15 px-3 py-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
-          🔥 Legacy NFT burn preview
-        </span>
-        <Badge variant="sell">unsigned · destructive</Badge>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-red-500/30 bg-red-600/15 px-3 py-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+            🔥 Legacy NFT burn
+          </span>
+          <span className="text-[11px] font-semibold text-red-100">
+            {result.burnCount} selected
+          </span>
+          <span className="text-[10px] text-red-300/80">
+            · net{" "}
+            <span className="font-bold text-emerald-300">
+              {fmtSol(result.estimatedNetReclaimSol)} SOL
+            </span>
+          </span>
+          {result.simulationOk ? (
+            <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 ring-1 ring-emerald-500/30">
+              ✓ preflight
+            </span>
+          ) : (
+            <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold text-red-300 ring-1 ring-red-500/30">
+              ✕ preflight
+            </span>
+          )}
+        </div>
+        <Badge variant="sell">manual sign · destructive</Badge>
       </div>
       {result.warning && (
         <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
@@ -4302,59 +4397,11 @@ function LegacyNftBurnPreview({
         ackDestructive={ackDestructive}
         onToggleAck={() => setAckDestructive((v) => !v)}
       />
-      {result.includedNfts.length > 0 && (
-        <ul className="divide-y divide-red-500/15 border-b border-red-500/15">
-          {result.includedNfts.map((n: LegacyNftBurnIncludedEntry) => (
-            <li
-              key={n.tokenAccount}
-              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
-            >
-              <div className="col-span-5 min-w-0">
-                <div className="truncate font-semibold text-neutral-100">
-                  {n.name ?? "—"}
-                </div>
-                <div className="truncate font-mono text-[10px] text-neutral-400">
-                  {shortAddr(n.mint, 4, 4)}
-                </div>
-              </div>
-              <div className="col-span-2 truncate text-[11px] text-neutral-300">
-                {n.symbol ?? "—"}
-              </div>
-              <div className="col-span-2 truncate text-[10px] text-neutral-500">
-                {n.reason}
-              </div>
-              <div className="col-span-3 text-right font-semibold tabular-nums text-emerald-300/90">
-                {fmtSol(n.estimatedGrossReclaimSol)} SOL
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {result.skippedNfts.length > 0 && (
-        <NonBurnableNftSummary entries={result.skippedNfts} />
-      )}
-      <dl className="divide-y divide-red-500/15">
-        {rows.map((r) => (
-          <div
-            key={r.label}
-            className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
-          >
-            <dt className="col-span-4 text-red-300/80">{r.label}</dt>
-            <dd
-              className={`col-span-8 min-w-0 break-all ${
-                r.mono
-                  ? "font-mono text-[11px] text-neutral-100"
-                  : "text-neutral-100"
-              }`}
-            >
-              {r.value}
-            </dd>
-          </div>
-        ))}
-      </dl>
       <BurnSignAndSendBlock
         kindLabel="legacy NFT burn"
         transactionBase64={result.transactionBase64}
+        blockhash={result.blockhash}
+        lastValidBlockHeight={result.lastValidBlockHeight}
         requiresSignatureFrom={result.requiresSignatureFrom}
         targetWallet={walletAddress}
         auditPassed={audit?.ok === true}
@@ -4371,6 +4418,70 @@ function LegacyNftBurnPreview({
           onBuildBatch(result.nextBatchCandidates.map((c) => c.mint))
         }
       />
+      <details className="group border-t border-red-500/15">
+        <summary className="cursor-pointer list-none bg-red-500/[0.03] px-3 py-1.5 text-[11px] font-semibold text-red-300/80 transition-colors duration-100 hover:bg-red-500/10">
+          <span className="inline-block w-3 transition-transform group-open:rotate-90">
+            ▸
+          </span>{" "}
+          Transaction details
+          {result.includedNfts.length > 0 && (
+            <span className="ml-2 text-[10px] text-red-300/60">
+              ({result.includedNfts.length} item
+              {result.includedNfts.length === 1 ? "" : "s"})
+            </span>
+          )}
+        </summary>
+        {result.includedNfts.length > 0 && (
+          <ul className="divide-y divide-red-500/15 border-b border-red-500/15">
+            {result.includedNfts.map((n: LegacyNftBurnIncludedEntry) => (
+              <li
+                key={n.tokenAccount}
+                className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+              >
+                <div className="col-span-5 min-w-0">
+                  <div className="truncate font-semibold text-neutral-100">
+                    {n.name ?? "—"}
+                  </div>
+                  <div className="truncate font-mono text-[10px] text-neutral-400">
+                    {shortAddr(n.mint, 4, 4)}
+                  </div>
+                </div>
+                <div className="col-span-2 truncate text-[11px] text-neutral-300">
+                  {n.symbol ?? "—"}
+                </div>
+                <div className="col-span-2 truncate text-[10px] text-neutral-500">
+                  {n.reason}
+                </div>
+                <div className="col-span-3 text-right font-semibold tabular-nums text-emerald-300/90">
+                  {fmtSol(n.estimatedGrossReclaimSol)} SOL
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {result.skippedNfts.length > 0 && (
+          <NonBurnableNftSummary entries={result.skippedNfts} />
+        )}
+        <dl className="divide-y divide-red-500/15">
+          {rows.map((r) => (
+            <div
+              key={r.label}
+              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+            >
+              <dt className="col-span-4 text-red-300/80">{r.label}</dt>
+              <dd
+                className={`col-span-8 min-w-0 break-all ${
+                  r.mono
+                    ? "font-mono text-[11px] text-neutral-100"
+                    : "text-neutral-100"
+                }`}
+              >
+                {r.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </details>
     </div>
   );
 }
@@ -4755,6 +4866,17 @@ function PnftBurnPreview({
 
   const rows: { label: string; value: React.ReactNode; mono?: boolean }[] = [
     {
+      label: "blockhash present",
+      value: presenceBadge(Boolean(result.blockhash)),
+    },
+    {
+      label: "lastValidBlockHeight present",
+      value: presenceBadge(
+        result.lastValidBlockHeight !== null &&
+          result.lastValidBlockHeight !== undefined,
+      ),
+    },
+    {
       label: "Burn count",
       value: (
         <span className="font-bold text-red-200">
@@ -4838,72 +4960,42 @@ function PnftBurnPreview({
 
   return (
     <div className="border-t border-red-600/30 bg-red-950/35">
-      <div className="flex items-center justify-between border-b border-red-600/40 bg-red-700/20 px-3 py-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
-          🔥 pNFT burn preview
-        </span>
-        <Badge variant="sell">unsigned · destructive</Badge>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-red-600/40 bg-red-700/20 px-3 py-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+            🔥 pNFT burn
+          </span>
+          <span className="text-[11px] font-semibold text-red-100">
+            {result.burnCount} selected
+          </span>
+          <span className="text-[10px] text-red-300/80">
+            · net{" "}
+            <span className="font-bold text-emerald-300">
+              {fmtSol(result.estimatedNetReclaimSol)} SOL
+            </span>
+          </span>
+          {result.simulationOk ? (
+            <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 ring-1 ring-emerald-500/30">
+              ✓ preflight
+            </span>
+          ) : (
+            <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold text-red-300 ring-1 ring-red-500/30">
+              ✕ preflight
+            </span>
+          )}
+        </div>
+        <Badge variant="sell">manual sign · destructive</Badge>
       </div>
       {result.warning && (
         <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
           ⚠ {result.warning}
         </div>
       )}
-      {result.includedPnfts.length > 0 && (
-        <ul className="divide-y divide-red-600/15 border-b border-red-600/15">
-          {result.includedPnfts.map((n: PnftBurnIncludedEntry) => (
-            <li
-              key={n.tokenAccount}
-              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
-            >
-              <div className="col-span-5 min-w-0">
-                <div className="truncate font-semibold text-neutral-100">
-                  {n.name ?? "—"}
-                </div>
-                <div className="truncate font-mono text-[10px] text-neutral-400">
-                  {shortAddr(n.mint, 4, 4)}
-                </div>
-              </div>
-              <div className="col-span-2 truncate text-[11px] text-neutral-300">
-                {n.symbol ?? "—"}
-              </div>
-              <div className="col-span-2 truncate text-[10px] text-neutral-500">
-                {n.reason}
-              </div>
-              <div className="col-span-3 text-right font-semibold tabular-nums text-emerald-300/90">
-                {fmtSol(n.estimatedGrossReclaimSol)} SOL
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {result.skippedPnfts.length > 0 && (
-        <NonBurnableNftSummary
-          entries={result.skippedPnfts as PnftBurnSkippedEntry[]}
-        />
-      )}
-      <dl className="divide-y divide-red-600/15">
-        {rows.map((r) => (
-          <div
-            key={r.label}
-            className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
-          >
-            <dt className="col-span-4 text-red-300/80">{r.label}</dt>
-            <dd
-              className={`col-span-8 min-w-0 break-all ${
-                r.mono
-                  ? "font-mono text-[11px] text-neutral-100"
-                  : "text-neutral-100"
-              }`}
-            >
-              {r.value}
-            </dd>
-          </div>
-        ))}
-      </dl>
       <BurnSignAndSendBlock
         kindLabel="pNFT burn"
         transactionBase64={result.transactionBase64}
+        blockhash={result.blockhash}
+        lastValidBlockHeight={result.lastValidBlockHeight}
         requiresSignatureFrom={result.requiresSignatureFrom}
         targetWallet={walletAddress}
         auditPassed={audit?.ok === true}
@@ -4920,6 +5012,72 @@ function PnftBurnPreview({
           onBuildBatch(result.nextBatchCandidates.map((c) => c.mint))
         }
       />
+      <details className="group border-t border-red-600/15">
+        <summary className="cursor-pointer list-none bg-red-600/[0.04] px-3 py-1.5 text-[11px] font-semibold text-red-300/80 transition-colors duration-100 hover:bg-red-600/10">
+          <span className="inline-block w-3 transition-transform group-open:rotate-90">
+            ▸
+          </span>{" "}
+          Transaction details
+          {result.includedPnfts.length > 0 && (
+            <span className="ml-2 text-[10px] text-red-300/60">
+              ({result.includedPnfts.length} item
+              {result.includedPnfts.length === 1 ? "" : "s"})
+            </span>
+          )}
+        </summary>
+        {result.includedPnfts.length > 0 && (
+          <ul className="divide-y divide-red-600/15 border-b border-red-600/15">
+            {result.includedPnfts.map((n: PnftBurnIncludedEntry) => (
+              <li
+                key={n.tokenAccount}
+                className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+              >
+                <div className="col-span-5 min-w-0">
+                  <div className="truncate font-semibold text-neutral-100">
+                    {n.name ?? "—"}
+                  </div>
+                  <div className="truncate font-mono text-[10px] text-neutral-400">
+                    {shortAddr(n.mint, 4, 4)}
+                  </div>
+                </div>
+                <div className="col-span-2 truncate text-[11px] text-neutral-300">
+                  {n.symbol ?? "—"}
+                </div>
+                <div className="col-span-2 truncate text-[10px] text-neutral-500">
+                  {n.reason}
+                </div>
+                <div className="col-span-3 text-right font-semibold tabular-nums text-emerald-300/90">
+                  {fmtSol(n.estimatedGrossReclaimSol)} SOL
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {result.skippedPnfts.length > 0 && (
+          <NonBurnableNftSummary
+            entries={result.skippedPnfts as PnftBurnSkippedEntry[]}
+          />
+        )}
+        <dl className="divide-y divide-red-600/15">
+          {rows.map((r) => (
+            <div
+              key={r.label}
+              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+            >
+              <dt className="col-span-4 text-red-300/80">{r.label}</dt>
+              <dd
+                className={`col-span-8 min-w-0 break-all ${
+                  r.mono
+                    ? "font-mono text-[11px] text-neutral-100"
+                    : "text-neutral-100"
+                }`}
+              >
+                {r.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </details>
     </div>
   );
 }
@@ -5300,6 +5458,17 @@ function CoreBurnPreview({
 
   const rows: { label: string; value: React.ReactNode; mono?: boolean }[] = [
     {
+      label: "blockhash present",
+      value: presenceBadge(Boolean(result.blockhash)),
+    },
+    {
+      label: "lastValidBlockHeight present",
+      value: presenceBadge(
+        result.lastValidBlockHeight !== null &&
+          result.lastValidBlockHeight !== undefined,
+      ),
+    },
+    {
       label: "Burn count",
       value: (
         <span className="font-bold text-red-200">
@@ -5383,72 +5552,42 @@ function CoreBurnPreview({
 
   return (
     <div className="border-t border-red-700/40 bg-red-950/40">
-      <div className="flex items-center justify-between border-b border-red-700/50 bg-red-800/25 px-3 py-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
-          🔥 Core asset burn preview
-        </span>
-        <Badge variant="sell">unsigned · destructive</Badge>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-red-700/50 bg-red-800/25 px-3 py-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-red-200">
+            🔥 Core asset burn
+          </span>
+          <span className="text-[11px] font-semibold text-red-100">
+            {result.burnCount} selected
+          </span>
+          <span className="text-[10px] text-red-300/80">
+            · net{" "}
+            <span className="font-bold text-emerald-300">
+              {fmtSol(result.estimatedNetReclaimSol)} SOL
+            </span>
+          </span>
+          {result.simulationOk ? (
+            <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 ring-1 ring-emerald-500/30">
+              ✓ preflight
+            </span>
+          ) : (
+            <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold text-red-300 ring-1 ring-red-500/30">
+              ✕ preflight
+            </span>
+          )}
+        </div>
+        <Badge variant="sell">manual sign · destructive</Badge>
       </div>
       {result.warning && (
         <div className="border-b border-red-600/20 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
           ⚠ {result.warning}
         </div>
       )}
-      {result.includedAssets.length > 0 && (
-        <ul className="divide-y divide-red-700/20 border-b border-red-700/20">
-          {result.includedAssets.map((a: CoreBurnIncludedEntry) => (
-            <li
-              key={a.asset}
-              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
-            >
-              <div className="col-span-5 min-w-0">
-                <div className="truncate font-semibold text-neutral-100">
-                  {a.name ?? "—"}
-                </div>
-                <div className="truncate font-mono text-[10px] text-neutral-400">
-                  {shortAddr(a.asset, 4, 4)}
-                </div>
-              </div>
-              <div className="col-span-2 truncate font-mono text-[11px] text-neutral-300">
-                {a.collection ? shortAddr(a.collection, 4, 4) : "—"}
-              </div>
-              <div className="col-span-2 truncate text-[10px] text-neutral-500">
-                {a.reason}
-              </div>
-              <div className="col-span-3 text-right font-semibold tabular-nums text-emerald-300/90">
-                {fmtSol(a.estimatedGrossReclaimSol)} SOL
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {result.skippedAssets.length > 0 && (
-        <NonBurnableNftSummary
-          entries={result.skippedAssets as CoreBurnSkippedEntry[]}
-        />
-      )}
-      <dl className="divide-y divide-red-700/20">
-        {rows.map((r) => (
-          <div
-            key={r.label}
-            className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
-          >
-            <dt className="col-span-4 text-red-300/80">{r.label}</dt>
-            <dd
-              className={`col-span-8 min-w-0 break-all ${
-                r.mono
-                  ? "font-mono text-[11px] text-neutral-100"
-                  : "text-neutral-100"
-              }`}
-            >
-              {r.value}
-            </dd>
-          </div>
-        ))}
-      </dl>
       <BurnSignAndSendBlock
         kindLabel="Core asset burn"
         transactionBase64={result.transactionBase64}
+        blockhash={result.blockhash}
+        lastValidBlockHeight={result.lastValidBlockHeight}
         requiresSignatureFrom={result.requiresSignatureFrom}
         targetWallet={walletAddress}
         auditPassed={audit?.ok === true}
@@ -5465,6 +5604,72 @@ function CoreBurnPreview({
           onBuildBatch(result.nextBatchCandidates.map((c) => c.asset))
         }
       />
+      <details className="group border-t border-red-700/20">
+        <summary className="cursor-pointer list-none bg-red-700/[0.04] px-3 py-1.5 text-[11px] font-semibold text-red-300/80 transition-colors duration-100 hover:bg-red-700/10">
+          <span className="inline-block w-3 transition-transform group-open:rotate-90">
+            ▸
+          </span>{" "}
+          Transaction details
+          {result.includedAssets.length > 0 && (
+            <span className="ml-2 text-[10px] text-red-300/60">
+              ({result.includedAssets.length} item
+              {result.includedAssets.length === 1 ? "" : "s"})
+            </span>
+          )}
+        </summary>
+        {result.includedAssets.length > 0 && (
+          <ul className="divide-y divide-red-700/20 border-b border-red-700/20">
+            {result.includedAssets.map((a: CoreBurnIncludedEntry) => (
+              <li
+                key={a.asset}
+                className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+              >
+                <div className="col-span-5 min-w-0">
+                  <div className="truncate font-semibold text-neutral-100">
+                    {a.name ?? "—"}
+                  </div>
+                  <div className="truncate font-mono text-[10px] text-neutral-400">
+                    {shortAddr(a.asset, 4, 4)}
+                  </div>
+                </div>
+                <div className="col-span-2 truncate font-mono text-[11px] text-neutral-300">
+                  {a.collection ? shortAddr(a.collection, 4, 4) : "—"}
+                </div>
+                <div className="col-span-2 truncate text-[10px] text-neutral-500">
+                  {a.reason}
+                </div>
+                <div className="col-span-3 text-right font-semibold tabular-nums text-emerald-300/90">
+                  {fmtSol(a.estimatedGrossReclaimSol)} SOL
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {result.skippedAssets.length > 0 && (
+          <NonBurnableNftSummary
+            entries={result.skippedAssets as CoreBurnSkippedEntry[]}
+          />
+        )}
+        <dl className="divide-y divide-red-700/20">
+          {rows.map((r) => (
+            <div
+              key={r.label}
+              className="grid grid-cols-12 items-center gap-3 px-3 py-1.5 text-xs"
+            >
+              <dt className="col-span-4 text-red-300/80">{r.label}</dt>
+              <dd
+                className={`col-span-8 min-w-0 break-all ${
+                  r.mono
+                    ? "font-mono text-[11px] text-neutral-100"
+                    : "text-neutral-100"
+                }`}
+              >
+                {r.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </details>
     </div>
   );
 }
