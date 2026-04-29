@@ -936,11 +936,22 @@ async function confirmLegacyNfts(
   const infos: ({ data: Buffer; lamports: number } | null)[] = [];
   for (let i = 0; i < flat.length; i += 100) {
     const chunk = flat.slice(i, i + 100);
-    const res = await connection.getMultipleAccountsInfo(chunk);
-    for (const info of res) {
-      infos.push(
-        info ? { data: Buffer.from(info.data), lamports: info.lamports } : null,
+    try {
+      const res = await connection.getMultipleAccountsInfo(chunk);
+      for (const info of res) {
+        infos.push(
+          info ? { data: Buffer.from(info.data), lamports: info.lamports } : null,
+        );
+      }
+    } catch (err) {
+      // Fail open: surface as nulls so each affected candidate becomes a
+      // skipped entry ("Metadata account not found …"). Throwing here used
+      // to 500 the whole discovery — never throw for the wallet because of
+      // a transient chunk failure.
+      console.warn(
+        `[legacyNftBurn] confirm Pass 1 chunk RPC failed (offset=${i}, size=${chunk.length}): ${(err as Error)?.message ?? err}`,
       );
+      for (let j = 0; j < chunk.length; j++) infos.push(null);
     }
   }
 
@@ -1062,13 +1073,24 @@ async function confirmLegacyNfts(
     const collectionInfos: ({ data: Buffer; lamports: number } | null)[] = [];
     for (let i = 0; i < collectionPdas.length; i += 100) {
       const chunk = collectionPdas.slice(i, i + 100);
-      const res = await connection.getMultipleAccountsInfo(chunk);
-      for (const info of res) {
-        collectionInfos.push(
-          info
-            ? { data: Buffer.from(info.data), lamports: info.lamports }
-            : null,
+      try {
+        const res = await connection.getMultipleAccountsInfo(chunk);
+        for (const info of res) {
+          collectionInfos.push(
+            info
+              ? { data: Buffer.from(info.data), lamports: info.lamports }
+              : null,
+          );
+        }
+      } catch (err) {
+        // Same fail-open pattern as Pass 1. Affected candidates fall through
+        // to the !colInfo branch below and become non-burnable with a
+        // collection-metadata-missing reason rather than 500-ing the whole
+        // discovery call.
+        console.warn(
+          `[legacyNftBurn] confirm Pass 2 chunk RPC failed (offset=${i}, size=${chunk.length}): ${(err as Error)?.message ?? err}`,
         );
+        for (let j = 0; j < chunk.length; j++) collectionInfos.push(null);
       }
     }
     for (let k = 0; k < collectionEntries.length; k++) {
@@ -1076,13 +1098,15 @@ async function confirmLegacyNfts(
       const colInfo = collectionInfos[k];
       const colPda = collectionPdas[k].toBase58();
       const conf = out[candidateIdx];
-      if (!colInfo) {
-        if (conf.isBurnable) {
-          conf.isBurnable = false;
-          conf.unburnableReason =
-            "Verified collection metadata account not found on-chain — can't safely build BurnV1";
-        }
-      } else {
+      // Best-effort burn (SolRip-style): if the verified collection's parent
+      // metadata is missing, leave collectionMetadataPda null and still
+      // attempt the burn. The BurnV1 ix is built without the collection slot;
+      // if the on-chain program rejects it for that reason, the preflight
+      // sim-trim loop isolates that single item with its own simulationError
+      // reason. Pre-skipping here was over-strict and produced false negatives
+      // for NFTs whose verified collection's parent metadata had been moved /
+      // closed but the child burn would have succeeded anyway.
+      if (colInfo) {
         conf.collectionMetadataPda = colPda;
       }
     }
@@ -1189,12 +1213,55 @@ export interface BuildLegacyNftBurnTxResult {
   nextBatchCandidates: BurnableLegacyCandidate[];
 }
 
+// Public entry point. Wraps the impl below with a fail-open safety net so
+// any unexpected error during discovery returns a valid (empty) envelope
+// instead of 500-ing the route. Address validation throws early — that's
+// caught upstream and surfaced as 400, not 500.
 export async function buildLegacyNftBurnTx(
   address: string,
   opts: BuildLegacyNftBurnTxOptions = {},
 ): Promise<BuildLegacyNftBurnTxResult> {
   const owner = new PublicKey(address);
   const ownerStr = owner.toBase58();
+  try {
+    return await buildLegacyNftBurnTxImpl(owner, ownerStr, opts);
+  } catch (err) {
+    console.warn(
+      `[legacyNftBurn] discovery failed unexpectedly for ${ownerStr}: ${(err as Error)?.message ?? err}`,
+    );
+    return {
+      burnCount: 0,
+      totalBurnable: 0,
+      includedNfts: [],
+      skippedNfts: [],
+      estimatedGrossReclaimSol: 0,
+      estimatedBaseFeeSol: 0,
+      estimatedPriorityFeeSol: 0,
+      estimatedFeeSol: 0,
+      estimatedNetReclaimSol: 0,
+      computeUnitLimit: 0,
+      priorityFeeMicrolamports: 0,
+      transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
+      transactionVersion: "legacy",
+      feePayer: ownerStr,
+      requiresSignatureFrom: ownerStr,
+      warning: LEGACY_NFT_BURN_WARNING,
+      simulationOk: false,
+      simulationError: "Discovery failed. Try again.",
+      burnableCandidates: [],
+      maxPerTx: MAX_NFT_BURN_PER_TX,
+      nextBatchCandidates: [],
+    };
+  }
+}
+
+async function buildLegacyNftBurnTxImpl(
+  owner: PublicKey,
+  ownerStr: string,
+  opts: BuildLegacyNftBurnTxOptions,
+): Promise<BuildLegacyNftBurnTxResult> {
   const scan = await scanWalletForCleanup(ownerStr);
   const splTokenProgramStr = TOKEN_PROGRAM_ID.toBase58();
   const token2022ProgramStr = TOKEN_2022_PROGRAM_ID.toBase58();
@@ -1343,8 +1410,45 @@ export async function buildLegacyNftBurnTx(
     };
   }
 
-  const { blockhash, lastValidBlockHeight } =
-    await connection.getLatestBlockhash();
+  let blockhash: string;
+  let lastValidBlockHeight: number;
+  try {
+    const got = await connection.getLatestBlockhash();
+    blockhash = got.blockhash;
+    lastValidBlockHeight = got.lastValidBlockHeight;
+  } catch (err) {
+    // Discovery must never 500. If the blockhash fetch fails, return an
+    // envelope without a tx — frontend gets the burnableCandidates list
+    // for the selectable grid and can retry on Build.
+    console.warn(
+      `[legacyNftBurn] getLatestBlockhash failed for ${ownerStr}: ${(err as Error)?.message ?? err}`,
+    );
+    return {
+      burnCount: 0,
+      totalBurnable: burnable.length,
+      includedNfts: [],
+      skippedNfts,
+      estimatedGrossReclaimSol: 0,
+      estimatedBaseFeeSol: 0,
+      estimatedPriorityFeeSol: 0,
+      estimatedFeeSol: 0,
+      estimatedNetReclaimSol: 0,
+      computeUnitLimit: 0,
+      priorityFeeMicrolamports,
+      transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
+      transactionVersion: "legacy",
+      feePayer: ownerStr,
+      requiresSignatureFrom: ownerStr,
+      warning: LEGACY_NFT_BURN_WARNING,
+      simulationOk: false,
+      simulationError: "RPC busy fetching blockhash. Try again.",
+      burnableCandidates,
+      maxPerTx: MAX_NFT_BURN_PER_TX,
+      nextBatchCandidates: computeNextBatch([], null),
+    };
+  }
 
   const buildTx = (
     items: LegacyNftConfirmation[],
@@ -1691,11 +1795,20 @@ async function confirmPnfts(
   const infos: ({ data: Buffer; lamports: number } | null)[] = [];
   for (let i = 0; i < flat.length; i += 100) {
     const chunk = flat.slice(i, i + 100);
-    const res = await connection.getMultipleAccountsInfo(chunk);
-    for (const info of res) {
-      infos.push(
-        info ? { data: Buffer.from(info.data), lamports: info.lamports } : null,
+    try {
+      const res = await connection.getMultipleAccountsInfo(chunk);
+      for (const info of res) {
+        infos.push(
+          info ? { data: Buffer.from(info.data), lamports: info.lamports } : null,
+        );
+      }
+    } catch (err) {
+      // Fail open — see confirmLegacyNfts Pass 1. RPC throw here used to
+      // 500 the whole pNFT discovery; now it falls through as nulls.
+      console.warn(
+        `[pnftBurn] confirm Pass 1 chunk RPC failed (offset=${i}, size=${chunk.length}): ${(err as Error)?.message ?? err}`,
       );
+      for (let j = 0; j < chunk.length; j++) infos.push(null);
     }
   }
 
@@ -1840,13 +1953,21 @@ async function confirmPnfts(
     const collectionInfos: ({ data: Buffer; lamports: number } | null)[] = [];
     for (let i = 0; i < collectionPdas.length; i += 100) {
       const chunk = collectionPdas.slice(i, i + 100);
-      const res = await connection.getMultipleAccountsInfo(chunk);
-      for (const info of res) {
-        collectionInfos.push(
-          info
-            ? { data: Buffer.from(info.data), lamports: info.lamports }
-            : null,
+      try {
+        const res = await connection.getMultipleAccountsInfo(chunk);
+        for (const info of res) {
+          collectionInfos.push(
+            info
+              ? { data: Buffer.from(info.data), lamports: info.lamports }
+              : null,
+          );
+        }
+      } catch (err) {
+        // Same fail-open pattern as confirmLegacyNfts Pass 2.
+        console.warn(
+          `[pnftBurn] confirm Pass 2 chunk RPC failed (offset=${i}, size=${chunk.length}): ${(err as Error)?.message ?? err}`,
         );
+        for (let j = 0; j < chunk.length; j++) collectionInfos.push(null);
       }
     }
     for (let k = 0; k < collectionEntries.length; k++) {
@@ -1854,17 +1975,11 @@ async function confirmPnfts(
       const colInfo = collectionInfos[k];
       const colPda = collectionPdas[k].toBase58();
       const conf = out[candidateIdx];
-      if (!colInfo) {
-        // Verified collection but parent metadata is missing on-chain —
-        // BurnV1 would fail "Missing collection metadata account".
-        // Override the burnable status with a clear skip reason.
-        if (conf.isBurnable) {
-          conf.isBurnable = false;
-          conf.unburnableReason =
-            "Verified collection metadata account not found on-chain — can't safely build BurnV1";
-        }
-        // Leave collectionMetadataPda null; consumer won't use it.
-      } else {
+      // Best-effort burn — see confirmLegacyNfts Pass 2 for the full
+      // rationale. Don't pre-skip; let the preflight sim-trim isolate any
+      // pNFT that the on-chain program actually rejects without the
+      // collection slot.
+      if (colInfo) {
         conf.collectionMetadataPda = colPda;
       }
     }
@@ -2062,12 +2177,52 @@ function parseSimulationError(err: unknown, logs: string[]): string {
   return "Unknown simulation error";
 }
 
+// Public entry point. See buildLegacyNftBurnTx for the wrapper rationale.
 export async function buildPnftBurnTx(
   address: string,
   opts: BuildPnftBurnTxOptions = {},
 ): Promise<BuildPnftBurnTxResult> {
   const owner = new PublicKey(address);
   const ownerStr = owner.toBase58();
+  try {
+    return await buildPnftBurnTxImpl(owner, ownerStr, opts);
+  } catch (err) {
+    console.warn(
+      `[pnftBurn] discovery failed unexpectedly for ${ownerStr}: ${(err as Error)?.message ?? err}`,
+    );
+    return {
+      burnCount: 0,
+      totalBurnable: 0,
+      includedPnfts: [],
+      skippedPnfts: [],
+      estimatedGrossReclaimSol: 0,
+      estimatedBaseFeeSol: 0,
+      estimatedPriorityFeeSol: 0,
+      estimatedFeeSol: 0,
+      estimatedNetReclaimSol: 0,
+      computeUnitLimit: 0,
+      priorityFeeMicrolamports: 0,
+      transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
+      transactionVersion: "legacy",
+      feePayer: ownerStr,
+      requiresSignatureFrom: ownerStr,
+      warning: PNFT_BURN_WARNING,
+      simulationOk: false,
+      simulationError: "Discovery failed. Try again.",
+      burnableCandidates: [],
+      maxPerTx: MAX_PNFT_BURN_PER_TX,
+      nextBatchCandidates: [],
+    };
+  }
+}
+
+async function buildPnftBurnTxImpl(
+  owner: PublicKey,
+  ownerStr: string,
+  opts: BuildPnftBurnTxOptions,
+): Promise<BuildPnftBurnTxResult> {
   const scan = await scanWalletForCleanup(ownerStr);
   const splTokenProgramStr = TOKEN_PROGRAM_ID.toBase58();
   const token2022ProgramStr = TOKEN_2022_PROGRAM_ID.toBase58();
@@ -2211,8 +2366,44 @@ export async function buildPnftBurnTx(
     };
   }
 
-  const { blockhash, lastValidBlockHeight } =
-    await connection.getLatestBlockhash();
+  let blockhash: string;
+  let lastValidBlockHeight: number;
+  try {
+    const got = await connection.getLatestBlockhash();
+    blockhash = got.blockhash;
+    lastValidBlockHeight = got.lastValidBlockHeight;
+  } catch (err) {
+    // Discovery must never 500 — see buildLegacyNftBurnTx for the same
+    // pattern. Return a tx-less envelope so the UI lists candidates.
+    console.warn(
+      `[pnftBurn] getLatestBlockhash failed for ${ownerStr}: ${(err as Error)?.message ?? err}`,
+    );
+    return {
+      burnCount: 0,
+      totalBurnable: burnable.length,
+      includedPnfts: [],
+      skippedPnfts,
+      estimatedGrossReclaimSol: 0,
+      estimatedBaseFeeSol: 0,
+      estimatedPriorityFeeSol: 0,
+      estimatedFeeSol: 0,
+      estimatedNetReclaimSol: 0,
+      computeUnitLimit: 0,
+      priorityFeeMicrolamports,
+      transactionBase64: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
+      transactionVersion: "legacy",
+      feePayer: ownerStr,
+      requiresSignatureFrom: ownerStr,
+      warning: PNFT_BURN_WARNING,
+      simulationOk: false,
+      simulationError: "RPC busy fetching blockhash. Try again.",
+      burnableCandidates,
+      maxPerTx: MAX_PNFT_BURN_PER_TX,
+      nextBatchCandidates: computeNextBatch([], null),
+    };
+  }
 
   // pNFT BurnV1 is heavier than legacy BurnV1 (extra account access for
   // token record + delegate checks). Conservative ~70k CU per pNFT.
