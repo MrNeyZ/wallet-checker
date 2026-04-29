@@ -477,6 +477,12 @@ import { SystemProgram, SYSVAR_INSTRUCTIONS_PUBKEY } from "@solana/web3.js";
 // will bring this down further whenever needed; this cap just bounds the
 // initial attempt so we don't waste a full-wallet simulation pass.
 export const MAX_NFT_BURN_PER_TX = 8;
+// Conservative starting cap for the legacy-NFT builder's *initial* batch.
+// Verified-collection NFTs add an extra writable collection-metadata
+// account per ix, so 8 BurnV1s now overflow Solana's 1 232-byte packet
+// cap on real wallets. The size-trim loop in buildLegacyNftBurnTxImpl
+// further reduces if needed.
+const LEGACY_INITIAL_BATCH_CAP = 6;
 const CU_PER_NFT_BURN = 50_000;
 const STANDARD_NFT_BURN_WARNING =
   "Burns Metaplex NFTs irreversibly and closes their Metadata + Master Edition accounts. Verify each mint manually before signing — burned NFTs and their on-chain state cannot be recovered.";
@@ -1254,7 +1260,7 @@ export async function buildLegacyNftBurnTx(
       simulationOk: false,
       simulationError: "Discovery failed. Try again.",
       burnableCandidates: [],
-      maxPerTx: MAX_NFT_BURN_PER_TX,
+      maxPerTx: LEGACY_INITIAL_BATCH_CAP,
       nextBatchCandidates: [],
     };
   }
@@ -1394,13 +1400,14 @@ async function buildLegacyNftBurnTxImpl(
   });
 
   // Pick the user-selected subset (or fall back to all burnable on
-  // discovery calls), then cap at MAX_NFT_BURN_PER_TX as a safety bound
-  // on the initial attempt. The actual included count is decided by the
-  // tx-size + sim-trim loops below.
+  // discovery calls), then cap at LEGACY_INITIAL_BATCH_CAP as a safety
+  // bound on the initial attempt. The actual included count is decided by
+  // the size-trim + sim-trim loops below — verified-collection NFTs ship
+  // an extra writable account so per-ix size is larger than vanilla.
   const selected = mintsAllowed
     ? burnable.filter((c) => mintsAllowed.has(c.mint))
     : burnable;
-  let included = selected.slice(0, MAX_NFT_BURN_PER_TX);
+  let included = selected.slice(0, LEGACY_INITIAL_BATCH_CAP);
   const priorityFeeMicrolamports = readPriorityFeeMicrolamports();
   const burnableByMint = new Map(burnableCandidates.map((c) => [c.mint, c]));
   // Helper: compute the leftover items the user can try in the next
@@ -1439,7 +1446,7 @@ async function buildLegacyNftBurnTxImpl(
       warning: LEGACY_NFT_BURN_WARNING,
       simulationOk: true,
       burnableCandidates,
-      maxPerTx: MAX_NFT_BURN_PER_TX,
+      maxPerTx: LEGACY_INITIAL_BATCH_CAP,
       nextBatchCandidates: computeNextBatch([], null),
     };
   }
@@ -1479,7 +1486,7 @@ async function buildLegacyNftBurnTxImpl(
       simulationOk: false,
       simulationError: "RPC busy fetching blockhash. Try again.",
       burnableCandidates,
-      maxPerTx: MAX_NFT_BURN_PER_TX,
+      maxPerTx: LEGACY_INITIAL_BATCH_CAP,
       nextBatchCandidates: computeNextBatch([], null),
     };
   }
@@ -1535,18 +1542,46 @@ async function buildLegacyNftBurnTxImpl(
     return { tx: t, serialized: ser };
   };
 
+  // ============================================================================
+  // Tx-size trim — wrap buildTx in try/catch so a "Transaction too large"
+  // throw at serialize-time also triggers a tail trim instead of escaping.
+  // (web3.js's t.serialize() throws synchronously on oversize; the previous
+  // post-build size check never fired in that case.)
+  // ============================================================================
   let computeUnitLimit = CU_PER_NFT_BURN * included.length + CU_HEADROOM;
-  let built = buildTx(included, computeUnitLimit);
-  // Tx-size trim (cheap, no RPC).
-  while (built.serialized.length > MAX_TX_SIZE_BYTES && included.length > 1) {
+  let built: { tx: Transaction; serialized: Uint8Array } | null = null;
+  let isolated: LegacyNftBurnSkippedEntry | null = null;
+  while (included.length > 0) {
+    let attempt: { tx: Transaction; serialized: Uint8Array } | null = null;
+    let buildErr: Error | null = null;
+    try {
+      attempt = buildTx(included, computeUnitLimit);
+    } catch (err) {
+      buildErr = err as Error;
+    }
+    const oversized =
+      buildErr !== null ||
+      (attempt !== null && attempt.serialized.length > MAX_TX_SIZE_BYTES);
+    if (!oversized && attempt) {
+      built = attempt;
+      break;
+    }
+    // Genuine non-size error — let the outer fail-open wrapper handle.
+    if (buildErr && !/transaction too large|exceeds.*packet|encode.*too|exceeds.*size/i.test(buildErr.message)) {
+      throw buildErr;
+    }
+    if (included.length === 1) {
+      isolated = {
+        mint: included[0].mint,
+        tokenAccount: included[0].tokenAccount,
+        reason: "Single NFT burn transaction exceeds Solana packet size",
+      };
+      included = [];
+      built = null;
+      break;
+    }
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_NFT_BURN * included.length + CU_HEADROOM;
-    built = buildTx(included, computeUnitLimit);
-  }
-  if (built.serialized.length > MAX_TX_SIZE_BYTES) {
-    throw new Error(
-      `Legacy NFT burn transaction exceeds ${MAX_TX_SIZE_BYTES}-byte packet cap even with one NFT (got ${built.serialized.length} bytes)`,
-    );
   }
 
   // ============================================================================
@@ -1555,13 +1590,16 @@ async function buildLegacyNftBurnTxImpl(
   // On failure, trim the tail by one and rebuild. If the loop bottoms out at
   // size 1 with a still-failing tx, isolate that single item to skippedNfts
   // with a reason — the next batch will try the rest. Each sim is one RPC
-  // call, so worst case = MAX_NFT_BURN_PER_TX RPCs (rare; only when one bad
-  // item sits at or near the head of the selection).
+  // call, so worst case = LEGACY_INITIAL_BATCH_CAP RPCs (rare; only when
+  // one bad item sits at or near the head of the selection).
   // ============================================================================
   let simulationOk = false;
   let simulationError: string | undefined;
-  let isolated: LegacyNftBurnSkippedEntry | null = null;
-  while (included.length > 0) {
+  // Only simulate if size-trim produced a buildable tx. When `built` is
+  // null the size-trim has already isolated the offending NFT into
+  // `isolated`; skipping straight to the tx-less envelope keeps simulation
+  // from blowing up on null.tx access.
+  while (built !== null && included.length > 0) {
     let simErr: string | undefined;
     try {
       const sim = await connection.simulateTransaction(built.tx);
@@ -1588,18 +1626,33 @@ async function buildLegacyNftBurnTxImpl(
       };
       simulationError = simErr;
       included = [];
+      built = null;
       break;
     }
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_NFT_BURN * included.length + CU_HEADROOM;
-    built = buildTx(included, computeUnitLimit);
+    try {
+      built = buildTx(included, computeUnitLimit);
+    } catch (err) {
+      // Defensive: trimming SHOULD shrink size, so a too-large here is
+      // unexpected. Treat as preflight failure for this batch.
+      simErr =
+        err instanceof Error ? err.message : "Build after trim failed";
+      console.warn(
+        `[legacyNftBurn] rebuild after trim failed for ${ownerStr} at batch=${included.length}: ${simErr}`,
+      );
+      simulationError = simErr;
+      included = [];
+      built = null;
+      break;
+    }
   }
 
   if (isolated) skippedNfts.push(isolated);
 
   // No items survived simulation — empty envelope with the isolated reason
   // so the UI can explain why nothing built.
-  if (included.length === 0) {
+  if (included.length === 0 || built === null) {
     return {
       burnCount: 0,
       totalBurnable: burnable.length,
@@ -1622,7 +1675,7 @@ async function buildLegacyNftBurnTxImpl(
       simulationOk: false,
       simulationError,
       burnableCandidates,
-      maxPerTx: MAX_NFT_BURN_PER_TX,
+      maxPerTx: LEGACY_INITIAL_BATCH_CAP,
       nextBatchCandidates: computeNextBatch([], isolated?.mint ?? null),
     };
   }
@@ -1679,7 +1732,7 @@ async function buildLegacyNftBurnTxImpl(
     warning: LEGACY_NFT_BURN_WARNING,
     simulationOk,
     burnableCandidates,
-    maxPerTx: MAX_NFT_BURN_PER_TX,
+    maxPerTx: LEGACY_INITIAL_BATCH_CAP,
     nextBatchCandidates: computeNextBatch(included, isolated?.mint ?? null),
   };
 }
@@ -1711,8 +1764,10 @@ const PNFT_BURN_WARNING =
 // Safety cap — see MAX_NFT_BURN_PER_TX comment. pNFT ix carries token
 // record + (optional) auth-rules + collection metadata, so it's wider than
 // legacy; lower safety cap reflects that. Sim-trim loop trims further as
-// needed.
-export const MAX_PNFT_BURN_PER_TX = 6;
+// needed. Dropped to 5 because real-wallet pNFTs with verified-collection
+// metadata overflow the 1 232-byte packet cap at 6+ ixs; the size-trim
+// loop at the build call site handles further trims.
+export const MAX_PNFT_BURN_PER_TX = 5;
 
 // Metaplex Token Auth Rules program. Required as account #14 in BurnV1
 // when the pNFT's metadata.programmableConfig.ruleSet is set. The v2.13.0
@@ -2546,29 +2601,56 @@ async function buildPnftBurnTxImpl(
     return { tx: t, serialized: ser };
   };
 
+  // ============================================================================
+  // Tx-size trim — same serialize-aware pattern as buildLegacyNftBurnTxImpl.
+  // Wrap buildTx in try/catch so a "Transaction too large" throw at
+  // serialize-time triggers a tail trim instead of escaping to the outer
+  // fail-open wrapper.
+  // ============================================================================
   let computeUnitLimit = CU_PER_PNFT_BURN * included.length + CU_HEADROOM;
-  let built = buildTx(included, computeUnitLimit);
-  // Tx-size trim (cheap, no RPC).
-  while (built.serialized.length > MAX_TX_SIZE_BYTES && included.length > 1) {
+  let built: { tx: Transaction; serialized: Uint8Array } | null = null;
+  let isolated: PnftBurnSkippedEntry | null = null;
+  while (included.length > 0) {
+    let attempt: { tx: Transaction; serialized: Uint8Array } | null = null;
+    let buildErr: Error | null = null;
+    try {
+      attempt = buildTx(included, computeUnitLimit);
+    } catch (err) {
+      buildErr = err as Error;
+    }
+    const oversized =
+      buildErr !== null ||
+      (attempt !== null && attempt.serialized.length > MAX_TX_SIZE_BYTES);
+    if (!oversized && attempt) {
+      built = attempt;
+      break;
+    }
+    if (buildErr && !/transaction too large|exceeds.*packet|encode.*too|exceeds.*size/i.test(buildErr.message)) {
+      throw buildErr;
+    }
+    if (included.length === 1) {
+      isolated = {
+        mint: included[0].mint,
+        tokenAccount: included[0].tokenAccount,
+        reason: "Single pNFT burn transaction exceeds Solana packet size",
+      };
+      included = [];
+      built = null;
+      break;
+    }
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_PNFT_BURN * included.length + CU_HEADROOM;
-    built = buildTx(included, computeUnitLimit);
-  }
-  if (built.serialized.length > MAX_TX_SIZE_BYTES) {
-    throw new Error(
-      `pNFT burn transaction exceeds ${MAX_TX_SIZE_BYTES}-byte packet cap even with one pNFT (got ${built.serialized.length} bytes)`,
-    );
   }
 
   // ============================================================================
   // Preflight simulation — sim-trim loop. See buildLegacyNftBurnTx for the
   // pattern. Each fail trims the tail and retries; size-1 fail isolates the
-  // bad item with a per-item skip reason.
+  // bad item with a per-item skip reason. Skipped entirely when size-trim
+  // already isolated everything (built === null).
   // ============================================================================
   let simulationOk = false;
   let simulationError: string | undefined;
-  let isolated: PnftBurnSkippedEntry | null = null;
-  while (included.length > 0) {
+  while (built !== null && included.length > 0) {
     let simErr: string | undefined;
     try {
       const sim = await connection.simulateTransaction(built.tx);
@@ -2595,16 +2677,29 @@ async function buildPnftBurnTxImpl(
       };
       simulationError = simErr;
       included = [];
+      built = null;
       break;
     }
     included = included.slice(0, -1);
     computeUnitLimit = CU_PER_PNFT_BURN * included.length + CU_HEADROOM;
-    built = buildTx(included, computeUnitLimit);
+    try {
+      built = buildTx(included, computeUnitLimit);
+    } catch (err) {
+      simErr =
+        err instanceof Error ? err.message : "Build after trim failed";
+      console.warn(
+        `[pnftBurn] rebuild after trim failed for ${ownerStr} at batch=${included.length}: ${simErr}`,
+      );
+      simulationError = simErr;
+      included = [];
+      built = null;
+      break;
+    }
   }
 
   if (isolated) skippedPnfts.push(isolated);
 
-  if (included.length === 0) {
+  if (included.length === 0 || built === null) {
     return {
       burnCount: 0,
       totalBurnable: burnable.length,
