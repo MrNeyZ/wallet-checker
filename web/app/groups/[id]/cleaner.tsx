@@ -12,6 +12,7 @@ import type {
   CleanupScanResult,
   CoreBurnIncludedEntry,
   CoreBurnSkippedEntry,
+  GroupCleanupScanAllResult,
   LegacyNftBurnIncludedEntry,
   LegacyNftBurnSkippedEntry,
   PnftBurnIncludedEntry,
@@ -26,7 +27,6 @@ import {
   buildLegacyNftBurnTxAction,
   buildPnftBurnTxAction,
   scanCleanupAction,
-  scanGroupCleanupAllAction,
 } from "../actions";
 import { Badge } from "@/ui-kit/components/Badge";
 import { WalletLink } from "@/ui-kit/components/WalletLink";
@@ -316,6 +316,12 @@ function GroupAllActions({
   // Mutable cancel flag — async loops poll this on each iteration so cancel
   // takes effect without React state churn or stale closure captures.
   const cancelRef = useRef(false);
+  // AbortController for the current scan-all HTTP request. Storing the
+  // controller in a ref lets the cancel button tear down the underlying
+  // fetch (which causes the Express backend's `req.on("close")` handler
+  // to abort the in-progress wallet scan instead of running every
+  // remaining wallet to completion).
+  const scanAllAbortRef = useRef<AbortController | null>(null);
 
   const isScanning = scanAll.status === "running";
   const isCleaning = cleanAll.status === "running";
@@ -336,6 +342,11 @@ function GroupAllActions({
 
   async function runScanAll(opts: { force?: boolean } = {}) {
     cancelRef.current = false;
+    // Tear down any prior in-flight controller before issuing a new one
+    // so a rapid second click never leaves an orphan request running in
+    // the background.
+    scanAllAbortRef.current?.abort();
+    scanAllAbortRef.current = new AbortController();
     const total = wallets.length;
     // Single backend call. The scan-all action is a Next.js server action
     // (no client-side AbortController hook) so cancelling can't actually
@@ -353,9 +364,51 @@ function GroupAllActions({
       failed: [],
       activeAddress: wallets[0]?.address ?? null,
     });
-    const res = await scanGroupCleanupAllAction(groupId, {
-      force: opts.force,
-    });
+    // Same-origin proxy → Express. Calling fetch directly (instead of via
+    // the prior `scanGroupCleanupAllAction` server action) is what lets
+    // `scanAllAbortRef.current.abort()` actually tear down the underlying
+    // connection: the proxy forwards `req.signal` to the upstream fetch,
+    // and Express's `req.on("close")` aborts the in-progress wallet scan.
+    const controller = scanAllAbortRef.current;
+    let res:
+      | { ok: true; result: GroupCleanupScanAllResult }
+      | { ok: false; error: string };
+    try {
+      const httpRes = await fetch(
+        `/api/groups/${encodeURIComponent(groupId)}/cleanup-scan-all`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ force: opts.force ?? false }),
+          signal: controller?.signal,
+          cache: "no-store",
+        },
+      );
+      if (!httpRes.ok) {
+        const text = await httpRes.text().catch(() => "");
+        res = { ok: false, error: text || `HTTP ${httpRes.status}` };
+      } else {
+        res = {
+          ok: true,
+          result: (await httpRes.json()) as GroupCleanupScanAllResult,
+        };
+      }
+    } catch (err) {
+      // AbortError from the user clicking Cancel — cancel() has already
+      // flipped the UI to the cancelled "done" state, so just exit. Do
+      // NOT fall through to the error branch below.
+      if (
+        (err as Error)?.name === "AbortError" ||
+        controller?.signal.aborted ||
+        cancelRef.current
+      ) {
+        return;
+      }
+      res = {
+        ok: false,
+        error: err instanceof Error ? err.message : "Group scan failed",
+      };
+    }
     if (cancelRef.current) {
       // User cancelled mid-flight — UI state was already set to cancelled
       // in cancel(). Hydrate the scan registry with any successful results
@@ -579,6 +632,13 @@ function GroupAllActions({
 
   function cancel() {
     cancelRef.current = true;
+    // Abort the underlying scan-all HTTP request. The Express backend
+    // listens for `req.on("close")` and tears down the in-progress
+    // wallet scan + retry backoff — so the user-perceived cancel
+    // actually frees the queue instead of waiting for the remaining
+    // wallets to finish.
+    scanAllAbortRef.current?.abort();
+    scanAllAbortRef.current = null;
     // Snap the UI out of "running" state immediately. The backend scan-all
     // call may still resolve later — the post-await handler in runScanAll
     // detects the cancelled flag and skips the state overwrite (it merges
@@ -1048,7 +1108,7 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
   const fullCleanCancelRef = useRef(false);
   const isFullCleaning = fullClean.status === "running";
 
-  function handleScan() {
+  const handleScan = useCallback(() => {
     setState({ status: "loading" });
     setBuildState({ status: "idle" });
     startTransition(async () => {
@@ -1066,7 +1126,8 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
         setState({ status: "error", error: res.error });
       }
     });
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.address]);
 
   function handleBuildTx() {
     setBuildState({ status: "loading" });
@@ -1085,6 +1146,13 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
     // owns the build/sign cycle. Otherwise the user sees a stale preview
     // from a manual build alongside the auto-loop progress.
     setBuildState({ status: "idle" });
+
+    // Snapshot the wallet under cleanup at loop start. The user can switch
+    // accounts in their browser wallet mid-loop, which would mutate
+    // `w.connected` between iterations; comparing every check against this
+    // frozen value (rather than the live ref) prevents partially-completed
+    // loops from being silently retargeted at a different wallet.
+    const expectedWallet = wallet.address;
 
     const initialEmpty = state.scan.emptyTokenAccounts.length;
     const expectedBatches = Math.ceil(initialEmpty / MAX_CLOSE_IX_PER_TX);
@@ -1109,7 +1177,7 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
         remainingEmpty,
         step: "building",
       });
-      const built = await buildCloseEmptyTxAction(wallet.address);
+      const built = await buildCloseEmptyTxAction(expectedWallet);
       if (!built.ok) return fail(built.error);
       const tx = built.result;
       if (tx.transactionBase64 === null || tx.includedAccounts.length === 0) {
@@ -1117,16 +1185,26 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
         setFullClean({ status: "done", batches: batch - 1, signatures: [...signatures] });
         return;
       }
+      // Defence-in-depth: builder must produce a tx for the same wallet we
+      // started with. Catches any backend bug or middleware swap before the
+      // user is asked to sign.
+      if (tx.requiresSignatureFrom !== expectedWallet) {
+        return fail(
+          `Built tx wallet mismatch: expected ${shortAddr(expectedWallet, 4, 4)}, got ${shortAddr(tx.requiresSignatureFrom, 4, 4)}`,
+        );
+      }
 
       // 2. AUDIT — same whitelist the manual Sign & send button uses.
       const audit = auditCloseEmptyTx(tx.transactionBase64);
       if (!audit.ok) return fail(`Audit failed: ${audit.reason ?? "unknown"}`);
 
-      // 3. WALLET CHECK
-      if (w.connected !== wallet.address) {
+      // 3. WALLET CHECK — compare live connection to the snapshot, NOT to
+      //    the (also live) wallet.address prop, so a mid-loop account
+      //    switch fails clean instead of silently retargeting.
+      if (w.connected !== expectedWallet) {
         return fail(
           w.connected
-            ? `Connected wallet ${shortAddr(w.connected, 4, 4)} does not match ${shortAddr(wallet.address, 4, 4)}`
+            ? `Connected wallet ${shortAddr(w.connected, 4, 4)} does not match ${shortAddr(expectedWallet, 4, 4)}`
             : "No wallet connected. Connect the wallet being cleaned and retry.",
         );
       }
@@ -1172,7 +1250,7 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
             : Math.max(0, CONFIRM_POLL_MAX_ATTEMPTS - attempt + 1),
           lastSignature: signature,
         });
-        rescanResult = await scanCleanupAction(wallet.address, { refresh: true });
+        rescanResult = await scanCleanupAction(expectedWallet, { refresh: true });
         if (!rescanResult.ok) break;
         const newEmpty = rescanResult.scan.emptyTokenAccounts.length;
         if (newEmpty < remainingEmpty) {
@@ -1190,7 +1268,7 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
       }
 
       setState({ status: "scanned", scan: rescanResult.scan, burn: rescanResult.burn });
-      setScan(wallet.address, {
+      setScan(expectedWallet, {
         empty: rescanResult.scan.emptyTokenAccounts.length,
         reclaimSol: rescanResult.scan.totals.estimatedReclaimSol,
         fungible: rescanResult.burn.count,
@@ -1207,15 +1285,18 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
     fullCleanCancelRef.current = true;
   }
 
-  const summary =
-    state.status === "scanned"
-      ? {
-          empty: state.scan.emptyTokenAccounts.length,
-          reclaimSol: state.scan.totals.estimatedReclaimSol,
-          fungible: state.burn.count,
-          nft: state.scan.nftTokenAccounts.length,
-        }
-      : null;
+  const summary = useMemo(
+    () =>
+      state.status === "scanned"
+        ? {
+            empty: state.scan.emptyTokenAccounts.length,
+            reclaimSol: state.scan.totals.estimatedReclaimSol,
+            fungible: state.burn.count,
+            nft: state.scan.nftTokenAccounts.length,
+          }
+        : null,
+    [state],
+  );
 
   return (
     <div className="overflow-hidden rounded-md border border-neutral-700 bg-neutral-900">
@@ -1895,18 +1976,13 @@ function ScanAllProgress({
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3 py-1.5 text-[11px] text-neutral-300">
         <span>
           <span className="font-semibold text-white">
-            Scanning {state.total} wallet{state.total === 1 ? "" : "s"}…
+            Scanning wallets…
           </span>
           <span className="ml-1 text-neutral-500">
-            summary scan only — backend processes wallets one at a time
-            (max 30s each, NFT/Core discovery runs lazily on expand)
+            Fast summary scan. NFT discovery loads when you open a wallet
+            section.
           </span>
         </span>
-        {state.activeAddress && (
-          <span className="font-mono text-[10px] text-neutral-500">
-            starting with {shortAddr(state.activeAddress, 4, 4)}
-          </span>
-        )}
       </div>
       <div className="h-0.5 w-full overflow-hidden bg-neutral-800">
         <div className="ui-indeterminate-bar h-full bg-violet-500/70" />
@@ -2858,6 +2934,7 @@ function BurnSignAndSendBlock({
   auditPassed,
   auditReason,
   simulationOk,
+  simulationRequired = false,
   simulationError,
   ackDestructive,
   onToggleAck,
@@ -2883,6 +2960,10 @@ function BurnSignAndSendBlock({
   auditPassed: boolean;
   auditReason: string | null;
   simulationOk: boolean | null;
+  // Strict mode: when true (pNFT / Core), simulationOk MUST be true to
+  // pass the safety gate — null is treated as "not simulated → BLOCK".
+  // Default false preserves SPL / Legacy behaviour where null is OK.
+  simulationRequired?: boolean;
   simulationError?: string;
   ackDestructive: boolean;
   onToggleAck: () => void;
@@ -2949,7 +3030,11 @@ function BurnSignAndSendBlock({
       w.connected !== null && w.connected === targetWallet && !walletMismatch,
     auditPassed,
     ackDestructive,
-    simulationOk: simulationOk !== false,
+    // pNFT / Core require an explicit `simulationOk === true`; SPL / Legacy
+    // tolerate `null` (== "not simulated, assume ok").
+    simulationOk: simulationRequired
+      ? simulationOk === true
+      : simulationOk !== false,
   };
   const checklistPassed =
     checks.walletMatches &&
@@ -2961,18 +3046,21 @@ function BurnSignAndSendBlock({
     !alreadyUsed && !noTx && !targetMismatch && checklistPassed;
 
   async function handleSignAndSend() {
+    // Synchronous double-click guard — must be the FIRST statement (no
+    // awaits before this) so a second click queued before the disabled
+    // state paints can never start a parallel sign.
     if (inFlightRef.current) return;
-    if (!canSend || transactionBase64 === null) return;
-    const provider = getProvider();
-    if (!provider) {
-      setSend({ status: "error", error: "No wallet provider available." });
-      return;
-    }
     inFlightRef.current = true;
-    setSend({ status: "signing" });
-
     let signature: string | undefined;
     try {
+      if (!canSend || transactionBase64 === null) return;
+      const provider = getProvider();
+      if (!provider) {
+        setSend({ status: "error", error: "No wallet provider available." });
+        return;
+      }
+      setSend({ status: "signing" });
+
       // Step 1: decode the tx + sanity-check the build metadata. The
       // blockhash + lastValidBlockHeight come from the SAME getLatestBlockhash()
       // call the backend used at serialize-time. lastValidBlockHeight is NOT
@@ -2985,6 +3073,20 @@ function BurnSignAndSendBlock({
         lastValidBlockHeight === undefined
       ) {
         throw new Error("Rebuild transaction and try again.");
+      }
+      // Defence-in-depth: verify the decoded tx is actually for the wallet
+      // we expect to sign. Catches any builder/middleware bug that swapped
+      // the feePayer between the build response and what the user sees.
+      const decodedFeePayer = tx.feePayer?.toBase58();
+      if (decodedFeePayer !== requiresSignatureFrom) {
+        throw new Error(
+          `Built transaction feePayer ${decodedFeePayer ?? "<missing>"} does not match required signer ${shortAddr(requiresSignatureFrom, 4, 4)}. Rebuild and try again.`,
+        );
+      }
+      if (w.connected !== requiresSignatureFrom) {
+        throw new Error(
+          `Connected wallet ${shortAddr(w.connected ?? "<none>", 4, 4)} does not match required signer ${shortAddr(requiresSignatureFrom, 4, 4)}.`,
+        );
       }
 
       // Step 2: hand to the wallet for signing + initial broadcast.
@@ -5216,6 +5318,7 @@ function PnftBurnPreview({
         auditPassed={audit?.ok === true}
         auditReason={audit?.reason ?? null}
         simulationOk={result.simulationOk}
+        simulationRequired
         simulationError={result.simulationError}
         ackDestructive={ackDestructive}
         onToggleAck={() => setAckDestructive((v) => !v)}
@@ -5834,6 +5937,7 @@ function CoreBurnPreview({
         auditPassed={audit?.ok === true}
         auditReason={audit?.reason ?? null}
         simulationOk={result.simulationOk}
+        simulationRequired
         simulationError={result.simulationError}
         ackDestructive={ackDestructive}
         onToggleAck={() => setAckDestructive((v) => !v)}
