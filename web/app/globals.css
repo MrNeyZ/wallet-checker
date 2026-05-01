@@ -5,6 +5,49 @@
 @import "../ui-kit/animations/transitions.css";
 @import "../ui-kit/animations/flash.css";
 
+/* ── VictoryLabs design tokens (additive) ────────────────────────────────
+   Sourced from nft-live-feed shared.tsx + the latest Burner.html polish
+   pass (May 2026). Layered alongside the existing Tailwind neutrals so
+   old code keeps rendering unchanged; new code opts in via `var(--vl-*)`
+   or the `.vl-*` utilities below.
+
+   Polish-pass deltas vs first cut:
+     • `--vl-surface` is now OPAQUE (#231e3d). The frosted-glass effect
+       is rebuilt by layering a faint white linear-gradient on top of
+       the opaque base — gives bright surfaces that visibly lift above
+       the dark page even without browser backdrop-filter support.
+     • `--vl-border` / `--vl-border-h` are now lavender alphas instead
+       of dark gray hex — borders read as soft purple, not as gray
+       seams.
+     • Unified `--vl-shadow-card` token + 0.18s motion baseline. */
+:root {
+  --vl-bg: #07060e;
+  --vl-bg-2: #0d0b1a;
+  --vl-page: #1a162e;            /* outer panel surface (slightly darker than card) */
+  --vl-surface: #231e3d;          /* elevated VL "cloud" surface, fully opaque */
+  --vl-surface-2: #2c2649;
+  --vl-border: rgba(168, 144, 232, 0.30);
+  --vl-border-h: rgba(168, 144, 232, 0.50);
+  --vl-shadow-card:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 8px 24px -10px rgba(0, 0, 0, 0.55),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  --vl-fg: #f2eeff;
+  --vl-fg-2: #a59fc4;
+  --vl-fg-3: #7a7497;
+  --vl-fg-4: #524d6e;
+  --vl-purple: #a890e8;
+  --vl-purple-2: #d0c8e4;
+  --vl-purple-soft: rgba(168, 144, 232, 0.14);
+  --vl-purple-border: rgba(168, 144, 232, 0.40);
+  --vl-green: #4fb67d;
+  --vl-red: #ef7878;
+  --vl-amber: #fbbf24;
+  --vl-font-mono: 'Fira Code', 'SF Mono', ui-monospace, monospace;
+  --vl-font-serif: 'Playfair Display', Georgia, serif;
+  --vl-motion: 0.18s;
+}
+
 html, body {
   background: #0A0A0B;
   color: #FAFAFA;
@@ -20,3 +63,345 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #27272A; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #3F3F46; }
+
+/* ── VictoryLabs shell + primitive utilities (additive) ──────────────────
+   Opt-in classes — existing `.ui-*`, Tailwind utilities, and ui-kit
+   primitives keep their current visuals.
+
+   Convention for the new "lifted card" look: an OPAQUE base layer plus a
+   faint white linear-gradient overlay so the card visibly brightens above
+   any background. Hover swaps the white wash for a purple wash, deepens
+   the shadow, and brightens the border. Motion is unified at 0.18s. */
+
+/* Page background — a darker panel tone that grids/lists nest into. */
+.vl-page-surface {
+  background: var(--vl-page);
+}
+
+/* TopNav — full-bleed gradient chrome, mirrors nft-live-feed. */
+.vl-topnav {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  background: linear-gradient(180deg, rgba(20,14,34,0.7) 0%, rgba(10,8,18,0.95) 100%);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  box-shadow: 0 1px 0 rgba(128,104,216,0.04), 0 8px 24px rgba(0,0,0,0.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.vl-topnav-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 20px;
+  gap: 12px;
+}
+.vl-topnav-left { display: flex; align-items: center; gap: 32px; }
+.vl-topnav-right { display: flex; align-items: center; gap: 12px; }
+.vl-topnav-logo {
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+  margin-left: 6px;
+}
+.vl-topnav-logo img {
+  height: 38px;
+  width: auto;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.vl-topnav-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: relative;
+}
+.vl-topnav-tab {
+  position: relative;
+  z-index: 1;
+  padding: 5px 16px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  color: #55556e;
+  text-decoration: none;
+  transition: color var(--vl-motion) ease-out, background var(--vl-motion) ease-out;
+  cursor: pointer;
+}
+.vl-topnav-tab:hover { color: #aaaabf; }
+.vl-topnav-tab.is-active {
+  color: var(--vl-purple-2);
+  background: linear-gradient(180deg, rgba(128,104,216,0.14) 0%, rgba(128,104,216,0.04) 100%);
+  box-shadow: 0 0 12px rgba(128,104,216,0.15), inset 0 0 0 1px rgba(128,104,216,0.12);
+}
+.vl-topnav-logout {
+  background: transparent;
+  border: 1px solid var(--vl-border);
+  color: var(--vl-fg-2);
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all var(--vl-motion);
+}
+.vl-topnav-logout:hover { color: var(--vl-fg); border-color: var(--vl-border-h); }
+
+/* Card — frosted lavender surface that LIFTS above the page. The
+   gradient overlay on top of the opaque base produces the "two-layer"
+   effect from the polish pass; backdrop-filter is a progressive
+   enhancement so safari/chromium feel a touch crisper. */
+.vl-card {
+  background:
+    linear-gradient(rgba(255,255,255,0.05), rgba(255,255,255,0.05)),
+    var(--vl-surface);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--vl-purple-border);
+  border-radius: 10px;
+  box-shadow: var(--vl-shadow-card);
+  transition: border-color var(--vl-motion), background var(--vl-motion),
+              box-shadow var(--vl-motion), transform var(--vl-motion);
+  will-change: transform;
+}
+.vl-card:hover {
+  background:
+    linear-gradient(rgba(168,144,232,0.08), rgba(168,144,232,0.08)),
+    var(--vl-surface);
+  border-color: rgba(168,144,232,0.70);
+}
+.vl-card.is-interactive { cursor: pointer; }
+.vl-card.is-interactive:hover {
+  transform: scale(1.01);
+  box-shadow: 0 8px 24px -10px rgba(168,144,232,0.50),
+              0 0 0 1px rgba(168,144,232,0.18),
+              0 0 22px -8px rgba(168,144,232,0.35);
+}
+
+/* Badge — small label pill. */
+.vl-badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+.vl-badge-neutral { background: rgba(255,255,255,0.04); border-color: var(--vl-border); color: var(--vl-fg-2); }
+.vl-badge-purple { background: var(--vl-purple-soft); border-color: var(--vl-purple-border); color: var(--vl-purple-2); }
+.vl-badge-green { background: rgba(79,182,125,0.10); border-color: rgba(79,182,125,0.30); color: var(--vl-green); }
+.vl-badge-red { background: rgba(239,120,120,0.10); border-color: rgba(239,120,120,0.30); color: var(--vl-red); }
+.vl-badge-amber { background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.28); color: var(--vl-amber); }
+
+/* Table — wrapper + row helpers. */
+.vl-table {
+  background:
+    linear-gradient(rgba(255,255,255,0.04), rgba(255,255,255,0.04)),
+    var(--vl-surface);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--vl-purple-border);
+  border-radius: 10px;
+  box-shadow: var(--vl-shadow-card);
+  overflow: hidden;
+}
+.vl-table-head {
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--vl-fg-3);
+  background: rgba(0,0,0,0.20);
+  border-bottom: 1px solid var(--vl-border);
+}
+.vl-table-row {
+  border-bottom: 1px solid var(--vl-border);
+  transition: background var(--vl-motion), transform var(--vl-motion);
+}
+.vl-table-row:last-child { border-bottom: none; }
+.vl-table-row:hover {
+  background: rgba(168,144,232,0.06);
+}
+
+/* SectionHeader — uppercase mono tracker. */
+.vl-section-header {
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--vl-fg-3);
+  text-transform: uppercase;
+}
+
+/* Search input — purple focus glow. */
+.vl-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background:
+    linear-gradient(rgba(255,255,255,0.04), rgba(255,255,255,0.04)),
+    var(--vl-surface);
+  border: 1px solid var(--vl-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  transition: border-color var(--vl-motion), box-shadow var(--vl-motion), background var(--vl-motion);
+}
+.vl-input:focus-within {
+  border-color: var(--vl-purple);
+  background:
+    linear-gradient(rgba(168,144,232,0.05), rgba(168,144,232,0.05)),
+    var(--vl-surface);
+  box-shadow: 0 0 0 3px rgba(168,144,232,0.14),
+              0 0 18px -6px rgba(168,144,232,0.45);
+}
+.vl-input input,
+.vl-input textarea,
+.vl-input select {
+  background: transparent;
+  border: none;
+  color: var(--vl-fg);
+  font-size: 13px;
+  outline: none;
+  width: 100%;
+}
+.vl-input input::placeholder,
+.vl-input textarea::placeholder { color: var(--vl-fg-2); opacity: 0.65; }
+
+/* Standalone <input> variant — same focus glow without needing a wrapper. */
+.vl-text-input {
+  background:
+    linear-gradient(rgba(255,255,255,0.04), rgba(255,255,255,0.04)),
+    var(--vl-surface);
+  border: 1px solid var(--vl-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--vl-fg);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--vl-motion), box-shadow var(--vl-motion), background var(--vl-motion);
+}
+.vl-text-input::placeholder { color: var(--vl-fg-2); opacity: 0.65; }
+.vl-text-input:focus {
+  border-color: var(--vl-purple);
+  background:
+    linear-gradient(rgba(168,144,232,0.05), rgba(168,144,232,0.05)),
+    var(--vl-surface);
+  box-shadow: 0 0 0 3px rgba(168,144,232,0.14),
+              0 0 18px -6px rgba(168,144,232,0.45);
+}
+
+/* Buttons — primary (purple gradient), burn (red), ghost (outline). */
+.vl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 18px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-family: var(--vl-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  transition: all var(--vl-motion);
+  text-transform: uppercase;
+}
+.vl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.vl-btn-primary {
+  background: linear-gradient(180deg, var(--vl-purple-2) 0%, var(--vl-purple) 100%);
+  color: #1a0e3a;
+  border-color: var(--vl-purple);
+  box-shadow: 0 0 0 1px rgba(168,144,232,0.2), 0 6px 18px rgba(128,104,216,0.35);
+}
+.vl-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 0 0 1px rgba(168,144,232,0.4), 0 8px 22px rgba(128,104,216,0.5);
+}
+.vl-btn-burn {
+  background: linear-gradient(180deg, #fb6f6f 0%, #e23838 100%);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.18);
+  padding: 11px 20px;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  box-shadow: 0 0 0 1px rgba(239,120,120,0.30), 0 6px 22px rgba(239,120,120,0.40), inset 0 1px 0 rgba(255,255,255,0.18);
+}
+.vl-btn-burn:hover:not(:disabled) {
+  filter: brightness(1.10);
+  transform: translateY(-1px);
+}
+.vl-btn-burn:disabled {
+  background: rgba(239,120,120,0.06);
+  color: rgba(239,120,120,0.35);
+  border-color: rgba(239,120,120,0.15);
+  box-shadow: none;
+  filter: grayscale(0.4);
+}
+.vl-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--vl-border);
+  color: var(--vl-fg-2);
+}
+.vl-btn-ghost:hover:not(:disabled) {
+  border-color: var(--vl-purple);
+  color: var(--vl-purple-2);
+  background: rgba(168,144,232,0.08);
+  box-shadow: 0 0 0 1px rgba(168,144,232,0.18);
+}
+
+/* Tabs — used as a page-level tab strip on /groups/[id]. Mirrors the
+   live-feed tab gradient pill: subtle baseline, purple bottom-rail on
+   the active tab, soft hover. */
+.vl-tabstrip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--vl-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.vl-tabstrip::-webkit-scrollbar { display: none; }
+.vl-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: none;
+  padding: 10px 14px;
+  color: var(--vl-fg-3);
+  font-family: var(--vl-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color var(--vl-motion), border-color var(--vl-motion), background var(--vl-motion);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.vl-tab:hover { color: var(--vl-fg); }
+.vl-tab.is-active {
+  color: var(--vl-purple-2);
+  border-bottom-color: var(--vl-purple);
+  background: linear-gradient(180deg, rgba(128,104,216,0.08) 0%, rgba(128,104,216,0.00) 100%);
+}

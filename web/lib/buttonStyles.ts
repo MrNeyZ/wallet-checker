@@ -46,3 +46,12 @@ export const btnDangerLink =
 export const btnLink =
   "text-xs font-semibold text-neutral-200 transition-colors duration-100 " +
   "hover:text-white disabled:opacity-40 disabled:cursor-not-allowed";
+
+// ── VictoryLabs button variants (additive) ───────────────────────────────
+// Map onto the .vl-btn / .vl-btn-primary / .vl-btn-burn / .vl-btn-ghost
+// utility classes defined in app/globals.css. Existing pages that use
+// btnPrimary / btnSecondary / btnDanger keep their current styling; new or
+// migrated surfaces opt in via these tokens.
+export const btnVlPrimary = "vl-btn vl-btn-primary";
+export const btnVlBurn = "vl-btn vl-btn-burn";
+export const btnVlGhost = "vl-btn vl-btn-ghost";

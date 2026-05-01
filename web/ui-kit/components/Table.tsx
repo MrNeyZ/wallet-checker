@@ -8,6 +8,8 @@ export type Column<T> = {
   render: (row: T) => ReactNode;
 };
 
+type Tone = 'default' | 'vl';
+
 type Props<T> = {
   columns: Column<T>[];
   rows: T[];
@@ -15,6 +17,10 @@ type Props<T> = {
   rowClassName?: (row: T) => string;
   empty?: ReactNode;
   className?: string;
+  // `tone="vl"` swaps the wrapper / header / row chrome to the VictoryLabs
+  // palette (defined by `.vl-table*` utilities in app/globals.css). Legacy
+  // default keeps the existing neutral border + hover tone.
+  tone?: Tone;
 };
 
 const alignClass = {
@@ -33,11 +39,20 @@ export function Table<T>({
   rowClassName,
   empty,
   className = '',
+  tone = 'default',
 }: Props<T>) {
+  const isVl = tone === 'vl';
+  const wrapperCls = isVl ? `vl-table w-full ${className}` : `w-full ${className}`;
+  const headCls = isVl
+    ? 'vl-table-head grid grid-cols-12 px-3 py-1.5 gap-3'
+    : 'grid grid-cols-12 px-3 py-1.5 gap-3 text-[11px] font-semibold uppercase tracking-wider text-neutral-300 border-b border-neutral-700';
+  const rowCls = isVl
+    ? 'vl-table-row grid grid-cols-12 px-3 py-1.5 items-center gap-3'
+    : 'grid grid-cols-12 px-3 py-1.5 items-center gap-3 border-b border-neutral-800 hover:bg-neutral-800 transition-colors duration-100';
   return (
-    <div className={`w-full ${className}`}>
+    <div className={wrapperCls}>
       {/* header */}
-      <div className="grid grid-cols-12 px-3 py-1.5 gap-3 text-[11px] font-semibold uppercase tracking-wider text-neutral-300 border-b border-neutral-700">
+      <div className={headCls}>
         {columns.map((col) => (
           <div
             key={col.key}
@@ -59,8 +74,7 @@ export function Table<T>({
           <div
             key={rowKey(row)}
             className={[
-              'grid grid-cols-12 px-3 py-1.5 items-center gap-3',
-              'border-b border-neutral-800 hover:bg-neutral-800 transition-colors duration-100',
+              rowCls,
               rowClassName?.(row) ?? '',
             ]
               .filter(Boolean)

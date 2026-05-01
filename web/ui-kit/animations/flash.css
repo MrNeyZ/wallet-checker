@@ -1,6 +1,11 @@
 /* Live-feed feedback animations. The point of these is to make the feed feel
  * alive without distracting — short flashes that decay, never something that
- * loops aggressively. */
+ * loops aggressively.
+ *
+ * Hex values are aligned with the VictoryLabs palette tokens (--vl-green
+ * #4fb67d, --vl-red #ef7878, --vl-amber #fbbf24, --vl-purple #a890e8) so
+ * status motion across the app shares a single color story. Semantics are
+ * unchanged — green is "live / up", red is "down / error". */
 
 /* Pulsing green status dot. Use next to a "Live" / "Connected" label. */
 @keyframes ui-live-dot {
@@ -13,29 +18,35 @@
   width: 8px;
   height: 8px;
   border-radius: 9999px;
-  background: #10B981;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  background: #4fb67d;
+  box-shadow: 0 0 8px rgba(79, 182, 125, 0.6);
   animation: 2s ease-in-out infinite ui-live-dot;
 }
 
 .ui-live-dot--red {
-  background: #EF4444;
-  box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+  background: #ef7878;
+  box-shadow: 0 0 8px rgba(239, 120, 120, 0.6);
 }
 
 .ui-live-dot--amber {
-  background: #F59E0B;
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.6);
+}
+
+/* Purple variant — for "primary action available / pending sign" pulses. */
+.ui-live-dot--purple {
+  background: #a890e8;
+  box-shadow: 0 0 8px rgba(168, 144, 232, 0.6);
 }
 
 /* Row flash — apply to a row when a new buy / sell event arrives. The
  * animation is one-shot (no `infinite`), background fades to transparent. */
 @keyframes ui-flash-green {
-  0%   { background: rgba(16, 185, 129, 0.20); }
+  0%   { background: rgba(79, 182, 125, 0.20); }
   100% { background: transparent; }
 }
 @keyframes ui-flash-red {
-  0%   { background: rgba(239, 68, 68, 0.20); }
+  0%   { background: rgba(239, 120, 120, 0.20); }
   100% { background: transparent; }
 }
 
@@ -64,11 +75,11 @@
 /* Quick number flash — for value updates inside a cell.
  * Less heavy than full-row flash; just tints the text briefly. */
 @keyframes ui-tint-up {
-  0%   { color: #10B981; }
+  0%   { color: #4fb67d; }
   100% { color: inherit; }
 }
 @keyframes ui-tint-down {
-  0%   { color: #EF4444; }
+  0%   { color: #ef7878; }
   100% { color: inherit; }
 }
 
