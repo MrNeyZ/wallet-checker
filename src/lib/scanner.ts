@@ -2,6 +2,7 @@ import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import { connection } from "./solana.js";
 import { getParsedTokenAccountsByOwnerThrottled } from "./rpc.js";
+import { CappedLruMap } from "./lruCache.js";
 
 export interface ScannedTokenAccount {
   tokenAccount: string;
@@ -33,8 +34,11 @@ export interface CleanupScanResult {
 // burn-candidates fired together) only triggers one underlying scan.
 // The full-clean loop bypasses with `refresh: true` after each close-tx.
 const SCAN_TTL_MS = 10 * 60 * 1000;
+const SCAN_CACHE_MAX = 1000;
 type CacheEntry = { ts: number; promise: Promise<CleanupScanResult> };
-const scanCache = new Map<string, CacheEntry>();
+// Capped LRU keeps memory bounded under a long-running pm2 process
+// scanning many unique wallets. TTL is still enforced at the call site.
+const scanCache = new CappedLruMap<string, CacheEntry>(SCAN_CACHE_MAX);
 
 async function fetchTokenAccountsForProgram(owner: PublicKey, programId: PublicKey) {
   const res = await getParsedTokenAccountsByOwnerThrottled(connection, owner, programId);

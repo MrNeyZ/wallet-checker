@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, Transaction } from "@solana/web3.js";
 import { z } from "zod";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { scanWalletForCleanup } from "../lib/scanner.js";
@@ -37,6 +37,42 @@ function sendCleanerError(res: import("express").Response, err: unknown): void {
   }
   const message = err instanceof Error ? err.message : "Unknown error";
   res.status(500).json({ error: message });
+}
+
+// Defence-in-depth wallet-match assertion. Every burn/close builder claims to
+// produce a tx whose feePayer is the wallet from the URL — we verify by
+// deserializing the bytes and comparing the actual feePayer pubkey to the
+// expected owner. Catches any builder bug or middleware tampering BEFORE the
+// frontend hands the tx to the user's wallet to sign.
+function assertBuiltTxMatchesWallet(
+  result: { transactionBase64: string | null; requiresSignatureFrom?: string; feePayer?: string },
+  expected: string,
+): void {
+  if (!result.transactionBase64) return;
+  let actual: string | undefined;
+  try {
+    const tx = Transaction.from(Buffer.from(result.transactionBase64, "base64"));
+    actual = tx.feePayer?.toBase58();
+  } catch (err) {
+    throw new Error(
+      `Built transaction is not deserializable: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (actual !== expected) {
+    throw new Error(
+      `Built transaction feePayer ${actual ?? "<missing>"} does not match wallet ${expected}`,
+    );
+  }
+  if (result.requiresSignatureFrom && result.requiresSignatureFrom !== expected) {
+    throw new Error(
+      `Built transaction requiresSignatureFrom ${result.requiresSignatureFrom} does not match wallet ${expected}`,
+    );
+  }
+  if (result.feePayer && result.feePayer !== expected) {
+    throw new Error(
+      `Built transaction feePayer field ${result.feePayer} does not match wallet ${expected}`,
+    );
+  }
 }
 
 const addressParam = z.string().refine(
@@ -200,6 +236,7 @@ router.post("/:address/close-empty-tx", async (req, res) => {
 
   try {
     const result = await buildCloseEmptyAccountsTx(parsed.data);
+    assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
     sendCleanerError(res, err);
@@ -225,6 +262,7 @@ router.post("/:address/burn-and-close-tx", async (req, res) => {
 
   try {
     const result = await buildBurnAndCloseTx(parsed.data, body.data);
+    assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
     sendCleanerError(res, err);
@@ -249,6 +287,7 @@ router.post("/:address/standard-nft-burn-tx", async (req, res) => {
 
   try {
     const result = await buildStandardNftBurnTx(parsed.data, body.data);
+    assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
     sendCleanerError(res, err);
@@ -276,6 +315,7 @@ router.post("/:address/legacy-nft-burn-tx", async (req, res) => {
 
   try {
     const result = await buildLegacyNftBurnTx(parsed.data, body.data);
+    assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
     sendCleanerError(res, err);
@@ -301,6 +341,7 @@ router.post("/:address/pnft-burn-tx", async (req, res) => {
 
   try {
     const result = await buildPnftBurnTx(parsed.data, body.data);
+    assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
     sendCleanerError(res, err);
@@ -326,6 +367,7 @@ router.post("/:address/core-burn-tx", async (req, res) => {
 
   try {
     const result = await buildCoreBurnTx(parsed.data, body.data);
+    assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
     sendCleanerError(res, err);

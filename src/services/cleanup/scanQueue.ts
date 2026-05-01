@@ -80,17 +80,27 @@ export interface ScanWalletResult {
   durationMs: number;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 function isRateLimit(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return RATE_LIMIT_PATTERN.test(msg);
 }
 
-async function withDeadline<T>(p: Promise<T>, deadline: number): Promise<T> {
+function abortError(): Error {
+  return new Error("aborted");
+}
+
+async function withDeadline<T>(
+  p: Promise<T>,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal?.aborted) throw abortError();
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new Error("Per-wallet budget exhausted");
-  return Promise.race([
+  // Race the work against the per-wallet budget AND the abort signal so a
+  // user-cancel resolves immediately instead of waiting for whatever DAS
+  // / RPC promise was in flight.
+  const racers: Promise<T>[] = [
     p,
     new Promise<T>((_, reject) =>
       setTimeout(
@@ -98,13 +108,23 @@ async function withDeadline<T>(p: Promise<T>, deadline: number): Promise<T> {
         remaining,
       ),
     ),
-  ]);
+  ];
+  if (signal) {
+    racers.push(
+      new Promise<T>((_, reject) => {
+        const onAbort = () => reject(abortError());
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    );
+  }
+  return Promise.race(racers);
 }
 
 async function buildBurnCandidates(
   address: string,
   scan: CleanupScanResult,
-  opts: { summary?: boolean } = {},
+  opts: { summary?: boolean; signal?: AbortSignal; logPrefix?: string } = {},
 ): Promise<BurnCandidatesResult> {
   const baseCandidates: BurnCandidate[] = scan.fungibleTokenAccounts
     .filter((acc) => acc.mint !== WSOL_MINT)
@@ -126,15 +146,33 @@ async function buildBurnCandidates(
       reason: "Manual review required before destructive burn.",
     }));
 
-  // Summary mode (group scan-all) skips DAS — the consumer of that path
-  // (CleanerRow scan registry) only reads count + total reclaim, so the
-  // ~1 RPC-per-wallet DAS round-trip is pure overhead. Per-wallet detailed
-  // scan (CleanerRow.handleScan) calls /burn-candidates directly and
-  // hydrates names/symbols/images there.
+  // Summary mode (group scan-all) skips ALL heavy discovery paths — DAS
+  // metadata enrichment, Helius getAssetsByOwner (Core), legacy/pNFT/Core
+  // burn discovery builders, and SolanaTracker enrichment. The consumer of
+  // this path (CleanerRow scan registry) only reads count + total reclaim
+  // for the row tile; everything heavier loads lazily when the user
+  // expands a specific wallet section. Per-wallet detailed scan
+  // (CleanerRow.handleScan) calls /burn-candidates directly and hydrates
+  // names / symbols / images there.
+  //
+  // Explicit guard ensures a future regression that wires heavy work
+  // into this code path is impossible without editing this branch. The
+  // per-wallet skip log fires only when DEBUG_SCAN=true to keep the
+  // happy path quiet; slow runs are still surfaced by the >1000ms
+  // timing log at the scanWalletQueued level.
   let candidates = baseCandidates;
-  if (!opts.summary) {
+  if (opts.summary) {
+    if (process.env.DEBUG_SCAN === "true") {
+      const prefix = opts.logPrefix ? `${opts.logPrefix} ` : "";
+      console.log(
+        `${prefix}[cleanupScan] summary mode: skipped heavy discovery for ${address}`,
+      );
+    }
+  } else {
+    if (opts.signal?.aborted) throw abortError();
     const dasMap = await fetchAssetMetadataBatch(
       baseCandidates.map((c) => c.mint),
+      opts.signal,
     );
     candidates = baseCandidates.map((c) => {
       const m = dasMap.get(c.mint);
@@ -173,11 +211,52 @@ export interface ScanWalletQueuedOptions {
   // needs counts + reclaim totals. Per-wallet detailed scans
   // (/api/wallet/:address/burn-candidates) keep DAS on.
   summary?: boolean;
+  // Cooperative cancellation. Aborts any pending DAS / RPC await and
+  // breaks out of the retry loop so a client disconnect (group scan-all
+  // batched endpoint) frees the queue immediately. The signal is also
+  // forwarded to fetchAssetMetadataBatch so in-flight HTTP requests
+  // tear down at the network layer.
+  signal?: AbortSignal;
+  // Optional log prefix for cross-call correlation (e.g. group scan-all
+  // emits one scanId for the batch and threads it through every wallet).
+  logPrefix?: string;
 }
+
+// In-flight dedupe across concurrent identical scan-wallet requests.
+// When two callers ask for the same (address, force, summary) tuple at
+// once (group scan-all + a manual rescan, etc.) they share one underlying
+// promise instead of issuing duplicate RPC + DAS work. Entries are
+// removed in `finally` so the map size is naturally bounded by the
+// number of in-flight scans.
+const inFlightScans = new Map<string, Promise<ScanWalletResult>>();
 
 export async function scanWalletQueued(
   address: string,
   opts: ScanWalletQueuedOptions = {},
+): Promise<ScanWalletResult> {
+  // A caller that arrives with an already-aborted signal must NOT join
+  // an in-flight shared promise — they don't want to wait, and we don't
+  // want to mistakenly return their stale aborted result to other
+  // callers. Bail with the immediate aborted shape instead.
+  if (opts.signal?.aborted) {
+    return { address, status: "error", error: "aborted", durationMs: 0 };
+  }
+  const dedupeKey = `${address}:${opts.force ? "force" : "cached"}:${opts.summary ? "summary" : "full"}`;
+  const existing = inFlightScans.get(dedupeKey);
+  if (existing) return existing;
+  const promise = runScanWalletQueued(address, opts);
+  inFlightScans.set(dedupeKey, promise);
+  promise.finally(() => {
+    if (inFlightScans.get(dedupeKey) === promise) {
+      inFlightScans.delete(dedupeKey);
+    }
+  });
+  return promise;
+}
+
+async function runScanWalletQueued(
+  address: string,
+  opts: ScanWalletQueuedOptions,
 ): Promise<ScanWalletResult> {
   const start = Date.now();
   const budgetMs =
@@ -185,28 +264,56 @@ export async function scanWalletQueued(
     (opts.summary ? PER_WALLET_BUDGET_MS_SUMMARY : PER_WALLET_BUDGET_MS);
   const deadline = start + budgetMs;
   const wasCached = !opts.force && isCleanupScanCached(address);
+  const logPrefix = opts.logPrefix ? `${opts.logPrefix} ` : "";
+
+  const aborted = (): ScanWalletResult => ({
+    address,
+    status: "error",
+    error: "aborted",
+    durationMs: Date.now() - start,
+  });
 
   let lastErr: string | undefined;
   let attempt = 0;
   while (Date.now() < deadline) {
+    if (opts.signal?.aborted) return aborted();
     try {
       const scan = await withDeadline(
         scanWalletForCleanup(address, { refresh: opts.force }),
         deadline,
+        opts.signal,
       );
+      if (opts.signal?.aborted) return aborted();
       const burn = await withDeadline(
-        buildBurnCandidates(address, scan, { summary: opts.summary }),
+        buildBurnCandidates(address, scan, {
+          summary: opts.summary,
+          signal: opts.signal,
+          logPrefix: opts.logPrefix,
+        }),
         deadline,
+        opts.signal,
       );
+      const durationMs = Date.now() - start;
+      // Slow-path timing log for summary scans only — the heavy detailed
+      // scan logs separately via DAS_SLOW_LOG_MS. Sub-second runs stay
+      // silent so the happy path doesn't flood production logs.
+      if (opts.summary && durationMs > 1000) {
+        console.log(
+          `${logPrefix}[cleanupScan] ${address} summary took ${durationMs}ms`,
+        );
+      }
       return {
         address,
         status: wasCached ? "cached" : "ok",
         scan,
         burn,
-        durationMs: Date.now() - start,
+        durationMs,
       };
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
+      if (opts.signal?.aborted || /^aborted$/i.test(lastErr)) {
+        return aborted();
+      }
       // Per-wallet budget exhausted — bail with timeout marker. Don't
       // retry; the budget is the contract.
       if (
@@ -224,21 +331,44 @@ export async function scanWalletQueued(
       if (isRateLimit(err)) {
         const wait =
           RETRY_BACKOFFS_MS[Math.min(attempt, RETRY_BACKOFFS_MS.length - 1)];
-        const remaining = deadline - Date.now();
-        if (wait + 1000 > remaining || attempt >= RETRY_BACKOFFS_MS.length) {
-          // Not enough room to retry meaningfully — accept and report.
+        const remaining = deadline - Date.now() - wait;
+        if (
+          remaining <= 0 ||
+          wait + 1000 > deadline - Date.now() ||
+          attempt >= RETRY_BACKOFFS_MS.length
+        ) {
+          // Sleep alone would burn more budget than we have left — exit
+          // with a timeout marker rather than waiting only to discover
+          // the budget is gone.
           return {
             address,
-            status: "rate-limited",
-            error: "RPC rate limit. Try again later or use cached result.",
+            status: remaining <= 0 ? "timeout" : "rate-limited",
+            error:
+              remaining <= 0
+                ? `Per-wallet ${Math.round(budgetMs / 1000)}s budget exceeded during retry backoff`
+                : "RPC rate limit. Try again later or use cached result.",
             durationMs: Date.now() - start,
           };
         }
         console.warn(
-          `[cleanupScan] 429 on ${address} — retry ${attempt + 1}/${RETRY_BACKOFFS_MS.length} in ${Math.round(wait / 1000)}s`,
+          `${logPrefix}[cleanupScan] 429 on ${address} — retry ${attempt + 1}/${RETRY_BACKOFFS_MS.length} in ${Math.round(wait / 1000)}s`,
         );
         attempt++;
-        await sleep(wait);
+        // Race the backoff against the abort signal so cancel doesn't
+        // wait for the full sleep.
+        await new Promise<void>((resolve) => {
+          if (opts.signal?.aborted) return resolve();
+          const t = setTimeout(resolve, wait);
+          opts.signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(t);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        if (opts.signal?.aborted) return aborted();
         continue;
       }
       // Non-rate-limit error — bail out.

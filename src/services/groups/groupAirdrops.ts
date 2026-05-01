@@ -29,7 +29,7 @@ export async function buildGroupAirdrops(group: {
 
   type Outcome = { ok: true; item: GroupAirdropWalletItem } | { ok: false };
 
-  const results = await runWithConcurrency<GroupWallet, Outcome>(
+  const settled = await runWithConcurrency<GroupWallet, Outcome>(
     group.wallets,
     CONCURRENCY,
     async ({ address, label }) => {
@@ -54,6 +54,13 @@ export async function buildGroupAirdrops(group: {
       }
     },
   );
+  const results: Outcome[] = settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const { address, label } = group.wallets[i];
+    const message = r.reason instanceof Error ? r.reason.message : "Unknown error";
+    failedWallets.push({ wallet: address, label, error: message });
+    return { ok: false };
+  });
 
   const wallets: GroupAirdropWalletItem[] = [];
   let totalAirdropsCount = 0;

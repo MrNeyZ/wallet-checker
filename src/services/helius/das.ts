@@ -12,6 +12,8 @@
 // even if Helius is unavailable.
 
 import { env } from "../../config/env.js";
+import { runWithConcurrency } from "../../lib/concurrency.js";
+import { CappedLruMap } from "../../lib/lruCache.js";
 
 export interface AssetMetadata {
   name: string | null;
@@ -26,9 +28,21 @@ interface CacheEntry {
 }
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const cache = new Map<string, CacheEntry>();
+const CACHE_MAX = 1000;
+// Capped LRU keeps the per-mint metadata cache from growing unbounded
+// across long-lived servers. TTL stays enforced at the call site
+// (`expiresAt > now`).
+const cache = new CappedLruMap<string, CacheEntry>(CACHE_MAX);
 
 const DAS_BATCH_LIMIT = 1000;
+// Maximum HTTP requests issued in parallel against Helius DAS for both
+// pagination (getAssetsByOwner) and batch metadata (getAssetBatch). Capped
+// at 3 by spec — Helius rate-limits aggressively above that.
+const DAS_PARALLEL = 3;
+// Per-call latency above which we surface a single-line timing log so a
+// slow DAS endpoint is visible in production logs without flooding the
+// happy-path. Sub-second calls stay silent.
+const DAS_SLOW_LOG_MS = 1000;
 
 function endpoint(): string | null {
   const key = env.HELIUS_API_KEY;
@@ -98,7 +112,8 @@ export type CoreAssetsByOwnerError =
   | "no-api-key"
   | "http-error"
   | "network-error"
-  | "exception";
+  | "exception"
+  | "aborted";
 
 export interface CoreAssetsByOwnerOk {
   ok: true;
@@ -119,12 +134,67 @@ export type CoreAssetsByOwnerResult =
   | CoreAssetsByOwnerOk
   | CoreAssetsByOwnerFail;
 
+// Fetches one DAS getAssetsByOwner page. Internal helper for the parallel
+// pagination loop in fetchCoreAssetsByOwner.
+type PageFetchResult =
+  | { ok: true; items: DasAsset[] }
+  | { ok: false; reason: CoreAssetsByOwnerError; detail: string };
+
+async function fetchOneOwnerPage(
+  url: string,
+  owner: string,
+  page: number,
+  pageSize: number,
+  signal?: AbortSignal,
+): Promise<PageFetchResult> {
+  try {
+    if (signal?.aborted) {
+      return { ok: false, reason: "aborted", detail: "aborted" };
+    }
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "wallet-checker-core-discovery",
+        method: "getAssetsByOwner",
+        params: { ownerAddress: owner, page, limit: pageSize },
+      }),
+      signal,
+    });
+    if (!res.ok) {
+      console.warn(
+        `[helius-das] getAssetsByOwner HTTP ${res.status} for ${owner} (page ${page}) — falling back to on-chain scan`,
+      );
+      return { ok: false, reason: "http-error", detail: `HTTP ${res.status}` };
+    }
+    const body = (await res.json()) as { result?: { items?: DasAsset[] } };
+    const items = Array.isArray(body?.result?.items) ? body.result.items : [];
+    return { ok: true, items };
+  } catch (err) {
+    const msg = (err as Error)?.message ?? String(err);
+    if (signal?.aborted) {
+      return { ok: false, reason: "aborted", detail: msg };
+    }
+    console.warn(
+      `[helius-das] getAssetsByOwner network error for ${owner} (page ${page}): ${msg}`,
+    );
+    return { ok: false, reason: "network-error", detail: msg };
+  }
+}
+
 // Wallet-scoped Core asset discovery via DAS. Returns a structured result
 // (success or typed-failure) so the caller can log the exact reason for
 // fallback. The `assets` payload is the same as before the diagnostic
 // refactor; the wrapper just adds counts + timing.
+//
+// Pagination is parallelised in WAVES of `DAS_PARALLEL` pages so a wallet
+// with many Core assets still finishes quickly without exceeding Helius's
+// per-second budget. Within a wave, pages are processed in order so a
+// short page (== last page) cleanly stops the loop.
 export async function fetchCoreAssetsByOwner(
   owner: string,
+  signal?: AbortSignal,
 ): Promise<CoreAssetsByOwnerResult> {
   const startedAt = Date.now();
   const url = endpoint();
@@ -143,105 +213,121 @@ export async function fetchCoreAssetsByOwner(
   const PAGE_SIZE = 1000;
   const MAX_PAGES = 20;
   let pagesFetched = 0;
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    let body: { result?: { items?: DasAsset[] } } | undefined;
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: "wallet-checker-core-discovery",
-          method: "getAssetsByOwner",
-          params: {
-            ownerAddress: owner,
-            page,
-            limit: PAGE_SIZE,
-          },
-        }),
-      });
-      if (!res.ok) {
-        console.warn(
-          `[helius-das] getAssetsByOwner HTTP ${res.status} for ${owner} (page ${page}) — falling back to on-chain scan`,
-        );
-        return {
-          ok: false,
-          reason: "http-error",
-          detail: `HTTP ${res.status}`,
-          durationMs: Date.now() - startedAt,
-        };
-      }
-      body = (await res.json()) as { result?: { items?: DasAsset[] } };
-    } catch (err) {
-      const msg = (err as Error)?.message ?? String(err);
-      console.warn(
-        `[helius-das] getAssetsByOwner network error for ${owner} (page ${page}): ${msg}`,
-      );
+  let stop = false;
+
+  for (let basePage = 1; basePage <= MAX_PAGES && !stop; basePage += DAS_PARALLEL) {
+    if (signal?.aborted) {
       return {
         ok: false,
-        reason: "network-error",
-        detail: msg,
+        reason: "aborted",
+        detail: "aborted",
         durationMs: Date.now() - startedAt,
       };
     }
-    pagesFetched = page;
-    const items = Array.isArray(body?.result?.items) ? body.result.items : [];
-    if (items.length === 0) break;
-    rawCount += items.length;
-    for (const a of items) {
-      if (!a || typeof a !== "object") continue;
-      // Skip compressed NFTs — different program (Bubblegum); the Core
-      // burn path can't handle them.
-      if (a.compression && a.compression.compressed === true) continue;
-      // Relaxed Core filter: accept any interface containing "MplCore"
-      // (catches MplCoreAsset / MplCoreCollection / future variants).
-      // Other interfaces (V1_NFT, ProgrammableNFT, FungibleToken, …) are
-      // burned via different paths so we exclude them here. Live-state
-      // verification at build time is the safety net for false positives.
-      const ifaceStr = typeof a.interface === "string" ? a.interface : "";
-      if (!ifaceStr.includes("MplCore")) continue;
-      const id = strOrNull(a.id);
-      if (!id) continue;
-      const meta = parse(a);
-      // Verified-collection extraction. MplCore uses a single grouping
-      // entry with group_key === "collection".
-      let collection: string | null = null;
-      if (Array.isArray(a.grouping)) {
-        for (const g of a.grouping) {
-          if (
-            g &&
-            typeof g === "object" &&
-            g.group_key === "collection" &&
-            typeof g.group_value === "string" &&
-            g.group_value.length > 0
-          ) {
-            collection = g.group_value;
-            break;
+    const pages: number[] = [];
+    for (let i = 0; i < DAS_PARALLEL && basePage + i <= MAX_PAGES; i++) {
+      pages.push(basePage + i);
+    }
+    const settled = await runWithConcurrency(pages, DAS_PARALLEL, (p) =>
+      fetchOneOwnerPage(url, owner, p, PAGE_SIZE, signal),
+    );
+    // Two-phase processing of the wave. Phase 1: bail on any error so we
+    // never consume a partial result set. Phase 2: process EVERY returned
+    // page, even if a lower-numbered one came back empty — the upstream
+    // is monotonic in practice, but a transient empty-in-the-middle must
+    // not silently drop pages we already fetched in parallel. The stop
+    // signal is read from the HIGHEST page in the wave only (the last
+    // index is the highest-numbered page since `pages` is built in order).
+    for (let i = 0; i < settled.length; i++) {
+      const sr = settled[i];
+      if (sr.status === "rejected") {
+        const msg = sr.reason instanceof Error ? sr.reason.message : String(sr.reason);
+        return {
+          ok: false,
+          reason: "exception",
+          detail: msg,
+          durationMs: Date.now() - startedAt,
+        };
+      }
+      if (!sr.value.ok) {
+        return {
+          ok: false,
+          reason: sr.value.reason,
+          detail: sr.value.detail,
+          durationMs: Date.now() - startedAt,
+        };
+      }
+    }
+    let lastWaveItems = 0;
+    for (let i = 0; i < settled.length; i++) {
+      const sr = settled[i];
+      // Errors already filtered above — narrow the type.
+      if (sr.status !== "fulfilled" || !sr.value.ok) continue;
+      const items = sr.value.items;
+      pagesFetched = pages[i];
+      rawCount += items.length;
+      for (const a of items) {
+        if (!a || typeof a !== "object") continue;
+        // Skip compressed NFTs — different program (Bubblegum); the Core
+        // burn path can't handle them.
+        if (a.compression && a.compression.compressed === true) continue;
+        // Relaxed Core filter: accept any interface containing "MplCore"
+        // (catches MplCoreAsset / MplCoreCollection / future variants).
+        const ifaceStr = typeof a.interface === "string" ? a.interface : "";
+        if (!ifaceStr.includes("MplCore")) continue;
+        const id = strOrNull(a.id);
+        if (!id) continue;
+        const meta = parse(a);
+        // Verified-collection extraction. MplCore uses a single grouping
+        // entry with group_key === "collection".
+        let collection: string | null = null;
+        if (Array.isArray(a.grouping)) {
+          for (const g of a.grouping) {
+            if (
+              g &&
+              typeof g === "object" &&
+              g.group_key === "collection" &&
+              typeof g.group_value === "string" &&
+              g.group_value.length > 0
+            ) {
+              collection = g.group_value;
+              break;
+            }
           }
         }
+        out.push({
+          asset: id,
+          collection,
+          name: meta.name,
+          uri: meta.uri,
+          image: meta.image,
+        });
       }
-      out.push({
-        asset: id,
-        collection,
-        name: meta.name,
-        uri: meta.uri,
-        image: meta.image,
-      });
+      if (i === settled.length - 1) lastWaveItems = items.length;
     }
-    if (items.length < PAGE_SIZE) break;
+    // Only stop based on the highest-numbered page in this wave.
+    if (lastWaveItems < PAGE_SIZE) stop = true;
+  }
+  const durationMs = Date.now() - startedAt;
+  if (durationMs > DAS_SLOW_LOG_MS) {
+    console.log(
+      `[DAS] fetchCoreAssetsByOwner ${owner} took ${durationMs}ms (pages=${pagesFetched}, raw=${rawCount})`,
+    );
   }
   return {
     ok: true,
     assets: out,
     pagesFetched,
     rawCount,
-    durationMs: Date.now() - startedAt,
+    durationMs,
   };
 }
 
 export async function fetchAssetMetadataBatch(
   ids: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, AssetMetadata>> {
+  const startedAt = Date.now();
   const out = new Map<string, AssetMetadata>();
   if (ids.length === 0) return out;
 
@@ -264,41 +350,60 @@ export async function fetchAssetMetadataBatch(
   const url = endpoint();
   if (!url) return out; // No key configured — caller falls back gracefully.
 
+  const chunks: string[][] = [];
   for (let i = 0; i < fresh.length; i += DAS_BATCH_LIMIT) {
-    const chunk = fresh.slice(i, i + DAS_BATCH_LIMIT);
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: "wallet-checker-das",
-          method: "getAssetBatch",
-          params: { ids: chunk },
-        }),
-      });
-      if (!res.ok) {
-        console.warn(
-          `[helius-das] HTTP ${res.status} for ${chunk.length} ids — falling back to on-chain only`,
-        );
-        continue;
-      }
-      const body = (await res.json()) as { result?: DasAsset[] };
-      const assets = Array.isArray(body.result) ? body.result : [];
-      for (const a of assets) {
-        if (!a || typeof a !== "object") continue;
-        const id = strOrNull(a.id);
-        if (!id) continue;
-        const meta = parse(a);
-        out.set(id, meta);
-        cache.set(id, { meta, expiresAt: Date.now() + CACHE_TTL_MS });
-      }
-    } catch (err) {
+    chunks.push(fresh.slice(i, i + DAS_BATCH_LIMIT));
+  }
+
+  const settled = await runWithConcurrency(chunks, DAS_PARALLEL, async (chunk) => {
+    if (signal?.aborted) throw new Error("aborted");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "wallet-checker-das",
+        method: "getAssetBatch",
+        params: { ids: chunk },
+      }),
+      signal,
+    });
+    if (!res.ok) {
       console.warn(
-        `[helius-das] network error for ${chunk.length} ids: ${(err as Error)?.message ?? err}`,
+        `[helius-das] HTTP ${res.status} for ${chunk.length} ids — falling back to on-chain only`,
       );
-      // Continue — caller falls back to on-chain bytes for unresolved ids.
+      return null;
     }
+    const body = (await res.json()) as { result?: DasAsset[] };
+    return Array.isArray(body.result) ? body.result : [];
+  });
+
+  for (let i = 0; i < settled.length; i++) {
+    const r = settled[i];
+    if (r.status === "rejected") {
+      const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      console.warn(
+        `[helius-das] network error for ${chunks[i].length} ids: ${msg}`,
+      );
+      // Caller falls back to on-chain bytes for unresolved ids.
+      continue;
+    }
+    if (!r.value) continue;
+    for (const a of r.value) {
+      if (!a || typeof a !== "object") continue;
+      const id = strOrNull(a.id);
+      if (!id) continue;
+      const meta = parse(a);
+      out.set(id, meta);
+      cache.set(id, { meta, expiresAt: Date.now() + CACHE_TTL_MS });
+    }
+  }
+
+  const durationMs = Date.now() - startedAt;
+  if (durationMs > DAS_SLOW_LOG_MS) {
+    console.log(
+      `[DAS] fetchAssetMetadataBatch ${fresh.length} ids took ${durationMs}ms (chunks=${chunks.length})`,
+    );
   }
 
   return out;

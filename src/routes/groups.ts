@@ -515,6 +515,25 @@ router.post("/:groupId/cleanup-scan-all", async (req, res) => {
   const group = getGroup(req.params.groupId);
   if (!group) return res.status(404).json({ error: "Group not found" });
   const force = req.body?.force === true;
+  // Short request-correlation id so log lines from a single scan-all batch
+  // can be grepped together. 6 hex chars is plenty of uniqueness for a
+  // production log window.
+  const scanId = Math.random().toString(16).slice(2, 8);
+  const logPrefix = `[scan ${scanId}]`;
+  // Cooperative cancel: when the client closes the HTTP connection (e.g.
+  // user clicks Cancel and the AbortController on the frontend tears down
+  // the underlying fetch) we abort the in-flight wallet scan and break
+  // out of the loop instead of running every remaining wallet to
+  // completion only to discard the result.
+  const ctl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) ctl.abort();
+  };
+  req.on("close", onClose);
+  console.log(
+    `${logPrefix} cleanup-scan-all start group=${group.id} wallets=${group.wallets.length} force=${force}`,
+  );
+  const startedAt = Date.now();
   const results: Array<
     Awaited<ReturnType<typeof scanWalletQueued>> & { label: string | null }
   > = [];
@@ -525,27 +544,48 @@ router.post("/:groupId/cleanup-scan-all", async (req, res) => {
   // (CleanerRow scan registry) only reads counts + reclaim totals, so DAS
   // is pure overhead at the batch level. Per-wallet detailed scans hit a
   // separate endpoint that does enrich.
-  for (const wlt of group.wallets) {
-    // Outer try/catch so any unexpected throw (RPC layer, JSON parsing,
-    // memory) doesn't abort the whole group — that wallet just gets a
-    // status="error" entry and we move on.
-    try {
-      const r = await scanWalletQueued(wlt.address, { force, summary: true });
-      results.push({ ...r, label: wlt.label });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `[cleanupScan] uncaught error on ${wlt.address}: ${msg}`,
-      );
-      results.push({
-        address: wlt.address,
-        status: "error",
-        error: msg,
-        durationMs: 0,
-        label: wlt.label,
-      });
+  try {
+    for (const wlt of group.wallets) {
+      if (ctl.signal.aborted) {
+        console.log(`${logPrefix} aborted after ${results.length} wallets`);
+        break;
+      }
+      // Outer try/catch so any unexpected throw (RPC layer, JSON parsing,
+      // memory) doesn't abort the whole group — that wallet just gets a
+      // status="error" entry and we move on.
+      try {
+        const r = await scanWalletQueued(wlt.address, {
+          force,
+          summary: true,
+          signal: ctl.signal,
+          logPrefix,
+        });
+        results.push({ ...r, label: wlt.label });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `${logPrefix} uncaught error on ${wlt.address}: ${msg}`,
+        );
+        results.push({
+          address: wlt.address,
+          status: "error",
+          error: msg,
+          durationMs: 0,
+          label: wlt.label,
+        });
+      }
     }
+  } finally {
+    req.removeListener("close", onClose);
   }
+  if (ctl.signal.aborted) {
+    // Client gave up — don't bother responding (the connection is closed
+    // anyway). Logging the abort is enough for debugging.
+    return;
+  }
+  console.log(
+    `${logPrefix} cleanup-scan-all done in ${Date.now() - startedAt}ms`,
+  );
   res.json({
     groupId: group.id,
     total: results.length,

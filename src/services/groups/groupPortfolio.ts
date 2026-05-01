@@ -56,7 +56,7 @@ function isSpamToken(t: PortfolioTokenItem): boolean {
 
 export async function buildPortfolioSummary(group: { wallets: GroupWallet[] }) {
   const failedWallets: { wallet: string; label: string | null; error: string }[] = [];
-  const perWallet = await runWithConcurrency<GroupWallet, PortfolioFetchResult>(
+  const settled = await runWithConcurrency<GroupWallet, PortfolioFetchResult>(
     group.wallets,
     CONCURRENCY,
     async ({ address, label }) => {
@@ -77,6 +77,13 @@ export async function buildPortfolioSummary(group: { wallets: GroupWallet[] }) {
       }
     },
   );
+  const perWallet: PortfolioFetchResult[] = settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const { address, label } = group.wallets[i];
+    const message = r.reason instanceof Error ? r.reason.message : "Unknown error";
+    failedWallets.push({ wallet: address, label, error: message });
+    return { wallet: address, label, ok: false, error: message };
+  });
 
   let totalUsd = 0;
   let totalSol = 0;

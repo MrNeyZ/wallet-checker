@@ -76,7 +76,7 @@ export async function fetchGroupTrades(
   perWalletLimit: number,
 ): Promise<{ merged: MergedTrade[]; failedWallets: FailedWallet[] }> {
   const failedWallets: FailedWallet[] = [];
-  const perWallet = await runWithConcurrency<GroupWallet, MergedTrade[]>(
+  const settled = await runWithConcurrency<GroupWallet, MergedTrade[]>(
     group.wallets,
     CONCURRENCY,
     async ({ address, label }) => {
@@ -104,6 +104,13 @@ export async function fetchGroupTrades(
       }
     },
   );
+  const perWallet: MergedTrade[][] = settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const { address, label } = group.wallets[i];
+    const message = r.reason instanceof Error ? r.reason.message : "Unknown error";
+    failedWallets.push({ wallet: address, label, error: message });
+    return [];
+  });
   const merged = perWallet.flat().sort((a, b) => b.time - a.time);
   return { merged, failedWallets };
 }

@@ -15,6 +15,7 @@ import {
   fetchAssetMetadataBatch,
   fetchCoreAssetsByOwner,
 } from "../services/helius/das.js";
+import { CappedLruMap } from "./lruCache.js";
 
 export const MAX_CLOSE_IX_PER_TX = 10;
 
@@ -1386,9 +1387,12 @@ async function buildLegacyNftBurnTxImpl(
   // regardless of which subset will fit the current tx.
   const burnableCandidates: BurnableLegacyCandidate[] = burnable.map((c) => {
     const acc = tokenAccountByMint.get(c.mint);
-    const reclaimLamports = acc
-      ? acc.lamports + c.metadataLamports + c.masterEditionLamports
-      : c.metadataLamports + c.masterEditionLamports;
+    const reclaimLamports = Math.max(
+      0,
+      acc
+        ? acc.lamports + c.metadataLamports + c.masterEditionLamports
+        : c.metadataLamports + c.masterEditionLamports,
+    );
     return {
       mint: c.mint,
       tokenAccount: c.tokenAccount,
@@ -1692,8 +1696,10 @@ async function buildLegacyNftBurnTxImpl(
 
   const includedNfts: LegacyNftBurnIncludedEntry[] = included.map((c) => {
     const acc = tokenAccountByMint.get(c.mint)!;
-    const reclaimLamports =
-      acc.lamports + c.metadataLamports + c.masterEditionLamports;
+    const reclaimLamports = Math.max(
+      0,
+      acc.lamports + c.metadataLamports + c.masterEditionLamports,
+    );
     return {
       mint: c.mint,
       tokenAccount: c.tokenAccount,
@@ -2422,12 +2428,15 @@ async function buildPnftBurnTxImpl(
   // Full burnable candidate list — what the frontend renders.
   const burnableCandidates: BurnablePnftCandidate[] = burnable.map((c) => {
     const acc = tokenAccountByMint.get(c.mint);
-    const reclaimLamports = acc
-      ? acc.lamports +
-        c.metadataLamports +
-        c.masterEditionLamports +
-        c.tokenRecordLamports
-      : c.metadataLamports + c.masterEditionLamports + c.tokenRecordLamports;
+    const reclaimLamports = Math.max(
+      0,
+      acc
+        ? acc.lamports +
+          c.metadataLamports +
+          c.masterEditionLamports +
+          c.tokenRecordLamports
+        : c.metadataLamports + c.masterEditionLamports + c.tokenRecordLamports,
+    );
     return {
       mint: c.mint,
       tokenAccount: c.tokenAccount,
@@ -2740,11 +2749,13 @@ async function buildPnftBurnTxImpl(
 
   const includedPnfts: PnftBurnIncludedEntry[] = included.map((c) => {
     const acc = tokenAccountByMint.get(c.mint)!;
-    const reclaimLamports =
+    const reclaimLamports = Math.max(
+      0,
       acc.lamports +
-      c.metadataLamports +
-      c.masterEditionLamports +
-      c.tokenRecordLamports;
+        c.metadataLamports +
+        c.masterEditionLamports +
+        c.tokenRecordLamports,
+    );
     return {
       mint: c.mint,
       tokenAccount: c.tokenAccount,
@@ -2917,10 +2928,13 @@ function parseCoreAssetData(
 // the underlying call is more expensive than the SPL scan and the user spec
 // for the burner explicitly asks for a 10-minute cache window.
 const CORE_DISCOVERY_TTL_MS = 10 * 60 * 1000;
-const coreDiscoveryCache = new Map<
+const CORE_DISCOVERY_CACHE_MAX = 1000;
+// Capped LRU prevents the cache from growing without bound on long-running
+// servers. TTL enforcement stays at the call site.
+const coreDiscoveryCache = new CappedLruMap<
   string,
   { ts: number; promise: Promise<CoreAssetParsed[]> }
->();
+>(CORE_DISCOVERY_CACHE_MAX);
 
 async function findCoreAssets(owner: PublicKey): Promise<CoreAssetParsed[]> {
   const ownerStr = owner.toBase58();

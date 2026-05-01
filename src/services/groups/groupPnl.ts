@@ -45,7 +45,7 @@ function pnlError(err: unknown): string {
 }
 
 export async function buildPnlOverview(group: { wallets: GroupWallet[] }) {
-  const results = await runWithConcurrency<GroupWallet, OverviewItem>(
+  const settled = await runWithConcurrency<GroupWallet, OverviewItem>(
     group.wallets,
     CONCURRENCY,
     async ({ address, label }) => {
@@ -64,6 +64,11 @@ export async function buildPnlOverview(group: { wallets: GroupWallet[] }) {
       }
     },
   );
+  const results: OverviewItem[] = settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const { address, label } = group.wallets[i];
+    return { wallet: address, label, ok: false, error: pnlError(r.reason) };
+  });
 
   const rank = (item: OverviewItem): number => {
     if (!item.ok) return 2;
@@ -104,7 +109,7 @@ export async function buildPnlOverview(group: { wallets: GroupWallet[] }) {
 }
 
 export async function buildGroupPnl(group: { wallets: GroupWallet[] }) {
-  const results = await runWithConcurrency<GroupWallet, GroupPnlItem>(
+  const settled = await runWithConcurrency<GroupWallet, GroupPnlItem>(
     group.wallets,
     CONCURRENCY,
     async ({ address, label }) => {
@@ -124,6 +129,11 @@ export async function buildGroupPnl(group: { wallets: GroupWallet[] }) {
       }
     },
   );
+  const results: GroupPnlItem[] = settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const { address, label } = group.wallets[i];
+    return { wallet: address, label, ok: false, error: pnlError(r.reason) };
+  });
   const okCount = results.filter((r) => r.ok).length;
   return { count: results.length, ok: okCount, failed: results.length - okCount, results };
 }

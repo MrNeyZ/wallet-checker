@@ -47,7 +47,7 @@ router.post("/pnl", async (req, res) => {
 
   const wallets = parsed.data.wallets;
 
-  const results = await runWithConcurrency<string, BatchItemResult>(
+  const settled = await runWithConcurrency<string, BatchItemResult>(
     wallets,
     CONCURRENCY,
     async (wallet) => {
@@ -70,6 +70,12 @@ router.post("/pnl", async (req, res) => {
       }
     },
   );
+  const results = settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const message =
+      r.reason instanceof Error ? r.reason.message : "Unknown error";
+    return { wallet: wallets[i], ok: false, error: message } as BatchItemResult;
+  });
 
   const okCount = results.filter((r) => r.ok).length;
   res.json({

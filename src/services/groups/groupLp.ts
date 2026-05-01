@@ -25,7 +25,7 @@ export async function buildGroupLpPositions(group: {
 }): Promise<GroupLpResult> {
   const failedWallets: { wallet: string; label: string | null; error: string }[] = [];
 
-  const perWallet = await runWithConcurrency<GroupWallet, GroupLpPosition[]>(
+  const settled = await runWithConcurrency<GroupWallet, GroupLpPosition[]>(
     group.wallets,
     CONCURRENCY,
     async ({ address, label }) => {
@@ -39,6 +39,13 @@ export async function buildGroupLpPositions(group: {
       }
     },
   );
+  const perWallet: GroupLpPosition[][] = settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const { address, label } = group.wallets[i];
+    const message = r.reason instanceof Error ? r.reason.message : "Unknown error";
+    failedWallets.push({ wallet: address, label, error: message });
+    return [];
+  });
 
   const positions = perWallet.flat().sort((a, b) => b.valueUsd - a.valueUsd);
   const totalValueUsd = positions.reduce((sum, p) => sum + p.valueUsd, 0);
