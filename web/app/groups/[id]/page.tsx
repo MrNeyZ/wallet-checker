@@ -22,7 +22,7 @@ import { Card } from "@/ui-kit/components/Card";
 import { Badge } from "@/ui-kit/components/Badge";
 import { SectionHeader } from "@/ui-kit/components/SectionHeader";
 import { WalletLink } from "@/ui-kit/components/WalletLink";
-import { btnPrimary, btnDangerLink } from "@/lib/buttonStyles";
+import { btnVlPrimary, btnDangerLink } from "@/lib/buttonStyles";
 
 export const dynamic = "force-dynamic";
 
@@ -103,11 +103,14 @@ export default async function GroupDetailPage({
   if (error) {
     return (
       <div className="space-y-4">
-        <Link href="/groups" className="text-sm text-neutral-400 hover:text-white">
+        <Link
+          href="/groups"
+          className="text-sm text-[color:var(--vl-fg-2)] transition-colors duration-150 hover:text-white"
+        >
           ← Back to groups
         </Link>
-        <Card className="p-2.5">
-          <div className="text-sm text-red-400">{error}</div>
+        <Card tone="vl" className="p-3">
+          <div className="text-sm text-[color:var(--vl-red)]">{error}</div>
         </Card>
       </div>
     );
@@ -122,7 +125,7 @@ export default async function GroupDetailPage({
       <div className="ui-fade-in">
         <Link
           href="/groups"
-          className="text-xs text-neutral-500 transition-colors duration-100 hover:text-white"
+          className="text-xs text-[color:var(--vl-fg-3)] transition-colors duration-150 hover:text-white"
         >
           ← Back to groups
         </Link>
@@ -210,22 +213,22 @@ function DebugInfo({
     },
   ];
   return (
-    <div className="overflow-hidden rounded-md border border-neutral-700 bg-neutral-900">
-      <div className="flex items-center justify-between border-b border-neutral-700 px-3 py-1.5">
-        <SectionHeader className="mb-0">Debug</SectionHeader>
+    <Card tone="vl" className="overflow-hidden">
+      <div className="flex items-center justify-between border-b border-[color:var(--vl-border)] px-3 py-1.5">
+        <SectionHeader tone="vl" className="mb-0">Debug</SectionHeader>
       </div>
-      <div className="divide-y divide-neutral-800">
+      <div className="divide-y divide-[color:var(--vl-border)]">
         {rows.map((r) => (
           <div
             key={r.label}
             className="flex items-center justify-between px-3 py-1.5 text-xs"
           >
-            <span className="text-neutral-300">{r.label}</span>
+            <span className="text-[color:var(--vl-fg-2)]">{r.label}</span>
             <span className="font-mono text-white tabular-nums">{r.value}</span>
           </div>
         ))}
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -236,30 +239,36 @@ function Hero({
   groupName: string;
   walletsCount: number;
 }) {
+  // Hero is a top-tier card — should clearly lift above the page surface,
+  // hence Card with tone="vl". The purple-gradient wash is layered on top
+  // via the existing Tailwind gradient utility for the brand glow.
   return (
-    <div className="mt-3 overflow-hidden rounded-md border border-neutral-700 bg-gradient-to-br from-violet-500/[0.06] via-transparent to-transparent">
+    <Card
+      tone="vl"
+      className="mt-3 overflow-hidden bg-gradient-to-br from-[rgba(168,144,232,0.10)] via-transparent to-transparent"
+    >
       <div className="relative grid grid-cols-1 gap-4 px-4 py-3 sm:grid-cols-2 sm:px-5 sm:py-4">
         <div>
-          <SectionHeader className="mb-1">Group</SectionHeader>
+          <SectionHeader tone="vl" className="mb-1">Group</SectionHeader>
           <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
             {groupName}
           </h1>
-          <div className="mt-2 text-xs font-medium text-neutral-300">
+          <div className="mt-2 text-xs font-medium text-[color:var(--vl-fg-2)]">
             {walletsCount} wallet{walletsCount === 1 ? "" : "s"}
           </div>
         </div>
 
         <div className="sm:text-right">
-          <SectionHeader className="mb-2">Portfolio value</SectionHeader>
-          <div className="text-4xl font-bold leading-none tracking-tight tabular-nums text-neutral-500 sm:text-5xl">
+          <SectionHeader tone="vl" className="mb-2">Portfolio value</SectionHeader>
+          <div className="text-4xl font-bold leading-none tracking-tight tabular-nums text-[color:var(--vl-fg-3)] sm:text-5xl">
             —
           </div>
-          <div className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+          <div className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--vl-fg-3)]">
             shown on Positions tab
           </div>
         </div>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -275,37 +284,39 @@ function WalletsSection({
   return (
     <section>
       <div className="mb-2 flex items-baseline justify-between">
-        <SectionHeader className="mb-0">Wallets</SectionHeader>
-        <Badge>{wallets.length}</Badge>
+        <SectionHeader tone="vl" className="mb-0">Wallets</SectionHeader>
+        <Badge variant="vlNeutral">{wallets.length}</Badge>
       </div>
-      <Card className="p-2.5">
+      <Card tone="vl" className="p-3">
         <form action={addAction} className="flex flex-wrap gap-2">
           <input
             name="wallet"
             required
             placeholder="Solana wallet address"
-            className="flex-1 min-w-[200px] rounded-md border border-neutral-800 bg-neutral-900 px-2.5 py-1.5 text-xs font-mono text-white placeholder:text-neutral-500 transition-colors duration-100 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30"
+            className="vl-text-input flex-1 min-w-[200px] font-mono"
           />
           <input
             name="label"
             placeholder="label"
-            className="w-28 rounded-md border border-neutral-800 bg-neutral-900 px-2.5 py-1.5 text-xs text-white placeholder:text-neutral-500 transition-colors duration-100 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30"
+            className="vl-text-input w-28"
           />
-          <button type="submit" className={btnPrimary}>
+          <button type="submit" className={btnVlPrimary}>
             Add
           </button>
         </form>
 
         {wallets.length === 0 ? (
-          <p className="mt-2 text-xs text-neutral-500">No wallets yet.</p>
+          <p className="mt-2 text-xs text-[color:var(--vl-fg-3)]">No wallets yet.</p>
         ) : (
-          <ul className="mt-3 divide-y divide-neutral-800 text-sm">
+          <ul className="mt-3 divide-y divide-[color:var(--vl-border)] text-sm">
             {wallets.map((w) => (
               <li key={w.address} className="flex items-center justify-between py-1.5">
                 <div className="min-w-0">
                   <WalletLink address={w.address} chars={6} className="text-xs" />
                   {w.label && (
-                    <div className="text-[11px] font-medium text-neutral-300">{w.label}</div>
+                    <div className="text-[11px] font-medium text-[color:var(--vl-fg-2)]">
+                      {w.label}
+                    </div>
                   )}
                 </div>
                 <form

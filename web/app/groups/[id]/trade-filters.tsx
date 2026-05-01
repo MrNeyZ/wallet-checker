@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card } from "@/ui-kit/components/Card";
 import { SectionHeader } from "@/ui-kit/components/SectionHeader";
-import { btnPrimary, btnSecondary } from "@/lib/buttonStyles";
+import { btnVlPrimary, btnVlGhost } from "@/lib/buttonStyles";
 
 // Quick preset filters. Each entry maps to a fixed set of URL params; the
 // "Clear all" preset has empty params and reads as active when no filters
@@ -60,6 +60,14 @@ export interface TradeFilterValues {
   program?: string;
 }
 
+// Preset pill class strings — VL-flavored. Active state uses the same
+// purple-soft fill the topnav active tab uses; idle state matches the
+// vl-toolbar-btn ghost look.
+const presetActiveCls =
+  "rounded-md border border-[var(--vl-purple-border)] bg-[var(--vl-purple-soft)] px-2.5 py-1 text-[11px] font-bold text-[color:var(--vl-purple-2)] transition-all duration-[var(--vl-motion,180ms)]";
+const presetIdleCls =
+  "rounded-md border border-[var(--vl-border)] bg-transparent px-2.5 py-1 text-[11px] font-semibold text-[color:var(--vl-fg-2)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-purple)] hover:text-[color:var(--vl-purple-2)] hover:bg-[rgba(168,144,232,0.08)]";
+
 export function TradeFilters({
   groupId,
   filters,
@@ -93,21 +101,18 @@ export function TradeFilters({
   return (
     <section>
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--vl-fg-3)]">
           Presets
         </span>
         {TRADE_FILTER_PRESETS.map((p) => {
           const active = isPresetActive(filters, p.params);
-          const cls = active
-            ? "rounded border border-violet-500/60 bg-violet-500/15 px-2 py-0.5 text-[11px] font-bold text-violet-200 transition-colors duration-100"
-            : "rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] font-semibold text-neutral-300 transition-colors duration-100 hover:border-neutral-500 hover:bg-neutral-800 hover:text-white";
           return (
             <Link
               key={p.label}
               href={buildPresetUrl(groupId, p.params)}
               scroll={false}
               aria-pressed={active}
-              className={cls}
+              className={active ? presetActiveCls : presetIdleCls}
             >
               {p.label}
             </Link>
@@ -115,10 +120,10 @@ export function TradeFilters({
         })}
       </div>
       <div className="mb-2 flex items-baseline justify-between">
-        <SectionHeader className="mb-0">Trade filters</SectionHeader>
-        <span className="text-[11px] text-neutral-500">{hasAny ? "filters active" : "optional"}</span>
+        <SectionHeader tone="vl" className="mb-0">Trade filters</SectionHeader>
+        <span className="text-[11px] text-[color:var(--vl-fg-3)]">{hasAny ? "filters active" : "optional"}</span>
       </div>
-      <Card className="p-2.5">
+      <Card tone="vl" className="p-3">
         <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-2">
           <Field label="Min USD">
             <input
@@ -128,7 +133,7 @@ export function TradeFilters({
               name="minUsd"
               defaultValue={filters.minUsd ?? ""}
               placeholder="50"
-              className={inputClass + " w-32"}
+              className="vl-text-input w-32"
             />
           </Field>
           <Field label="Token">
@@ -137,14 +142,14 @@ export function TradeFilters({
               name="token"
               defaultValue={filters.token ?? ""}
               placeholder="symbol / name / mint"
-              className={inputClass + " w-56"}
+              className="vl-text-input w-56"
             />
           </Field>
           <Field label="Side">
             <select
               name="side"
               defaultValue={filters.side ?? ""}
-              className={inputClass}
+              className="vl-text-input"
             >
               <option value="">All</option>
               <option value="buy">Buy</option>
@@ -157,14 +162,14 @@ export function TradeFilters({
               name="program"
               defaultValue={filters.program ?? ""}
               placeholder="jupiter"
-              className={inputClass + " w-40"}
+              className="vl-text-input w-40"
             />
           </Field>
           <div className="flex gap-2 pb-[1px]">
-            <button type="submit" className={btnPrimary}>
+            <button type="submit" className={btnVlPrimary}>
               Apply
             </button>
-            <button type="button" onClick={handleReset} className={btnSecondary}>
+            <button type="button" onClick={handleReset} className={btnVlGhost}>
               Reset
             </button>
           </div>
@@ -174,12 +179,9 @@ export function TradeFilters({
   );
 }
 
-const inputClass =
-  "rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-white placeholder:text-neutral-500 transition-colors duration-100 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30";
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col text-[10px] uppercase tracking-wider text-neutral-500">
+    <label className="flex flex-col text-[10px] uppercase tracking-wider text-[color:var(--vl-fg-3)]">
       {label}
       <div className="mt-1">{children}</div>
     </label>

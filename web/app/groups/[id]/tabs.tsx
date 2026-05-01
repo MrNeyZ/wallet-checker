@@ -24,11 +24,10 @@ export function Tabs({ active, groupId }: { active: TabId; groupId: string }) {
   }
 
   return (
-    <nav
-      role="tablist"
-      aria-label="Group sections"
-      className="flex gap-1 border-b border-neutral-800"
-    >
+    // `.vl-tabstrip` provides the bottom border; `.vl-tab` + `.is-active`
+    // ship the typography, hover, and the purple bottom-rail active state.
+    // No content-component touches.
+    <nav role="tablist" aria-label="Group sections" className="vl-tabstrip">
       {TABS.map((t) => {
         const isActive = active === t.id;
         return (
@@ -38,12 +37,7 @@ export function Tabs({ active, groupId }: { active: TabId; groupId: string }) {
             scroll={false}
             role="tab"
             aria-selected={isActive}
-            className={[
-              "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors duration-100",
-              isActive
-                ? "border-violet-500 text-white"
-                : "border-transparent text-neutral-400 hover:text-white",
-            ].join(" ")}
+            className={`vl-tab ${isActive ? "is-active" : ""}`}
           >
             {t.label}
           </Link>

@@ -118,16 +118,16 @@ export function GroupsListClient({
     <section>
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <div className="flex items-baseline gap-2">
-          <SectionHeader className="mb-0">All groups</SectionHeader>
-          <Badge>{groups.length}</Badge>
+          <SectionHeader tone="vl" className="mb-0">All groups</SectionHeader>
+          <Badge variant="vlNeutral">{groups.length}</Badge>
         </div>
-        <div className="flex items-center gap-2 text-[11px] text-neutral-400">
+        <div className="flex items-center gap-2 text-[11px] text-[color:var(--vl-fg-3)]">
           <LoadStatusLine load={load} lastUpdated={lastUpdated} />
           <button
             type="button"
             onClick={() => void reload()}
             disabled={load.kind !== "idle"}
-            className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] font-semibold text-white transition-colors duration-100 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-md border border-[color:var(--vl-border)] bg-transparent px-2.5 py-1 text-[11px] font-semibold text-[color:var(--vl-fg)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-purple)] hover:bg-[rgba(168,144,232,0.08)] hover:text-[color:var(--vl-purple-2)] disabled:cursor-not-allowed disabled:opacity-60"
             aria-label="Refresh groups"
           >
             {load.kind === "idle" ? "Refresh" : "Refreshing…"}
@@ -135,17 +135,17 @@ export function GroupsListClient({
         </div>
       </div>
       {error ? (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="rounded-[10px] border border-[rgba(239,120,120,0.30)] bg-[rgba(239,120,120,0.08)] px-3 py-2 text-sm text-[color:var(--vl-red)]">
           <span className="font-semibold">Could not load groups:</span> {error}.
           Click Refresh to try again.
         </div>
       ) : groups.length === 0 ? (
-        <Card className="p-8 text-center text-sm text-neutral-500">
+        <Card tone="vl" className="p-8 text-center text-sm text-[color:var(--vl-fg-3)]">
           No groups yet — create one above.
         </Card>
       ) : (
-        <Card className="overflow-hidden">
-          <ul className="divide-y divide-neutral-800">
+        <Card tone="vl" className="overflow-hidden p-0">
+          <ul className="divide-y divide-[color:var(--vl-border)]">
             {groups.map((g) => (
               <GroupRow
                 key={g.id}
@@ -165,7 +165,8 @@ export function GroupsListClient({
 // One group entry. The clickable area opens the group; the right-hand
 // side hosts the two-step Delete control. The link wraps just the
 // metadata block so the delete button sits outside the anchor (avoids
-// nested-interactive a11y issues).
+// nested-interactive a11y issues). Row hover gets a subtle lavender tint
+// per the polish-pass spec.
 function GroupRow({
   group,
   onDeleted,
@@ -174,20 +175,20 @@ function GroupRow({
   onDeleted: (id: string) => void;
 }) {
   return (
-    <li className="flex items-center justify-between gap-3 px-4 py-3 transition-colors duration-100 hover:bg-neutral-800/60">
+    <li className="flex items-center justify-between gap-3 px-4 py-3 transition-all duration-[var(--vl-motion,180ms)] hover:bg-[rgba(168,144,232,0.06)]">
       <Link
         href={`/groups/${group.id}`}
         className="flex min-w-0 flex-1 items-center justify-between gap-3"
       >
         <div className="min-w-0">
           <div className="text-sm font-semibold text-white">{group.name}</div>
-          <div className="mt-0.5 text-xs text-neutral-300">
+          <div className="mt-0.5 text-xs text-[color:var(--vl-fg-2)]">
             {group.wallets.length} wallet
             {group.wallets.length === 1 ? "" : "s"} · created{" "}
             {new Date(group.createdAt).toISOString().slice(0, 10)}
           </div>
         </div>
-        <span className="font-mono text-xs text-neutral-300">
+        <span className="font-mono text-xs text-[color:var(--vl-fg-3)]">
           {group.id.slice(0, 8)}…
         </span>
       </Link>
@@ -236,7 +237,7 @@ function GroupDeleteControl({
         type="button"
         onClick={() => setState({ kind: "confirming" })}
         aria-label="Delete group"
-        className="rounded-md border border-neutral-800 bg-transparent px-2 py-1 text-[11px] font-semibold text-neutral-400 transition-colors duration-100 hover:border-red-500/60 hover:bg-red-500/10 hover:text-red-300"
+        className="rounded-md border border-[color:var(--vl-border)] bg-transparent px-2 py-1 text-[11px] font-semibold text-[color:var(--vl-fg-3)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[rgba(239,120,120,0.55)] hover:bg-[rgba(239,120,120,0.10)] hover:text-[color:var(--vl-red)]"
       >
         Delete
       </button>
@@ -245,11 +246,11 @@ function GroupDeleteControl({
   if (state.kind === "confirming") {
     return (
       <div className="flex items-center gap-1.5">
-        <span className="text-[11px] text-red-300">Are you sure?</span>
+        <span className="text-[11px] text-[color:var(--vl-red)]">Are you sure?</span>
         <button
           type="button"
           onClick={() => setState({ kind: "idle" })}
-          className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-300 transition-colors duration-100 hover:bg-neutral-800"
+          className="rounded-md border border-[color:var(--vl-border)] bg-transparent px-2 py-1 text-[11px] font-semibold text-[color:var(--vl-fg-2)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-purple)] hover:bg-[rgba(168,144,232,0.08)] hover:text-[color:var(--vl-purple-2)]"
         >
           Cancel
         </button>
@@ -257,7 +258,7 @@ function GroupDeleteControl({
           type="button"
           onClick={() => void handleConfirm()}
           aria-label="Confirm delete group"
-          className="rounded-md border border-red-500/60 bg-red-600/90 px-2 py-1 text-[11px] font-semibold text-white transition-colors duration-100 hover:bg-red-600"
+          className="rounded-md border border-[rgba(239,120,120,0.55)] bg-[linear-gradient(180deg,#fb6f6f_0%,#e23838_100%)] px-2.5 py-1 text-[11px] font-semibold text-white transition-all duration-[var(--vl-motion,180ms)] hover:brightness-110"
         >
           Delete
         </button>
@@ -266,7 +267,7 @@ function GroupDeleteControl({
   }
   if (state.kind === "deleting") {
     return (
-      <span className="text-[11px] text-neutral-400" aria-live="polite">
+      <span className="text-[11px] text-[color:var(--vl-fg-3)]" aria-live="polite">
         Deleting…
       </span>
     );
@@ -274,13 +275,13 @@ function GroupDeleteControl({
   // error
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-[11px] text-red-300" title={state.message}>
+      <span className="text-[11px] text-[color:var(--vl-red)]" title={state.message}>
         Failed to delete group. Try again.
       </span>
       <button
         type="button"
         onClick={() => setState({ kind: "confirming" })}
-        className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-300 transition-colors duration-100 hover:bg-neutral-800"
+        className="rounded-md border border-[color:var(--vl-border)] bg-transparent px-2 py-1 text-[11px] font-semibold text-[color:var(--vl-fg-2)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-purple)] hover:bg-[rgba(168,144,232,0.08)] hover:text-[color:var(--vl-purple-2)]"
       >
         Retry
       </button>
@@ -307,7 +308,7 @@ function LoadStatusLine({
   }
   if (load.kind === "retrying") {
     return (
-      <span className="text-amber-300">
+      <span className="text-[color:var(--vl-amber)]">
         Retrying ({load.attempt} / {RETRY_BACKOFFS_MS.length})…
       </span>
     );

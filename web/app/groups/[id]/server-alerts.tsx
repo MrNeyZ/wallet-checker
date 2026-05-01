@@ -11,7 +11,7 @@ import {
 import { Card } from "@/ui-kit/components/Card";
 import { SectionHeader } from "@/ui-kit/components/SectionHeader";
 import { Badge } from "@/ui-kit/components/Badge";
-import { btnPrimary, btnSecondary, btnDangerLink, btnLink } from "@/lib/buttonStyles";
+import { btnVlPrimary, btnVlGhost, btnDangerLink, btnLink } from "@/lib/buttonStyles";
 
 export function ServerAlerts({
   groupId,
@@ -69,16 +69,16 @@ export function ServerAlerts({
   return (
     <section>
       <div className="mb-2 flex items-baseline justify-between">
-        <SectionHeader className="mb-0">Server alerts</SectionHeader>
-        <span className="text-[11px] text-neutral-500">
+        <SectionHeader tone="vl" className="mb-0">Server alerts</SectionHeader>
+        <span className="text-[11px] text-[color:var(--vl-fg-3)]">
           persisted · sends Telegram
         </span>
       </div>
 
-      <Card className="p-2.5">
+      <Card tone="vl" className="p-3">
         <form
           action={handleCreate}
-          className="flex flex-wrap items-end gap-2 border-b border-neutral-800 pb-2"
+          className="flex flex-wrap items-end gap-2 border-b border-[color:var(--vl-border)] pb-3"
         >
           <Field label="Name">
             <input
@@ -86,7 +86,7 @@ export function ServerAlerts({
               required
               maxLength={100}
               placeholder="Big jupiter buys"
-              className={inputClass + " w-56"}
+              className="vl-text-input w-56"
             />
           </Field>
           <Field label="Min USD">
@@ -97,18 +97,18 @@ export function ServerAlerts({
               min="0"
               required
               placeholder="50"
-              className={inputClass + " w-28"}
+              className="vl-text-input w-28"
             />
           </Field>
           <Field label="Token">
             <input
               name="token"
               placeholder="optional"
-              className={inputClass + " w-40"}
+              className="vl-text-input w-40"
             />
           </Field>
           <Field label="Side">
-            <select name="side" defaultValue="" className={inputClass}>
+            <select name="side" defaultValue="" className="vl-text-input">
               <option value="">All</option>
               <option value="buy">Buy</option>
               <option value="sell">Sell</option>
@@ -118,27 +118,27 @@ export function ServerAlerts({
             <input
               name="program"
               placeholder="optional"
-              className={inputClass + " w-32"}
+              className="vl-text-input w-32"
             />
           </Field>
-          <label className="flex items-center gap-2 pb-[10px] text-xs text-neutral-300">
+          <label className="flex items-center gap-2 pb-[10px] text-xs text-[color:var(--vl-fg-2)]">
             <input
               type="checkbox"
               name="enabled"
               defaultChecked
-              className="h-4 w-4 rounded border-neutral-700 bg-neutral-900 text-violet-500 focus:ring-violet-500/30"
+              className="h-4 w-4 rounded border-[color:var(--vl-border)] bg-[color:var(--vl-surface-2)] text-[color:var(--vl-purple)] focus:ring-[var(--vl-purple-soft)]"
             />
             enabled
           </label>
           <div className="flex gap-2 pb-[1px]">
-            <button type="submit" disabled={pending} className={btnPrimary}>
+            <button type="submit" disabled={pending} className={btnVlPrimary}>
               Add rule
             </button>
             <button
               type="button"
               onClick={handleEvaluate}
               disabled={pending}
-              className={btnSecondary}
+              className={btnVlGhost}
             >
               Evaluate now
             </button>
@@ -146,21 +146,21 @@ export function ServerAlerts({
         </form>
 
         {error && (
-          <div className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+          <div className="mt-3 rounded-md border border-[rgba(239,120,120,0.30)] bg-[rgba(239,120,120,0.08)] px-3 py-2 text-xs text-[color:var(--vl-red)]">
             {error}
           </div>
         )}
         {info && !error && (
-          <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
+          <div className="mt-3 rounded-md border border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.06)] px-3 py-2 text-xs text-[color:var(--vl-fg-2)]">
             {info}
           </div>
         )}
 
         {rules.length === 0 ? (
-          <p className="mt-4 text-xs text-neutral-500">No server-side rules yet.</p>
+          <p className="mt-4 text-xs text-[color:var(--vl-fg-3)]">No server-side rules yet.</p>
         ) : (
           <table className="mt-3 w-full text-sm">
-            <thead className="text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-300">
+            <thead className="text-left text-[11px] font-semibold uppercase tracking-wider text-[color:var(--vl-fg-3)]">
               <tr>
                 <th className="py-1">Name</th>
                 <th>Min USD</th>
@@ -172,28 +172,31 @@ export function ServerAlerts({
                 <th></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-neutral-800">
+            <tbody className="divide-y divide-[color:var(--vl-border)]">
               {rules.map((r) => (
-                <tr key={r.id} className="transition-colors duration-100 hover:bg-neutral-800/60">
+                <tr
+                  key={r.id}
+                  className="transition-colors duration-[var(--vl-motion,180ms)] hover:bg-[rgba(168,144,232,0.06)]"
+                >
                   <td className="py-1">
                     <div className="font-semibold text-white">{r.name}</div>
-                    <div className="font-mono text-xs text-neutral-400">{r.id.slice(0, 8)}…</div>
+                    <div className="font-mono text-xs text-[color:var(--vl-fg-3)]">{r.id.slice(0, 8)}…</div>
                   </td>
                   <td className="font-semibold text-white tabular-nums">${r.minUsd.toFixed(2)}</td>
                   <td className="font-medium text-white">
-                    {r.token ?? <span className="font-normal text-neutral-500">—</span>}
+                    {r.token ?? <span className="font-normal text-[color:var(--vl-fg-3)]">—</span>}
                   </td>
                   <td className="font-medium text-white">
-                    {r.side ?? <span className="font-normal text-neutral-500">any</span>}
+                    {r.side ?? <span className="font-normal text-[color:var(--vl-fg-3)]">any</span>}
                   </td>
                   <td className="font-medium text-white">
-                    {r.program ?? <span className="font-normal text-neutral-500">any</span>}
+                    {r.program ?? <span className="font-normal text-[color:var(--vl-fg-3)]">any</span>}
                   </td>
-                  <td className="whitespace-nowrap text-xs text-neutral-300">
+                  <td className="whitespace-nowrap text-xs text-[color:var(--vl-fg-2)]">
                     {new Date(r.createdAt).toISOString().slice(0, 10)}
                   </td>
                   <td>
-                    <Badge variant={r.enabled ? "buy" : "neutral"}>
+                    <Badge variant={r.enabled ? "vlGreen" : "vlNeutral"}>
                       {r.enabled ? "Enabled" : "Disabled"}
                     </Badge>
                   </td>
@@ -227,12 +230,9 @@ export function ServerAlerts({
   );
 }
 
-const inputClass =
-  "rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-white placeholder:text-neutral-500 transition-colors duration-100 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30";
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col text-[10px] uppercase tracking-wider text-neutral-500">
+    <label className="flex flex-col text-[10px] uppercase tracking-wider text-[color:var(--vl-fg-3)]">
       {label}
       <div className="mt-1">{children}</div>
     </label>

@@ -33,6 +33,10 @@ export function pnlClass(v: number | null | undefined): string {
   return "text-neutral-200";
 }
 
+// Shared section wrapper. Switched to <Card tone="vl"> so every panel that
+// uses it (PnL, portfolio, LP, airdrops, token activity, trades, etc.)
+// inherits the polish-pass surface (opaque + lavender border + shadow lift)
+// in one shot — no per-section structural rewrite.
 export function Panel({
   title,
   subtitle,
@@ -43,15 +47,15 @@ export function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-neutral-700 bg-neutral-900">
-      <div className="flex items-center justify-between border-b border-neutral-700 px-3 py-1.5">
-        <SectionHeader className="mb-0">{title}</SectionHeader>
+    <Card tone="vl" className="overflow-hidden">
+      <div className="flex items-center justify-between border-b border-[color:var(--vl-border)] px-3 py-1.5">
+        <SectionHeader tone="vl" className="mb-0">{title}</SectionHeader>
         {subtitle && (
-          <span className="text-xs text-neutral-300 tabular-nums">{subtitle}</span>
+          <span className="text-xs text-[color:var(--vl-fg-2)] tabular-nums">{subtitle}</span>
         )}
       </div>
       {children}
-    </div>
+    </Card>
   );
 }
 
@@ -88,8 +92,8 @@ export function PnlOverviewView({
     <section className="space-y-2">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         {metrics.map((m) => (
-          <div key={m.label} className="rounded-md border border-neutral-800 bg-neutral-900 p-2.5">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-300">
+          <div key={m.label} className="vl-card p-3">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--vl-fg-3)]">
               {m.label}
             </div>
             <div
@@ -1237,11 +1241,11 @@ export function PanelError({
   return (
     <Panel title={title}>
       <div className="flex items-center justify-between gap-3 px-3 py-3">
-        <div className="text-sm text-red-400">{error}</div>
+        <div className="text-sm text-[color:var(--vl-red)]">{error}</div>
         <button
           type="button"
           onClick={onRetry}
-          className="rounded-md border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs font-semibold text-white transition-colors duration-100 hover:bg-neutral-800"
+          className="rounded-md border border-[color:var(--vl-border)] bg-transparent px-2.5 py-1 text-xs font-semibold text-[color:var(--vl-fg)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-purple)] hover:bg-[rgba(168,144,232,0.08)] hover:text-[color:var(--vl-purple-2)]"
         >
           Retry
         </button>
@@ -1259,11 +1263,11 @@ export function PnlOverviewLoadingSkeleton() {
         {Array.from({ length: 5 }).map((_, i) => (
           <div
             key={i}
-            className="rounded-md border border-neutral-800 bg-neutral-900 p-2.5 animate-pulse"
+            className="vl-card p-3 animate-pulse"
             style={{ animationDelay: `${i * 60}ms` }}
           >
-            <div className="h-2 w-16 rounded bg-neutral-800" />
-            <div className="mt-2 h-5 w-24 rounded bg-neutral-800" />
+            <div className="h-2 w-16 rounded bg-[color:var(--vl-surface-2)]" />
+            <div className="mt-2 h-5 w-24 rounded bg-[color:var(--vl-surface-2)]" />
           </div>
         ))}
       </div>
