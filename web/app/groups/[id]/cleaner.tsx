@@ -145,6 +145,11 @@ export interface BurnSelectionEntry {
   // selectedCount > 0 AND no in-flight build). Sticky bar mirrors this
   // into its disabled state.
   canBuild: boolean;
+  // Total burnable items the section currently exposes in its UI grid
+  // (NOT raw scan totals — already filtered to what the user can click
+  // to burn). null when the section hasn't finished discovery yet so
+  // the page-level Items Found tile can show "—" instead of underreporting.
+  totalBurnable: number | null;
 }
 
 interface BurnSelectionRegistryCtx {
@@ -170,7 +175,8 @@ export function BurnSelectionProvider({ children }: { children: ReactNode }) {
           entry &&
           cur.selectedCount === entry.selectedCount &&
           cur.selectedReclaimSol === entry.selectedReclaimSol &&
-          cur.canBuild === entry.canBuild
+          cur.canBuild === entry.canBuild &&
+          cur.totalBurnable === entry.totalBurnable
         ) {
           return prev;
         }
@@ -209,14 +215,21 @@ function useBurnSelectionPublisher(
   selectedCount: number,
   selectedReclaimSol: number | null,
   canBuild: boolean,
+  totalBurnable: number | null = null,
 ): void {
   const ctx = useContext(BurnSelectionCtx);
   // Stringify so a fresh-object render with structurally-equal values
   // doesn't trigger a redundant publish.
-  const stableKey = `${selectedCount}:${selectedReclaimSol ?? "null"}:${canBuild ? 1 : 0}`;
+  const stableKey = `${selectedCount}:${selectedReclaimSol ?? "null"}:${canBuild ? 1 : 0}:${totalBurnable ?? "null"}`;
   useEffect(() => {
     if (!ctx) return;
-    ctx.publish(key, { sectionKey: key, selectedCount, selectedReclaimSol, canBuild });
+    ctx.publish(key, {
+      sectionKey: key,
+      selectedCount,
+      selectedReclaimSol,
+      canBuild,
+      totalBurnable,
+    });
     return () => ctx.publish(key, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx, key, stableKey]);
@@ -2601,7 +2614,13 @@ function CleanerDetails({
     }
     return sum;
   }, [selectedMints, burn.candidates]);
-  useBurnSelectionPublisher("splBurn", selectedMints.size, splReclaimSol, canBuild);
+  useBurnSelectionPublisher(
+    "splBurn",
+    selectedMints.size,
+    splReclaimSol,
+    canBuild,
+    burn.candidates.length,
+  );
 
   return (
     <ReclaimSummaryCtx.Provider value={reclaimCtx}>
@@ -2749,6 +2768,7 @@ function CleanerDetails({
           onToggle={() => setOpenLegacy((v) => !v)}
           onWalletRescan={onWalletRescan}
           rescanPending={rescanPending}
+          visible={showLegacy}
         />
       </div>
       )}
@@ -2767,6 +2787,7 @@ function CleanerDetails({
           onToggle={() => setOpenPnft((v) => !v)}
           onWalletRescan={onWalletRescan}
           rescanPending={rescanPending}
+          visible={showPnft}
         />
       </div>
       )}
@@ -2785,6 +2806,7 @@ function CleanerDetails({
           onToggle={() => setOpenCore((v) => !v)}
           onWalletRescan={onWalletRescan}
           rescanPending={rescanPending}
+          visible={showCore}
         />
       </div>
       )}
@@ -4191,6 +4213,7 @@ function LegacyNftBurnSection({
   onToggle,
   onWalletRescan,
   rescanPending,
+  visible = true,
 }: {
   walletAddress: string;
   nftAccountCount: number;
@@ -4198,6 +4221,13 @@ function LegacyNftBurnSection({
   onToggle: () => void;
   onWalletRescan: () => void;
   rescanPending: boolean;
+  // Optional perf gate. Caller (CleanerDetails) sets to false when the
+  // section is in a `<div hidden>` parent (e.g. the user is on a
+  // different /burner tab). Discovery effect + state still run so
+  // we don't refetch on tab switch — only the heavy candidate grid is
+  // skipped. Defaults to true so /groups/[id]?tab=cleaner (always-show
+  // mode) keeps its existing behaviour.
+  visible?: boolean;
 }) {
   const isCompact = useCompactMode();
   const [discover, setDiscover] = useState<LegacyDiscoverState>(
@@ -4292,14 +4322,17 @@ function LegacyNftBurnSection({
     return { burnable, nonBurnable };
   }, [discover]);
 
-  function toggleSelected(mint: string): void {
+  // Stable across renders so the memoized BurnCandidateCard children
+  // skip re-render when other items toggle. setSelectedMints from
+  // useState already has a stable identity.
+  const toggleSelected = useCallback((mint: string): void => {
     setSelectedMints((prev) => {
       const next = new Set(prev);
       if (next.has(mint)) next.delete(mint);
       else next.add(mint);
       return next;
     });
-  }
+  }, []);
 
   // Parameterised so the "Build next batch" button can request a build
   // for an explicit mint subset (the leftover from the prior batch's
@@ -4338,20 +4371,29 @@ function LegacyNftBurnSection({
     }
     return sum;
   }, [selectedMints, candidates]);
-  useBurnSelectionPublisher("legacyNft", selectedMints.size, legacyReclaimSol, canBuild);
+  useBurnSelectionPublisher(
+    "legacyNft",
+    selectedMints.size,
+    legacyReclaimSol,
+    canBuild,
+    candidates ? candidates.burnable.length : null,
+  );
 
   // Toggle every mint in a collection group at once. If `selectAll` is
   // true, ensure all are in the selection set; otherwise remove all.
-  function toggleGroupSelected(ids: string[], selectAll: boolean): void {
-    setSelectedMints((prev) => {
-      const next = new Set(prev);
-      for (const id of ids) {
-        if (selectAll) next.add(id);
-        else next.delete(id);
-      }
-      return next;
-    });
-  }
+  const toggleGroupSelected = useCallback(
+    (ids: string[], selectAll: boolean): void => {
+      setSelectedMints((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) {
+          if (selectAll) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   // Collapsed/onToggle are controlled by the parent (CleanerDetails) so the
   // unified action-plan panel above can expand a specific section on demand.
@@ -4433,20 +4475,27 @@ function LegacyNftBurnSection({
                 </>
               ) : (
                 <>
-                  <BurnCandidateGroupGrid
-                    items={candidates.burnable.map((c) => ({
-                      id: c.mint,
-                      name: c.name,
-                      symbol: c.symbol,
-                      image: c.image,
-                      collection: c.collection,
-                      estimatedGrossReclaimSol: c.estimatedGrossReclaimSol,
-                    }))}
-                    selected={selectedMints}
-                    onToggle={toggleSelected}
-                    onToggleGroup={toggleGroupSelected}
-                    itemKindLabel="NFT"
-                  />
+                  {visible ? (
+                    <BurnCandidateGroupGrid
+                      items={candidates.burnable.map((c) => ({
+                        id: c.mint,
+                        name: c.name,
+                        symbol: c.symbol,
+                        image: c.image,
+                        collection: c.collection,
+                        estimatedGrossReclaimSol: c.estimatedGrossReclaimSol,
+                      }))}
+                      selected={selectedMints}
+                      onToggle={toggleSelected}
+                      onToggleGroup={toggleGroupSelected}
+                      itemKindLabel="NFT"
+                    />
+                  ) : (
+                    <HiddenGridPlaceholder
+                      count={candidates.burnable.length}
+                      kind="NFT"
+                    />
+                  )}
                   <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-1.5">
                     <button
                       type="button"
@@ -4647,12 +4696,102 @@ interface BurnCandidateItem {
   estimatedGrossReclaimSol: number | null;
 }
 
+// One card cell in BurnCandidateGroupGrid. Memoized on its primitive
+// props so toggling one item's selection only re-renders that card —
+// not all 60 cards in the group. The parent passes a stable
+// `onToggle: (id) => void` (via useCallback) and primitive scalars,
+// so React.memo's default shallow compare is enough.
+const BurnCandidateCard = React.memo(function BurnCandidateCard({
+  id,
+  name,
+  image,
+  itemKindLabel,
+  estimatedGrossReclaimSol,
+  isChecked,
+  onToggle,
+}: {
+  id: string;
+  name: string | null;
+  image: string | null;
+  itemKindLabel: string;
+  estimatedGrossReclaimSol: number | null;
+  isChecked: boolean;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <label
+      className={`vl-card is-interactive flex cursor-pointer flex-col gap-1 p-2 text-left ${
+        isChecked ? "is-selected" : ""
+      }`}
+    >
+      <div className="relative">
+        <NftThumbnail
+          src={image}
+          alt={name ?? itemKindLabel}
+          size="lg"
+        />
+        <input
+          type="checkbox"
+          checked={isChecked}
+          onChange={() => onToggle(id)}
+          aria-label={`Select ${name ?? itemKindLabel} for burn`}
+          className="vl-checkbox absolute right-1 top-1 h-4 w-4 cursor-pointer"
+        />
+      </div>
+      <div className="min-w-0">
+        {name ? (
+          <div className="truncate text-[11px] font-semibold text-white">
+            {name}
+          </div>
+        ) : (
+          <div className="truncate font-mono text-[10px] text-[color:var(--vl-fg-3)]">
+            {shortAddr(id, 4, 4)}
+          </div>
+        )}
+        <div className="flex flex-wrap items-baseline gap-1">
+          <span className="rounded bg-[rgba(255,255,255,0.04)] px-1 py-px text-[9px] font-bold uppercase tracking-wider text-[color:var(--vl-fg-2)]">
+            {itemKindLabel}
+          </span>
+          <span className="font-mono text-[9px] text-[color:var(--vl-fg-3)]">
+            {shortAddr(id, 3, 3)}
+          </span>
+        </div>
+        {estimatedGrossReclaimSol !== null && (
+          <div className="mt-0.5 text-[10px] tabular-nums text-[color:var(--vl-green)]">
+            {fmtSol(estimatedGrossReclaimSol)} SOL
+          </div>
+        )}
+      </div>
+    </label>
+  );
+});
+
 // Collection-grouped grid of burn candidates. Replaces the prior table-
 // shaped `LegacyNftCandidatesTable` / `PnftCandidatesTable` /
 // `CoreCandidatesTable` components and folds in the per-collection
 // "Select all" toggle. No artificial selection cap — the user can pick
 // every burnable item; the backend slices into per-tx batches.
-const GRID_PAGE_SIZE = 50;
+const GRID_PAGE_SIZE = 60;
+
+// Tiny stand-in for BurnCandidateGroupGrid when the section's tab is
+// not currently visible. Discovery state is preserved by keeping the
+// section mounted, but the heavy thumbnail grid (60+ <img> tags +
+// per-card render work) is skipped until the user comes back to this
+// tab. One short text line keeps the layout stable.
+function HiddenGridPlaceholder({
+  count,
+  kind,
+}: {
+  count: number;
+  kind: string;
+}) {
+  return (
+    <div className="px-3 py-2 text-[11px] text-[color:var(--vl-fg-3)]">
+      {count} burnable {kind}
+      {count === 1 ? "" : "s"} ready · open this tab to view the grid.
+    </div>
+  );
+}
 
 function BurnCandidateGroupGrid({
   items,
@@ -4781,56 +4920,18 @@ function BurnCandidateGroupGrid({
                 Selected card flips to PURPLE accent (red is reserved
                 for the actual burn-button, per polish-pass spec). */}
             <div className="vl-card-grid grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-              {groupItems.map((item) => {
-                const isChecked = selected.has(item.id);
-                return (
-                  <label
-                    key={item.id}
-                    className={`vl-card is-interactive flex cursor-pointer flex-col gap-1 p-2 text-left ${
-                      isChecked ? "is-selected" : ""
-                    }`}
-                  >
-                    <div className="relative">
-                      <NftThumbnail
-                        src={item.image}
-                        alt={item.name ?? itemKindLabel}
-                        size="lg"
-                      />
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => onToggle(item.id)}
-                        aria-label={`Select ${item.name ?? itemKindLabel} for burn`}
-                        className="vl-checkbox absolute right-1 top-1 h-4 w-4 cursor-pointer"
-                      />
-                    </div>
-                    <div className="min-w-0">
-                      {item.name ? (
-                        <div className="truncate text-[11px] font-semibold text-white">
-                          {item.name}
-                        </div>
-                      ) : (
-                        <div className="truncate font-mono text-[10px] text-[color:var(--vl-fg-3)]">
-                          {shortAddr(item.id, 4, 4)}
-                        </div>
-                      )}
-                      <div className="flex flex-wrap items-baseline gap-1">
-                        <span className="rounded bg-[rgba(255,255,255,0.04)] px-1 py-px text-[9px] font-bold uppercase tracking-wider text-[color:var(--vl-fg-2)]">
-                          {itemKindLabel}
-                        </span>
-                        <span className="font-mono text-[9px] text-[color:var(--vl-fg-3)]">
-                          {shortAddr(item.id, 3, 3)}
-                        </span>
-                      </div>
-                      {item.estimatedGrossReclaimSol !== null && (
-                        <div className="mt-0.5 text-[10px] tabular-nums text-[color:var(--vl-green)]">
-                          {fmtSol(item.estimatedGrossReclaimSol)} SOL
-                        </div>
-                      )}
-                    </div>
-                  </label>
-                );
-              })}
+              {groupItems.map((item) => (
+                <BurnCandidateCard
+                  key={item.id}
+                  id={item.id}
+                  name={item.name}
+                  image={item.image}
+                  itemKindLabel={itemKindLabel}
+                  estimatedGrossReclaimSol={item.estimatedGrossReclaimSol}
+                  isChecked={selected.has(item.id)}
+                  onToggle={onToggle}
+                />
+              ))}
             </div>
           </div>
         );
@@ -5339,6 +5440,7 @@ function PnftBurnSection({
   onToggle,
   onWalletRescan,
   rescanPending,
+  visible = true,
 }: {
   walletAddress: string;
   nftAccountCount: number;
@@ -5346,6 +5448,10 @@ function PnftBurnSection({
   onToggle: () => void;
   onWalletRescan: () => void;
   rescanPending: boolean;
+  // See LegacyNftBurnSection — perf gate that skips the candidate grid
+  // render when the section is in a hidden tab. Discovery effect still
+  // runs so state is preserved across tab switches.
+  visible?: boolean;
 }) {
   const isCompact = useCompactMode();
   const [discover, setDiscover] = useState<PnftDiscoverState>(
@@ -5429,14 +5535,14 @@ function PnftBurnSection({
     return { burnable, nonBurnable };
   }, [discover]);
 
-  function toggleSelected(mint: string): void {
+  const toggleSelected = useCallback((mint: string): void => {
     setSelectedMints((prev) => {
       const next = new Set(prev);
       if (next.has(mint)) next.delete(mint);
       else next.add(mint);
       return next;
     });
-  }
+  }, []);
 
   function handleBuildBatch(mints: string[]): void {
     if (mints.length === 0) return;
@@ -5467,18 +5573,27 @@ function PnftBurnSection({
     }
     return sum;
   }, [selectedMints, candidates]);
-  useBurnSelectionPublisher("pnft", selectedMints.size, pnftReclaimSol, canBuild);
+  useBurnSelectionPublisher(
+    "pnft",
+    selectedMints.size,
+    pnftReclaimSol,
+    canBuild,
+    candidates ? candidates.burnable.length : null,
+  );
 
-  function toggleGroupSelected(ids: string[], selectAll: boolean): void {
-    setSelectedMints((prev) => {
-      const next = new Set(prev);
-      for (const id of ids) {
-        if (selectAll) next.add(id);
-        else next.delete(id);
-      }
-      return next;
-    });
-  }
+  const toggleGroupSelected = useCallback(
+    (ids: string[], selectAll: boolean): void => {
+      setSelectedMints((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) {
+          if (selectAll) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   // collapsed/onToggle come from CleanerDetails so the action-plan panel
   // above can drive expansion. Local discovery/build state is unaffected.
@@ -5557,20 +5672,27 @@ function PnftBurnSection({
                 </>
               ) : (
                 <>
-                  <BurnCandidateGroupGrid
-                    items={candidates.burnable.map((c) => ({
-                      id: c.mint,
-                      name: c.name,
-                      symbol: c.symbol,
-                      image: c.image,
-                      collection: c.collection,
-                      estimatedGrossReclaimSol: c.estimatedGrossReclaimSol,
-                    }))}
-                    selected={selectedMints}
-                    onToggle={toggleSelected}
-                    onToggleGroup={toggleGroupSelected}
-                    itemKindLabel="pNFT"
-                  />
+                  {visible ? (
+                    <BurnCandidateGroupGrid
+                      items={candidates.burnable.map((c) => ({
+                        id: c.mint,
+                        name: c.name,
+                        symbol: c.symbol,
+                        image: c.image,
+                        collection: c.collection,
+                        estimatedGrossReclaimSol: c.estimatedGrossReclaimSol,
+                      }))}
+                      selected={selectedMints}
+                      onToggle={toggleSelected}
+                      onToggleGroup={toggleGroupSelected}
+                      itemKindLabel="pNFT"
+                    />
+                  ) : (
+                    <HiddenGridPlaceholder
+                      count={candidates.burnable.length}
+                      kind="pNFT"
+                    />
+                  )}
                   <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-1.5">
                     <button
                       type="button"
@@ -5990,12 +6112,17 @@ function CoreBurnSection({
   onToggle,
   onWalletRescan,
   rescanPending,
+  visible = true,
 }: {
   walletAddress: string;
   collapsed: boolean;
   onToggle: () => void;
   onWalletRescan: () => void;
   rescanPending: boolean;
+  // See LegacyNftBurnSection — perf gate that skips the candidate grid
+  // render when the section is in a hidden tab. Discovery effect still
+  // runs so state is preserved across tab switches.
+  visible?: boolean;
 }) {
   const isCompact = useCompactMode();
   const [discover, setDiscover] = useState<CoreDiscoverState>({
@@ -6076,14 +6203,14 @@ function CoreBurnSection({
     return { burnable, nonBurnable };
   }, [discover]);
 
-  function toggleSelected(asset: string): void {
+  const toggleSelected = useCallback((asset: string): void => {
     setSelectedAssets((prev) => {
       const next = new Set(prev);
       if (next.has(asset)) next.delete(asset);
       else next.add(asset);
       return next;
     });
-  }
+  }, []);
 
   function handleBuildBatch(assetIds: string[]): void {
     if (assetIds.length === 0) return;
@@ -6113,18 +6240,27 @@ function CoreBurnSection({
     }
     return sum;
   }, [selectedAssets, candidates]);
-  useBurnSelectionPublisher("core", selectedAssets.size, coreReclaimSol, canBuild);
+  useBurnSelectionPublisher(
+    "core",
+    selectedAssets.size,
+    coreReclaimSol,
+    canBuild,
+    candidates ? candidates.burnable.length : null,
+  );
 
-  function toggleGroupSelected(ids: string[], selectAll: boolean): void {
-    setSelectedAssets((prev) => {
-      const next = new Set(prev);
-      for (const id of ids) {
-        if (selectAll) next.add(id);
-        else next.delete(id);
-      }
-      return next;
-    });
-  }
+  const toggleGroupSelected = useCallback(
+    (ids: string[], selectAll: boolean): void => {
+      setSelectedAssets((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) {
+          if (selectAll) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   // collapsed/onToggle come from CleanerDetails (see other burn sections).
 
@@ -6195,21 +6331,28 @@ function CoreBurnSection({
                 </EmptyHint>
               ) : (
                 <>
-                  <BurnCandidateGroupGrid
-                    items={candidates.burnable.map((c) => ({
-                      id: c.asset,
-                      name: c.name,
-                      // Core has no symbol; pass null.
-                      symbol: null,
-                      image: c.image,
-                      collection: c.collection,
-                      estimatedGrossReclaimSol: c.estimatedGrossReclaimSol,
-                    }))}
-                    selected={selectedAssets}
-                    onToggle={toggleSelected}
-                    onToggleGroup={toggleGroupSelected}
-                    itemKindLabel="asset"
-                  />
+                  {visible ? (
+                    <BurnCandidateGroupGrid
+                      items={candidates.burnable.map((c) => ({
+                        id: c.asset,
+                        name: c.name,
+                        // Core has no symbol; pass null.
+                        symbol: null,
+                        image: c.image,
+                        collection: c.collection,
+                        estimatedGrossReclaimSol: c.estimatedGrossReclaimSol,
+                      }))}
+                      selected={selectedAssets}
+                      onToggle={toggleSelected}
+                      onToggleGroup={toggleGroupSelected}
+                      itemKindLabel="asset"
+                    />
+                  ) : (
+                    <HiddenGridPlaceholder
+                      count={candidates.burnable.length}
+                      kind="asset"
+                    />
+                  )}
                   <div className="flex flex-wrap items-center gap-2 border-t border-red-600/25 px-3 py-1.5">
                     <button
                       type="button"

@@ -58,26 +58,15 @@ function BurnerBody() {
   // reads it via BurnAckCtx and still refuses to sign without it), it just
   // lives on the sticky action bar so the user only ticks once per session.
   const [ack, setAck] = useState(false);
-  // Live aggregate of every burn section's selection state (count +
-  // reclaim + canBuild). Drives the stat cards' "Selected" tile and
-  // the sticky bottom action bar's enabled state. Empty when no
-  // section has published — then the page reads as the pre-scan state.
-  const registry = useBurnSelectionRegistry();
-  const aggregate = aggregateForTab(registry, tab);
 
-  // Items Found = (empty token accounts) + (SPL burn candidates) + (NFTs).
-  // Core assets aren't in the cleanup-scan registry (they're discovered
-  // lazily by their burn section), so they're not counted here — the
-  // Core tab still works, the top stat just doesn't include them.
-  const itemsFound = summary
-    ? summary.empty + summary.fungible + summary.nft
-    : null;
-
-  // Aggregate selected count + reclaim across ALL sections (not just the
-  // active tab) for the "Selected" + "Est. Reclaim" stat cards — those
-  // tiles read as "what's currently staged for burn", which spans tabs.
-  const totalSelected = totalSelectedAcrossSections(registry);
-  const totalReclaimSelected = totalReclaimAcrossSections(registry);
+  // NOTE: this component intentionally does NOT subscribe to the burn
+  // selection registry. Every per-section publisher tick (selection toggle,
+  // discovery completion, canBuild flip) would otherwise re-render
+  // BurnerBody, which would in turn re-render the heavy CleanerRow tree
+  // — even though only the StatCards + sticky bar actually depend on
+  // registry data. The registry consumers are split into BurnerStatTiles
+  // and StickyActionBarWired children below; they re-render on publisher
+  // ticks while CleanerRow stays put.
 
   return (
     <BurnAckProvider value={ack}>
@@ -98,51 +87,7 @@ function BurnerBody() {
         </span>
       </div>
 
-      {/* 4-up stat cards. Items / Reclaim derive from the lifted scan
-          summary; Selected + Est. Reclaim now read live from the burn
-          selection registry; Network Fee remains "—" (depends on the
-          built tx — only known post-build, per section). */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatCard
-          label="Items Found"
-          value={itemsFound !== null ? itemsFound.toLocaleString("en-US") : "—"}
-          sub={summary ? "NFT · SPL · Empty" : "scan to populate"}
-        />
-        <StatCard
-          label="Selected"
-          value={totalSelected > 0 ? totalSelected.toLocaleString("en-US") : "—"}
-          sub={
-            totalSelected > 0
-              ? "across all sections"
-              : "select items below"
-          }
-          accent={totalSelected > 0 ? undefined : "muted"}
-        />
-        <StatCard
-          label="Est. Reclaim"
-          value={
-            totalSelected > 0
-              ? `${fmtSol(totalReclaimSelected)} SOL`
-              : summary
-                ? `${fmtSol(summary.reclaimSol)} SOL`
-                : "—"
-          }
-          sub={
-            totalSelected > 0
-              ? "from current selection"
-              : summary
-                ? "max possible"
-                : "scan to populate"
-          }
-          accent="green"
-        />
-        <StatCard
-          label="Est. Network Fee"
-          value="—"
-          sub="depends on selection"
-          accent="muted"
-        />
-      </div>
+      <BurnerStatTiles summary={summary} />
 
       {/* Category tabs — driven by `visibleSection` filter on
           CleanerRow → CleanerDetails. Tab state is page-local. */}
@@ -185,10 +130,9 @@ function BurnerBody() {
               onSummaryChange={setSummary}
             />
           </div>
-          <StickyActionBar
+          <StickyActionBarWired
             tab={tab}
             hasScan={summary !== null}
-            aggregate={aggregate}
             ack={ack}
             onToggleAck={() => setAck((v) => !v)}
           />
@@ -235,6 +179,121 @@ function StatCard({
         </div>
       )}
     </div>
+  );
+}
+
+// Subscribes to the burn selection registry — re-renders on every
+// per-section publish, but stays a leaf so the heavy CleanerRow tree
+// in BurnerBody is unaffected.
+function BurnerStatTiles({ summary }: { summary: CleanerRowSummary | null }) {
+  const registry = useBurnSelectionRegistry();
+
+  // Items Found = sum of every burnable section's RENDERED list size.
+  // Reads `totalBurnable` directly from each section's registry entry
+  // so the headline number is exactly what the four tabs collectively
+  // display — never the raw scan totals (which include empty-account
+  // close ops, filtered NFT candidates, and misc pre-filter noise).
+  // Empty accounts intentionally excluded: the headline counts only
+  // burnable assets per the user's spec.
+  // null = the section hasn't finished its discovery pass yet (Legacy /
+  // pNFT / Core do their own DAS-backed discovery after the cleanup
+  // scan resolves). Only sections that HAVE published a non-null
+  // totalBurnable contribute — `anyDiscovered` gates the headline so
+  // it shows "—" until at least one of the four burnable sections has
+  // reported, instead of an artificially low intermediate count.
+  const legacyBurnable = registry.legacyNft?.totalBurnable ?? null;
+  const pnftBurnable   = registry.pnft?.totalBurnable      ?? null;
+  const coreBurnable   = registry.core?.totalBurnable      ?? null;
+  const splBurnable    = registry.splBurn?.totalBurnable   ?? null;
+  const anyDiscovered =
+    legacyBurnable !== null ||
+    pnftBurnable   !== null ||
+    coreBurnable   !== null ||
+    splBurnable    !== null;
+  const itemsFound = anyDiscovered
+    ? (legacyBurnable ?? 0) +
+      (pnftBurnable   ?? 0) +
+      (coreBurnable   ?? 0) +
+      (splBurnable    ?? 0)
+    : null;
+  const fmtPart = (n: number | null) => (n === null ? "…" : n.toString());
+  const itemsBreakdown = `NFT: ${fmtPart(legacyBurnable)} • pNFT: ${fmtPart(pnftBurnable)} • Core: ${fmtPart(coreBurnable)} • SPL: ${fmtPart(splBurnable)}`;
+
+  // Aggregate selected count + reclaim across ALL sections (not just the
+  // active tab) for the "Selected" + "Est. Reclaim" stat cards — those
+  // tiles read as "what's currently staged for burn", which spans tabs.
+  const totalSelected = totalSelectedAcrossSections(registry);
+  const totalReclaimSelected = totalReclaimAcrossSections(registry);
+
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <StatCard
+        label="Items Found"
+        value={itemsFound !== null ? itemsFound.toLocaleString("en-US") : "—"}
+        sub={summary ? itemsBreakdown : "scan to populate"}
+      />
+      <StatCard
+        label="Selected"
+        value={totalSelected > 0 ? totalSelected.toLocaleString("en-US") : "—"}
+        sub={
+          totalSelected > 0
+            ? "across all sections"
+            : "select items below"
+        }
+        accent={totalSelected > 0 ? undefined : "muted"}
+      />
+      <StatCard
+        label="Est. Reclaim"
+        value={
+          totalSelected > 0
+            ? `${fmtSol(totalReclaimSelected)} SOL`
+            : summary
+              ? `${fmtSol(summary.reclaimSol)} SOL`
+              : "—"
+        }
+        sub={
+          totalSelected > 0
+            ? "from current selection"
+            : summary
+              ? "max possible"
+              : "scan to populate"
+        }
+        accent="green"
+      />
+      <StatCard
+        label="Est. Network Fee"
+        value="—"
+        sub="depends on selection"
+        accent="muted"
+      />
+    </div>
+  );
+}
+
+// Subscribes to the registry to compute the per-tab aggregate. Same
+// reasoning as BurnerStatTiles — keep registry consumption out of
+// BurnerBody so CleanerRow doesn't repaint on every publisher tick.
+function StickyActionBarWired({
+  tab,
+  hasScan,
+  ack,
+  onToggleAck,
+}: {
+  tab: CleanerVisibleSection;
+  hasScan: boolean;
+  ack: boolean;
+  onToggleAck: () => void;
+}) {
+  const registry = useBurnSelectionRegistry();
+  const aggregate = aggregateForTab(registry, tab);
+  return (
+    <StickyActionBar
+      tab={tab}
+      hasScan={hasScan}
+      aggregate={aggregate}
+      ack={ack}
+      onToggleAck={onToggleAck}
+    />
   );
 }
 
