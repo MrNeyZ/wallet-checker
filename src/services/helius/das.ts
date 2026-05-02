@@ -73,6 +73,40 @@ interface DasAsset {
   compression?: { compressed?: unknown };
 }
 
+// ── Supported-asset allowlist ─────────────────────────────────────────────
+// Strict allowlist applied at the DAS-parsing layer BEFORE any heavy
+// processing (metadata parse, hydration, image extraction). Prevents
+// compressed NFTs (cNFT — Bubblegum program, no on-chain account to
+// close) and unknown / future asset interfaces from ever reaching the
+// burn discovery logic.
+//
+// Burnable interfaces only:
+//   FungibleToken / FungibleAsset    → SPL burn flow
+//   NonFungibleToken                 → Legacy Metaplex BurnV1
+//   ProgrammableNFT                  → pNFT BurnV1 (with token-record + auth-rules)
+//   NonFungibleEdition               → Metaplex master/print edition burn
+//   MplCoreAsset                     → Metaplex Core BurnV1
+//
+// Anything else (V1_NFT compression flag, V2_NFT, FungibleEdition,
+// MplCoreCollection, future variants) is treated as out-of-scope.
+const SUPPORTED_ASSET_INTERFACES: ReadonlySet<string> = new Set([
+  "FungibleToken",
+  "FungibleAsset",
+  "NonFungibleToken",
+  "ProgrammableNFT",
+  "NonFungibleEdition",
+  "MplCoreAsset",
+]);
+
+// Exported so any future caller (group cleaner scan-all, future shared
+// DAS util) can reuse the same allowlist instead of redefining it.
+export function isSupportedAsset(asset: DasAsset | null | undefined): boolean {
+  if (!asset || typeof asset !== "object") return false;
+  if (asset.compression && asset.compression.compressed === true) return false;
+  if (typeof asset.interface !== "string") return false;
+  return SUPPORTED_ASSET_INTERFACES.has(asset.interface);
+}
+
 function parse(asset: DasAsset): AssetMetadata {
   const name = strOrNull(asset.content?.metadata?.name);
   const symbol = strOrNull(asset.content?.metadata?.symbol);
@@ -207,6 +241,10 @@ export async function fetchCoreAssetsByOwner(
   }
   const out: CoreAssetFromDas[] = [];
   let rawCount = 0;
+  // Per-call drop counters — accumulated across every wave so the
+  // function-exit log can show the full breakdown of what got filtered.
+  let totalDroppedCompressed = 0;
+  let totalDroppedUnsupported = 0;
   // DAS paginates at 1000 items/page. Loop until we read fewer than the
   // page size, capped at a generous safety limit so a runaway result set
   // can't loop forever.
@@ -259,6 +297,8 @@ export async function fetchCoreAssetsByOwner(
       }
     }
     let lastWaveItems = 0;
+    let droppedCompressed = 0;
+    let droppedUnsupported = 0;
     for (let i = 0; i < settled.length; i++) {
       const sr = settled[i];
       // Errors already filtered above — narrow the type.
@@ -268,13 +308,25 @@ export async function fetchCoreAssetsByOwner(
       rawCount += items.length;
       for (const a of items) {
         if (!a || typeof a !== "object") continue;
-        // Skip compressed NFTs — different program (Bubblegum); the Core
-        // burn path can't handle them.
-        if (a.compression && a.compression.compressed === true) continue;
-        // Relaxed Core filter: accept any interface containing "MplCore"
-        // (catches MplCoreAsset / MplCoreCollection / future variants).
-        const ifaceStr = typeof a.interface === "string" ? a.interface : "";
-        if (!ifaceStr.includes("MplCore")) continue;
+        // Step 1: shared allowlist — drops compressed cNFTs + any
+        // interface we don't have a burn path for. Counts each rejection
+        // reason so the wave log can show the breakdown.
+        if (a.compression && a.compression.compressed === true) {
+          droppedCompressed++;
+          continue;
+        }
+        if (!isSupportedAsset(a)) {
+          droppedUnsupported++;
+          continue;
+        }
+        // Step 2: this function specifically discovers Metaplex Core
+        // assets — narrow further. `isSupportedAsset` already excluded
+        // FungibleToken / NonFungibleToken / ProgrammableNFT, but we
+        // want a firm MplCore-only result here for the Core burn flow.
+        if (a.interface !== "MplCoreAsset") {
+          droppedUnsupported++;
+          continue;
+        }
         const id = strOrNull(a.id);
         if (!id) continue;
         const meta = parse(a);
@@ -305,6 +357,10 @@ export async function fetchCoreAssetsByOwner(
       }
       if (i === settled.length - 1) lastWaveItems = items.length;
     }
+    // Roll up this wave's drop counts into the function-level totals so
+    // the post-loop log shows the full breakdown.
+    totalDroppedCompressed += droppedCompressed;
+    totalDroppedUnsupported += droppedUnsupported;
     // Only stop based on the highest-numbered page in this wave.
     if (lastWaveItems < PAGE_SIZE) stop = true;
   }
@@ -312,6 +368,15 @@ export async function fetchCoreAssetsByOwner(
   if (durationMs > DAS_SLOW_LOG_MS) {
     console.log(
       `[DAS] fetchCoreAssetsByOwner ${owner} took ${durationMs}ms (pages=${pagesFetched}, raw=${rawCount})`,
+    );
+  }
+  // Asset-filter telemetry — fires whenever the supported-asset
+  // allowlist actually rejected something. Helps confirm the filter is
+  // working and shows the rejection breakdown when debugging "why is
+  // this asset missing from my burner UI?" tickets.
+  if (totalDroppedCompressed > 0 || totalDroppedUnsupported > 0) {
+    console.log(
+      `[burner] filtered Core assets for ${owner}: total=${rawCount} kept=${out.length} skippedCompressed=${totalDroppedCompressed} skippedUnsupported=${totalDroppedUnsupported}`,
     );
   }
   return {
@@ -378,6 +443,9 @@ export async function fetchAssetMetadataBatch(
     return Array.isArray(body.result) ? body.result : [];
   });
 
+  let metaTotal = 0;
+  let metaSkippedCompressed = 0;
+  let metaSkippedUnsupported = 0;
   for (let i = 0; i < settled.length; i++) {
     const r = settled[i];
     if (r.status === "rejected") {
@@ -393,6 +461,21 @@ export async function fetchAssetMetadataBatch(
       if (!a || typeof a !== "object") continue;
       const id = strOrNull(a.id);
       if (!id) continue;
+      metaTotal++;
+      // Defensive supported-asset filter — we don't enrich metadata for
+      // assets the burn flow can't act on. Compressed cNFTs and any
+      // future / unknown asset interface are dropped here so a stale
+      // entry can never poison the metadata cache + leak an unsupported
+      // asset's name/image into a burn-card UI. Counters fuel the
+      // diagnostic log below.
+      if (a.compression && a.compression.compressed === true) {
+        metaSkippedCompressed++;
+        continue;
+      }
+      if (!isSupportedAsset(a)) {
+        metaSkippedUnsupported++;
+        continue;
+      }
       const meta = parse(a);
       out.set(id, meta);
       cache.set(id, { meta, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -403,6 +486,13 @@ export async function fetchAssetMetadataBatch(
   if (durationMs > DAS_SLOW_LOG_MS) {
     console.log(
       `[DAS] fetchAssetMetadataBatch ${fresh.length} ids took ${durationMs}ms (chunks=${chunks.length})`,
+    );
+  }
+  // Asset-filter telemetry — only fires when the supported-asset
+  // allowlist actually rejected something during metadata enrichment.
+  if (metaSkippedCompressed > 0 || metaSkippedUnsupported > 0) {
+    console.log(
+      `[burner] filtered metadata batch: total=${metaTotal} kept=${out.size - (ids.length - fresh.length)} skippedCompressed=${metaSkippedCompressed} skippedUnsupported=${metaSkippedUnsupported}`,
     );
   }
 

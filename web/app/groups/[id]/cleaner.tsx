@@ -88,6 +88,29 @@ function useCompactMode(): boolean {
   return useContext(CompactModeCtx);
 }
 
+// Page-level destructive acknowledgement. Owned by /burner's sticky
+// action bar — once the user ticks the persistent "I understand burns
+// are irreversible" checkbox there, this context publishes `true` to
+// every BurnSignAndSendBlock inside the page so they can skip their own
+// in-section ack checkbox UI and auto-fire sign on build-success.
+//
+// `false` outside the standalone /burner page (the default), so the
+// original /groups/[id]?tab=cleaner view continues to require its own
+// per-section ack checkbox before the inline sign button enables.
+const BurnAckCtx = createContext(false);
+export function BurnAckProvider({
+  value,
+  children,
+}: {
+  value: boolean;
+  children: ReactNode;
+}) {
+  return <BurnAckCtx.Provider value={value}>{children}</BurnAckCtx.Provider>;
+}
+function useBurnAck(): boolean {
+  return useContext(BurnAckCtx);
+}
+
 // ── Burn selection registry ───────────────────────────────────────────────
 // Each burn section publishes its current selection state (count, reclaim
 // estimate, build readiness) into this registry. The page-level sticky
@@ -3228,6 +3251,118 @@ type BurnSendState =
   | { status: "confirmed"; signature: string }
   | { status: "finalized"; signature: string }
   | { status: "error"; signature?: string; error: string };
+// Compact-mode status strip rendered in place of the full review /
+// checklist / sign-block panel when the page-level sticky action bar
+// owns the Burn flow. No accordion, no per-item table, no skipped-count
+// list, no destructive-ack checkbox, no Sign-and-send button — just a
+// one-liner that mirrors the in-flight state of the auto-fired sign:
+//   • idle / preparing  →  "Preparing transaction…"
+//   • signing           →  "Sign the transaction in your wallet"
+//   • submitted         →  "Submitted · awaiting confirmation"
+//   • confirmed         →  "Confirmed · awaiting finality"
+//   • finalized         →  "Burned"
+//   • error             →  inline error + Retry-by-rescan hint
+// Pre-build gate failures (no tx / wallet mismatch / audit fail / sim
+// fail / blockhash missing) render as a compact red one-liner so the
+// user sees why the auto-fire didn't trigger.
+function CompactSendStatus({
+  kindLabel,
+  send,
+  canSend,
+  noTx,
+  targetMismatch,
+  walletMismatch,
+  auditPassed,
+  ackOk,
+  simulationFailed,
+  simulationError,
+  auditReason,
+  requiresSignatureFrom,
+  onWalletRescan,
+  rescanPending,
+}: {
+  kindLabel: string;
+  send: BurnSendState;
+  canSend: boolean;
+  noTx: boolean;
+  targetMismatch: boolean;
+  walletMismatch: boolean;
+  auditPassed: boolean;
+  ackOk: boolean;
+  simulationFailed: boolean;
+  simulationError?: string;
+  auditReason: string | null;
+  requiresSignatureFrom: string;
+  onWalletRescan: () => void;
+  rescanPending: boolean;
+}) {
+  // Pre-build / pre-sign gate failure — surface the reason inline so the
+  // user knows why nothing fired automatically.
+  let blocker: string | null = null;
+  if (send.status === "idle" && !canSend) {
+    if (noTx) blocker = `Preparing ${kindLabel} transaction…`;
+    else if (targetMismatch) blocker = "Built tx target mismatch — rescan and retry.";
+    else if (walletMismatch)
+      blocker = `Connect wallet ${shortAddr(requiresSignatureFrom, 4, 4)} to sign.`;
+    else if (!auditPassed)
+      blocker = `Audit failed: ${auditReason ?? "unknown reason"}.`;
+    else if (!ackOk)
+      blocker = "Tick the destructive acknowledgement above to enable.";
+    else if (simulationFailed)
+      blocker = `Preflight rejected: ${simulationError ?? "unknown"}.`;
+  }
+
+  const statusLine = (() => {
+    switch (send.status) {
+      case "signing": return "Sign the transaction in your wallet…";
+      case "submitted": return "Submitted · awaiting confirmation";
+      case "confirmed": return "Confirmed on chain · awaiting finality";
+      case "finalized": return `Burned ${kindLabel}`;
+      case "error": return null;
+      case "idle":
+      default:
+        return canSend ? "Preparing transaction…" : null;
+    }
+  })();
+
+  if (send.status === "error") {
+    return (
+      <div className="border-t border-[rgba(239,120,120,0.30)] bg-[rgba(239,120,120,0.06)] px-3 py-2 text-[11px] text-[color:var(--vl-red)]">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold">Send failed:</span>
+          <span className="break-all">{send.error}</span>
+          <button
+            type="button"
+            onClick={onWalletRescan}
+            disabled={rescanPending}
+            className="ml-auto rounded-md border border-[color:var(--vl-border)] bg-transparent px-2 py-0.5 text-[10px] font-semibold text-[color:var(--vl-fg-2)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-purple)] hover:text-[color:var(--vl-purple-2)] disabled:opacity-60"
+          >
+            {rescanPending ? "Refreshing…" : "Rescan & retry"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (blocker) {
+    return (
+      <div className="border-t border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.04)] px-3 py-1.5 text-[11px] text-[color:var(--vl-fg-2)]">
+        {blocker}
+      </div>
+    );
+  }
+
+  if (!statusLine) return null;
+  return (
+    <div className="border-t border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.05)] px-3 py-1.5 text-[11px] text-[color:var(--vl-fg-2)]">
+      <span className="inline-flex items-center gap-2">
+        <Spinner />
+        <span>{statusLine}</span>
+      </span>
+    </div>
+  );
+}
+
 function BurnSignAndSendBlock({
   kindLabel,
   transactionBase64,
@@ -3281,6 +3416,16 @@ function BurnSignAndSendBlock({
   nextBatchRemaining?: number;
 }) {
   const w = useWallet();
+  // Compact mode = standalone /burner. In that mode the sticky page-level
+  // action bar owns the destructive ack and dispatches the build click,
+  // so this block becomes a headless auto-sign engine: it skips its own
+  // visible UI (no review panel, no checklist, no sign button) and
+  // auto-fires sign on mount once the gates pass.
+  const isCompact = useCompactMode();
+  const pageAck = useBurnAck();
+  // When compact, the sticky bar's persistent ack checkbox supplies the
+  // destructive acknowledgement instead of the in-section checkbox.
+  const effectiveAck = isCompact ? pageAck : ackDestructive;
   const [send, setSend] = useState<BurnSendState>({ status: "idle" });
   // Belt-and-braces guard against the rare double-click race: a user can
   // physically click twice before React re-renders the disabled state.
@@ -3333,7 +3478,10 @@ function BurnSignAndSendBlock({
     walletMatches:
       w.connected !== null && w.connected === targetWallet && !walletMismatch,
     auditPassed,
-    ackDestructive,
+    // `effectiveAck` is the page-level ack in compact mode, the in-section
+    // ack checkbox in default mode. Either way, an unticked ack still
+    // blocks send — the safety gate is preserved, just sourced differently.
+    ackDestructive: effectiveAck,
     // pNFT / Core require an explicit `simulationOk === true`; SPL / Legacy
     // tolerate `null` (== "not simulated, assume ok").
     simulationOk: simulationRequired
@@ -3457,6 +3605,49 @@ function BurnSignAndSendBlock({
     } finally {
       inFlightRef.current = false;
     }
+  }
+
+  // Compact-mode auto-fire. The page-level sticky bar already gated on
+  // ack + selection before clicking the section's hidden trigger button
+  // — so the moment the build response props arrive (transactionBase64
+  // is non-null + audit + simulation + blockhash all green), we sign
+  // automatically. The same `canSend` gate the visible button used in
+  // default mode runs here too, so every safety check still applies.
+  // The `inFlightRef` short-circuit inside handleSignAndSend prevents
+  // any duplicate dispatch if React re-renders between mount and effect.
+  const autoFireRef = useRef(false);
+  useEffect(() => {
+    if (!isCompact) return;
+    if (autoFireRef.current) return;
+    if (!canSend) return;
+    autoFireRef.current = true;
+    void handleSignAndSend();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCompact, canSend]);
+
+  // Compact-mode UI: skip the entire review/checklist/details panel +
+  // sign button. Render only a slim status strip so the user sees
+  // "Preparing… → Sign in wallet → Confirming → Done" inline near the
+  // section, plus a compact error inline if the build/sign fails.
+  if (isCompact) {
+    return (
+      <CompactSendStatus
+        kindLabel={kindLabel}
+        send={send}
+        canSend={canSend}
+        noTx={noTx}
+        targetMismatch={targetMismatch}
+        walletMismatch={walletMismatch}
+        auditPassed={auditPassed}
+        ackOk={effectiveAck}
+        simulationFailed={simulationFailed}
+        simulationError={simulationError}
+        auditReason={auditReason}
+        requiresSignatureFrom={requiresSignatureFrom}
+        onWalletRescan={onWalletRescan}
+        rescanPending={rescanPending}
+      />
+    );
   }
 
   return (
@@ -3777,6 +3968,7 @@ function BurnTxPreview({
   onWalletRescan: () => void;
   rescanPending: boolean;
 }) {
+  const isCompact = useCompactMode();
   // Audit the actual bytes the backend produced. The check is memoised on
   // the base64 string so the panel doesn't redo the deserialize on every
   // re-render of the parent (which happens every checkbox toggle).
@@ -3892,6 +4084,25 @@ function BurnTxPreview({
       mono: true,
     },
   ];
+  const burnBlock = (
+    <BurnSignAndSendBlock
+      kindLabel="SPL burn"
+      transactionBase64={result.transactionBase64}
+      blockhash={result.blockhash}
+      lastValidBlockHeight={result.lastValidBlockHeight}
+      requiresSignatureFrom={result.requiresSignatureFrom}
+      targetWallet={walletAddress}
+      auditPassed={audit?.ok === true}
+      auditReason={audit?.reason ?? null}
+      simulationOk={null}
+      ackDestructive={ackDestructive}
+      onToggleAck={() => setAckDestructive((v) => !v)}
+      showAckCheckbox={false}
+      onWalletRescan={onWalletRescan}
+      rescanPending={rescanPending}
+    />
+  );
+  if (isCompact) return burnBlock;
   return (
     <div className="border-t border-red-500/30 bg-red-950/30">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-red-500/30 bg-red-600/15 px-3 py-1.5">
@@ -3922,22 +4133,7 @@ function BurnTxPreview({
         ackDestructive={ackDestructive}
         onToggleAck={() => setAckDestructive((v) => !v)}
       />
-      <BurnSignAndSendBlock
-        kindLabel="SPL burn"
-        transactionBase64={result.transactionBase64}
-        blockhash={result.blockhash}
-        lastValidBlockHeight={result.lastValidBlockHeight}
-        requiresSignatureFrom={result.requiresSignatureFrom}
-        targetWallet={walletAddress}
-        auditPassed={audit?.ok === true}
-        auditReason={audit?.reason ?? null}
-        simulationOk={null}
-        ackDestructive={ackDestructive}
-        onToggleAck={() => setAckDestructive((v) => !v)}
-        showAckCheckbox={false}
-        onWalletRescan={onWalletRescan}
-        rescanPending={rescanPending}
-      />
+      {burnBlock}
       <details className="group border-t border-red-500/15">
         <summary className="cursor-pointer list-none bg-red-500/[0.03] px-3 py-1.5 text-[11px] font-semibold text-red-300/80 transition-colors duration-100 hover:bg-red-500/10">
           <span className="inline-block w-3 transition-transform group-open:rotate-90">
@@ -4862,6 +5058,7 @@ function LegacyNftBurnPreview({
   // current build's nextBatchCandidates as the mint list.
   onBuildBatch: (mints: string[]) => void;
 }) {
+  const isCompact = useCompactMode();
   // Audit the actual produced bytes. Memoised on the base64 string so the
   // ack-checkbox toggle doesn't redo the deserialize on every render.
   const audit: LegacyNftAuditResult | null = useMemo(() => {
@@ -4972,6 +5169,40 @@ function LegacyNftBurnPreview({
     },
   ];
 
+  // The actual sign-and-send block. Extracted into a constant so compact
+  // mode can render it bare (no review/checklist/details chrome around
+  // it) while the default mode still wraps it with the full preview UI.
+  const burnBlock = (
+    <BurnSignAndSendBlock
+      kindLabel="legacy NFT burn"
+      transactionBase64={result.transactionBase64}
+      blockhash={result.blockhash}
+      lastValidBlockHeight={result.lastValidBlockHeight}
+      requiresSignatureFrom={result.requiresSignatureFrom}
+      targetWallet={walletAddress}
+      auditPassed={audit?.ok === true}
+      auditReason={audit?.reason ?? null}
+      simulationOk={result.simulationOk}
+      simulationError={result.simulationError}
+      ackDestructive={ackDestructive}
+      onToggleAck={() => setAckDestructive((v) => !v)}
+      showAckCheckbox={false}
+      onWalletRescan={onWalletRescan}
+      rescanPending={rescanPending}
+      nextBatchRemaining={result.nextBatchCandidates.length}
+      onBuildNext={() =>
+        onBuildBatch(result.nextBatchCandidates.map((c) => c.mint))
+      }
+    />
+  );
+
+  // Compact mode (standalone /burner): the page-level sticky bar owns
+  // the user-facing Burn flow. Skip the entire review / checklist /
+  // accordion / skipped-counts panel — render only the (now headless,
+  // auto-firing) sign block. All safety gates (audit, ack, wallet
+  // match, simulationOk, blockhash) still run inside BurnSignAndSendBlock.
+  if (isCompact) return burnBlock;
+
   return (
     <div className="border-t border-red-500/30 bg-red-950/30">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-red-500/30 bg-red-600/15 px-3 py-1.5">
@@ -5011,27 +5242,7 @@ function LegacyNftBurnPreview({
         ackDestructive={ackDestructive}
         onToggleAck={() => setAckDestructive((v) => !v)}
       />
-      <BurnSignAndSendBlock
-        kindLabel="legacy NFT burn"
-        transactionBase64={result.transactionBase64}
-        blockhash={result.blockhash}
-        lastValidBlockHeight={result.lastValidBlockHeight}
-        requiresSignatureFrom={result.requiresSignatureFrom}
-        targetWallet={walletAddress}
-        auditPassed={audit?.ok === true}
-        auditReason={audit?.reason ?? null}
-        simulationOk={result.simulationOk}
-        simulationError={result.simulationError}
-        ackDestructive={ackDestructive}
-        onToggleAck={() => setAckDestructive((v) => !v)}
-        showAckCheckbox={false}
-        onWalletRescan={onWalletRescan}
-        rescanPending={rescanPending}
-        nextBatchRemaining={result.nextBatchCandidates.length}
-        onBuildNext={() =>
-          onBuildBatch(result.nextBatchCandidates.map((c) => c.mint))
-        }
-      />
+      {burnBlock}
       <details className="group border-t border-red-500/15">
         <summary className="cursor-pointer list-none bg-red-500/[0.03] px-3 py-1.5 text-[11px] font-semibold text-red-300/80 transition-colors duration-100 hover:bg-red-500/10">
           <span className="inline-block w-3 transition-transform group-open:rotate-90">
@@ -5509,6 +5720,7 @@ function PnftBurnPreview({
   rescanPending: boolean;
   onBuildBatch: (mints: string[]) => void;
 }) {
+  const isCompact = useCompactMode();
   // pNFT BurnV1 uses the same Token Metadata program + opcode 41 as the
   // legacy NFT burn — the auth-rules / token-record accounts ride on the
   // BurnV1 instruction's account list. Reuse the existing legacy audit.
@@ -5619,6 +5831,32 @@ function PnftBurnPreview({
     },
   ];
 
+  const burnBlock = (
+    <BurnSignAndSendBlock
+      kindLabel="pNFT burn"
+      transactionBase64={result.transactionBase64}
+      blockhash={result.blockhash}
+      lastValidBlockHeight={result.lastValidBlockHeight}
+      requiresSignatureFrom={result.requiresSignatureFrom}
+      targetWallet={walletAddress}
+      auditPassed={audit?.ok === true}
+      auditReason={audit?.reason ?? null}
+      simulationOk={result.simulationOk}
+      simulationRequired
+      simulationError={result.simulationError}
+      ackDestructive={ackDestructive}
+      onToggleAck={() => setAckDestructive((v) => !v)}
+      showAckCheckbox={true}
+      onWalletRescan={onWalletRescan}
+      rescanPending={rescanPending}
+      nextBatchRemaining={result.nextBatchCandidates.length}
+      onBuildNext={() =>
+        onBuildBatch(result.nextBatchCandidates.map((c) => c.mint))
+      }
+    />
+  );
+  if (isCompact) return burnBlock;
+
   return (
     <div className="border-t border-red-600/30 bg-red-950/35">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-red-600/40 bg-red-700/20 px-3 py-1.5">
@@ -5652,28 +5890,7 @@ function PnftBurnPreview({
           ⚠ {result.warning}
         </div>
       )}
-      <BurnSignAndSendBlock
-        kindLabel="pNFT burn"
-        transactionBase64={result.transactionBase64}
-        blockhash={result.blockhash}
-        lastValidBlockHeight={result.lastValidBlockHeight}
-        requiresSignatureFrom={result.requiresSignatureFrom}
-        targetWallet={walletAddress}
-        auditPassed={audit?.ok === true}
-        auditReason={audit?.reason ?? null}
-        simulationOk={result.simulationOk}
-        simulationRequired
-        simulationError={result.simulationError}
-        ackDestructive={ackDestructive}
-        onToggleAck={() => setAckDestructive((v) => !v)}
-        showAckCheckbox={true}
-        onWalletRescan={onWalletRescan}
-        rescanPending={rescanPending}
-        nextBatchRemaining={result.nextBatchCandidates.length}
-        onBuildNext={() =>
-          onBuildBatch(result.nextBatchCandidates.map((c) => c.mint))
-        }
-      />
+      {burnBlock}
       <details className="group border-t border-red-600/15">
         <summary className="cursor-pointer list-none bg-red-600/[0.04] px-3 py-1.5 text-[11px] font-semibold text-red-300/80 transition-colors duration-100 hover:bg-red-600/10">
           <span className="inline-block w-3 transition-transform group-open:rotate-90">
@@ -6147,6 +6364,7 @@ function CoreBurnPreview({
   rescanPending: boolean;
   onBuildBatch: (assetIds: string[]) => void;
 }) {
+  const isCompact = useCompactMode();
   const audit: CoreBurnAuditResult | null = useMemo(() => {
     if (result.transactionBase64 === null) return null;
     return auditCoreBurnTx(result.transactionBase64);
@@ -6254,6 +6472,32 @@ function CoreBurnPreview({
     },
   ];
 
+  const burnBlock = (
+    <BurnSignAndSendBlock
+      kindLabel="Core asset burn"
+      transactionBase64={result.transactionBase64}
+      blockhash={result.blockhash}
+      lastValidBlockHeight={result.lastValidBlockHeight}
+      requiresSignatureFrom={result.requiresSignatureFrom}
+      targetWallet={walletAddress}
+      auditPassed={audit?.ok === true}
+      auditReason={audit?.reason ?? null}
+      simulationOk={result.simulationOk}
+      simulationRequired
+      simulationError={result.simulationError}
+      ackDestructive={ackDestructive}
+      onToggleAck={() => setAckDestructive((v) => !v)}
+      showAckCheckbox={true}
+      onWalletRescan={onWalletRescan}
+      rescanPending={rescanPending}
+      nextBatchRemaining={result.nextBatchCandidates.length}
+      onBuildNext={() =>
+        onBuildBatch(result.nextBatchCandidates.map((c) => c.asset))
+      }
+    />
+  );
+  if (isCompact) return burnBlock;
+
   return (
     <div className="border-t border-red-700/40 bg-red-950/40">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-red-700/50 bg-red-800/25 px-3 py-1.5">
@@ -6287,28 +6531,7 @@ function CoreBurnPreview({
           ⚠ {result.warning}
         </div>
       )}
-      <BurnSignAndSendBlock
-        kindLabel="Core asset burn"
-        transactionBase64={result.transactionBase64}
-        blockhash={result.blockhash}
-        lastValidBlockHeight={result.lastValidBlockHeight}
-        requiresSignatureFrom={result.requiresSignatureFrom}
-        targetWallet={walletAddress}
-        auditPassed={audit?.ok === true}
-        auditReason={audit?.reason ?? null}
-        simulationOk={result.simulationOk}
-        simulationRequired
-        simulationError={result.simulationError}
-        ackDestructive={ackDestructive}
-        onToggleAck={() => setAckDestructive((v) => !v)}
-        showAckCheckbox={true}
-        onWalletRescan={onWalletRescan}
-        rescanPending={rescanPending}
-        nextBatchRemaining={result.nextBatchCandidates.length}
-        onBuildNext={() =>
-          onBuildBatch(result.nextBatchCandidates.map((c) => c.asset))
-        }
-      />
+      {burnBlock}
       <details className="group border-t border-red-700/20">
         <summary className="cursor-pointer list-none bg-red-700/[0.04] px-3 py-1.5 text-[11px] font-semibold text-red-300/80 transition-colors duration-100 hover:bg-red-700/10">
           <span className="inline-block w-3 transition-transform group-open:rotate-90">
