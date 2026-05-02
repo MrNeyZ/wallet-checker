@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import type {
   BuildBurnAndCloseTxResult,
   BuildCloseEmptyTxResult,
@@ -74,6 +74,129 @@ export function useWallet(): WalletCtx {
   const ctx = useContext(WalletContext);
   if (!ctx) throw new Error("useWallet must be used within WalletProvider");
   return ctx;
+}
+
+// Compact-mode context — set to `true` only inside /burner (the standalone
+// page that owns the SolRip-style sticky bottom action bar). When true,
+// each burn section hides its own inline "Burn selected" button and
+// instead renders a hidden trigger element with `data-vl-burn-trigger`
+// that the page-level sticky bar dispatches `.click()` to. The /groups/
+// [id]?tab=cleaner view never enters this provider, so its existing
+// inline button layout is byte-for-byte preserved.
+const CompactModeCtx = createContext(false);
+function useCompactMode(): boolean {
+  return useContext(CompactModeCtx);
+}
+
+// ── Burn selection registry ───────────────────────────────────────────────
+// Each burn section publishes its current selection state (count, reclaim
+// estimate, build readiness) into this registry. The page-level sticky
+// action bar reads the registry, aggregates per-tab, and renders the
+// real "X selected · Y SOL" summary plus an enabled/disabled CTA.
+//
+// Trigger contract: every section also exposes a stable `data-vl-burn-trigger`
+// data attribute on its (hidden-when-compact) inline build button. The
+// sticky bar still dispatches `.click()` against that DOM target — which
+// keeps the build/sign/audit/safety pipeline running through the
+// section's own `handleBuild` → `BurnSignAndSendBlock` path with no
+// logic lift.
+export type BurnSectionKey =
+  | "splBurn"
+  | "legacyNft"
+  | "pnft"
+  | "core"
+  | "closeEmpty";
+
+export interface BurnSelectionEntry {
+  // Stable section identifier; doubles as the value of the section's
+  // `data-vl-burn-trigger` attribute used for click dispatch.
+  sectionKey: BurnSectionKey;
+  // 0 means "no items selected" (or for closeEmpty: "no empty accounts
+  // exist"). The sticky bar uses this to disable + render copy.
+  selectedCount: number;
+  // Best-effort reclaim estimate for the current selection in SOL.
+  // null when the section can't surface a per-selection number yet
+  // (e.g. mid-loading); the bar then shows "—" instead of "0".
+  selectedReclaimSol: number | null;
+  // True iff the section's build button is enabled right now (typically
+  // selectedCount > 0 AND no in-flight build). Sticky bar mirrors this
+  // into its disabled state.
+  canBuild: boolean;
+}
+
+interface BurnSelectionRegistryCtx {
+  registry: Partial<Record<BurnSectionKey, BurnSelectionEntry>>;
+  publish: (key: BurnSectionKey, entry: BurnSelectionEntry | null) => void;
+}
+const BurnSelectionCtx = createContext<BurnSelectionRegistryCtx | null>(null);
+
+export function BurnSelectionProvider({ children }: { children: ReactNode }) {
+  const [registry, setRegistry] = useState<
+    Partial<Record<BurnSectionKey, BurnSelectionEntry>>
+  >({});
+  const publish = useCallback(
+    (key: BurnSectionKey, entry: BurnSelectionEntry | null) => {
+      setRegistry((prev) => {
+        const cur = prev[key];
+        // Skip the no-op state update if nothing actually changed —
+        // prevents a publish-driven render loop when a section's
+        // useEffect re-fires with structurally-equal data.
+        if (entry === null && !cur) return prev;
+        if (
+          cur &&
+          entry &&
+          cur.selectedCount === entry.selectedCount &&
+          cur.selectedReclaimSol === entry.selectedReclaimSol &&
+          cur.canBuild === entry.canBuild
+        ) {
+          return prev;
+        }
+        const next = { ...prev };
+        if (entry === null) delete next[key];
+        else next[key] = entry;
+        return next;
+      });
+    },
+    [],
+  );
+  const value = useMemo(() => ({ registry, publish }), [registry, publish]);
+  return (
+    <BurnSelectionCtx.Provider value={value}>{children}</BurnSelectionCtx.Provider>
+  );
+}
+
+// Reader hook — returns the full registry. The page-level sticky bar
+// uses this to aggregate across whatever tab is active. Returns an empty
+// registry when no provider is mounted (e.g. the default /groups/[id]
+// view), which keeps callers safe.
+export function useBurnSelectionRegistry(): Partial<
+  Record<BurnSectionKey, BurnSelectionEntry>
+> {
+  const ctx = useContext(BurnSelectionCtx);
+  return ctx?.registry ?? {};
+}
+
+// Publisher hook — each burn section calls this with its current state.
+// No-op when no provider is mounted, so existing /groups/[id] callers
+// pay zero cost. The publish on unmount clears the registry entry so a
+// section that's been unmounted (e.g. via tab-not-yet-visited lazy
+// pattern) doesn't leave stale data behind.
+function useBurnSelectionPublisher(
+  key: BurnSectionKey,
+  selectedCount: number,
+  selectedReclaimSol: number | null,
+  canBuild: boolean,
+): void {
+  const ctx = useContext(BurnSelectionCtx);
+  // Stringify so a fresh-object render with structurally-equal values
+  // doesn't trigger a redundant publish.
+  const stableKey = `${selectedCount}:${selectedReclaimSol ?? "null"}:${canBuild ? 1 : 0}`;
+  useEffect(() => {
+    if (!ctx) return;
+    ctx.publish(key, { sectionKey: key, selectedCount, selectedReclaimSol, canBuild });
+    return () => ctx.publish(key, null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx, key, stableKey]);
 }
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
@@ -159,41 +282,45 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 export function WalletConnectBar() {
   const w = useWallet();
   return (
-    <div className="vl-card flex flex-wrap items-center gap-2 p-3 text-xs">
-      <span className="font-semibold text-white">Wallet</span>
+    // Slim wallet pill row — same VL surface but tighter padding so the
+    // "wallet selected" state reads as one compact line instead of a
+    // chunky banner. Helper copy lives in the page-level disconnected
+    // CTA, not here.
+    <div className="vl-card flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs">
+      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.4px] text-[color:var(--vl-fg-3)]">
+        Wallet
+      </span>
       {w.connected ? (
         <>
-          <Badge variant="vlGreen">Connected</Badge>
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--vl-green)] shadow-[0_0_6px_var(--vl-green)]" />
           <span className="font-mono text-[11px] text-[color:var(--vl-fg)]">
             {shortAddr(w.connected, 6, 6)}
           </span>
           <button
             type="button"
             onClick={() => void w.disconnect()}
-            className={btnSecondary}
+            className="ml-auto rounded-md border border-[color:var(--vl-border)] bg-transparent px-2.5 py-1 text-[11px] font-semibold text-[color:var(--vl-fg-2)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-border-h)] hover:text-[color:var(--vl-fg)]"
           >
             Disconnect
           </button>
         </>
       ) : (
         <>
-          <Badge variant="neutral">Not connected</Badge>
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--vl-fg-4)]" />
+          <span className="text-[color:var(--vl-fg-3)]">Not connected</span>
           <button
             type="button"
             onClick={() => void w.connect()}
             disabled={w.connecting}
-            className={btnPrimary}
+            className="vl-btn vl-btn-primary ml-auto !px-3 !py-1.5 !text-[11px]"
           >
             {w.connecting ? "Connecting…" : "Connect wallet"}
           </button>
         </>
       )}
       {w.error && (
-        <span className="ml-1 text-red-400">{w.error}</span>
+        <span className="ml-1 text-[color:var(--vl-red)]">{w.error}</span>
       )}
-      <span className="ml-auto text-neutral-500">
-        Phantom or Solflare. Used only to sign close-empty transactions.
-      </span>
     </div>
   );
 }
@@ -1342,11 +1469,19 @@ export function CleanerRow({
 
   return (
     <div className="vl-card overflow-hidden">
-      {/* Mobile: stack header / stats / actions vertically. md+: original
-          12-col grid layout. Avoids horizontal overflow on phones/tablets
-          while preserving the dense desktop table look. */}
-      <div className="flex flex-col gap-3 px-3 py-2 md:grid md:grid-cols-12 md:items-center">
-        <div className="min-w-0 md:col-span-3">
+      {/* Compact mode (standalone /burner): single-row toolbar — wallet
+          short address on the left, Scan/Rescan on the right. No
+          12-col grid, no per-wallet stats columns (page owns those).
+          Default mode (/groups/[id]?tab=cleaner) keeps the original
+          desktop 12-col layout with stats + button cluster. */}
+      <div
+        className={
+          compact
+            ? "flex flex-wrap items-center gap-2 px-3 py-1.5"
+            : "flex flex-col gap-3 px-3 py-2 md:grid md:grid-cols-12 md:items-center"
+        }
+      >
+        <div className={compact ? "min-w-0" : "min-w-0 md:col-span-3"}>
           {wallet.label ? (
             <div className="truncate text-sm font-semibold text-white">{wallet.label}</div>
           ) : null}
@@ -1384,16 +1519,33 @@ export function CleanerRow({
         </div>
         )}
 
-        <div className="flex flex-wrap gap-2 md:col-span-2 md:justify-end">
+        <div
+          className={
+            compact
+              ? "ml-auto flex flex-wrap items-center gap-2"
+              : "flex flex-wrap gap-2 md:col-span-2 md:justify-end"
+          }
+        >
           <button
             type="button"
             onClick={handleScan}
             disabled={pending || isFullCleaning}
-            className={btnPrimary}
+            className={
+              compact
+                ? "rounded-md border border-[color:var(--vl-border)] bg-transparent px-3 py-1 text-[11px] font-semibold text-[color:var(--vl-fg)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-purple)] hover:bg-[rgba(168,144,232,0.08)] hover:text-[color:var(--vl-purple-2)] disabled:opacity-50"
+                : btnPrimary
+            }
           >
             {state.status === "loading" || pending ? "Scanning…" : state.status === "scanned" ? "Rescan" : "Scan"}
           </button>
-          {state.status === "scanned" && (
+          {/* Compact mode (standalone /burner) suppresses these legacy
+              affordances — the page-level tabs already drive section
+              navigation, and "Build close transaction" / "Clean wallet
+              fully" are replaced by per-section "Burn selected" /
+              "Close & reclaim" CTAs inside CleanerDetails. The original
+              full-cleaner view (/groups/[id]?tab=cleaner) keeps every
+              button. */}
+          {state.status === "scanned" && !compact && (
             <button
               type="button"
               onClick={() => setShowDetails((v) => !v)}
@@ -1403,7 +1555,7 @@ export function CleanerRow({
               {showDetails ? "Hide" : "View details"}
             </button>
           )}
-          {state.status === "scanned" && state.scan.emptyTokenAccounts.length > 0 && (
+          {!compact && state.status === "scanned" && state.scan.emptyTokenAccounts.length > 0 && (
             <button
               type="button"
               onClick={handleBuildTx}
@@ -1419,7 +1571,7 @@ export function CleanerRow({
                 : "Build close transaction"}
             </button>
           )}
-          {state.status === "scanned" &&
+          {!compact && state.status === "scanned" &&
             state.scan.emptyTokenAccounts.length > 0 &&
             !isFullCleaning && (
               <button
@@ -1440,7 +1592,7 @@ export function CleanerRow({
                 Clean wallet fully
               </button>
             )}
-          {isFullCleaning && (
+          {!compact && isFullCleaning && (
             <button
               type="button"
               onClick={cancelFullClean}
@@ -1532,14 +1684,39 @@ export function CleanerRow({
       )}
 
       {state.status === "scanned" && (showDetails || compact) && (
-        <CleanerDetails
-          scan={state.scan}
-          burn={state.burn}
-          walletAddress={wallet.address}
-          onWalletRescan={handleScan}
-          rescanPending={pending}
-          visibleSection={visibleSection}
-        />
+        <CompactModeCtx.Provider value={compact}>
+          {/* `BurnSelectionProvider` is intentionally NOT mounted here —
+              it lives at the page level (e.g. /burner BurnerBody) so
+              both the publishers (inside CleanerDetails) and the reader
+              (the sticky action bar) share the same registry instance.
+              Publisher hooks are no-ops when no provider is present, so
+              the default /groups/[id] view (which mounts no provider)
+              pays zero cost. */}
+          <CleanerDetails
+            scan={state.scan}
+            burn={state.burn}
+            walletAddress={wallet.address}
+            onWalletRescan={handleScan}
+            rescanPending={pending}
+            visibleSection={visibleSection}
+          />
+          {/* Hidden close-empty trigger — only present in compact mode so
+              the page-level sticky action bar can `.click()` it via the
+              data attribute. The inline "Build close transaction" button
+              in the CleanerRow header is suppressed in compact mode, so
+              this hidden mirror is the only programmatic entry point.
+              `aria-hidden` keeps screen readers from announcing it; the
+              visible sticky bar carries the real label. Also publishes
+              empty-account count + reclaim into the selection registry. */}
+          {compact && state.scan.emptyTokenAccounts.length > 0 && (
+            <CloseEmptyHiddenTrigger
+              handleBuildTx={handleBuildTx}
+              disabled={buildPending || buildState.status === "loading"}
+              emptyCount={state.scan.emptyTokenAccounts.length}
+              reclaimSol={state.scan.totals.estimatedReclaimSol}
+            />
+          )}
+        </CompactModeCtx.Provider>
       )}
     </div>
   );
@@ -2236,15 +2413,46 @@ function CleanerDetails({
   rescanPending: boolean;
   visibleSection?: CleanerVisibleSection;
 }) {
-  // Tab-mode helpers — gate which destructive section renders so the
-  // standalone /burner page can show one category at a time under tabs
-  // without cleaner.tsx restructuring.
+  // Compact mode is set by CleanerRow via the surrounding provider when
+  // the page (e.g. /burner) wants the section's primary action button to
+  // become a hidden trigger that the page-level sticky action bar
+  // dispatches `.click()` to. The default-mode (/groups/[id]?tab=cleaner)
+  // never enters compact, so its inline buttons stay visible.
+  const isCompact = useCompactMode();
+  // Tab-mode helpers — gate which destructive section is VISIBLE so the
+  // standalone /burner page can show one category at a time under tabs.
   const showAll = visibleSection === "all";
   const showEmpty = showAll || visibleSection === "empty";
   const showSpl = showAll || visibleSection === "tokens";
   const showLegacy = showAll || visibleSection === "nfts";
   const showPnft = showAll || visibleSection === "nfts";
   const showCore = showAll || visibleSection === "core";
+
+  // Lazy-mount + keep-mounted: once a section becomes visible at least
+  // once, it stays in the React tree forever and only gets `hidden`
+  // when the user switches away. This is what preserves Legacy / pNFT /
+  // Core discovery results, the user's NFT selection, and any in-progress
+  // build state across tab switches — remounting would throw all of that
+  // away and re-fire the discovery network calls. (`liveAll` is always
+  // true so the original `/groups/[id]?tab=cleaner` view, which never
+  // changes `visibleSection`, mounts everything immediately just like
+  // before.)
+  const [activated, setActivated] = useState<Set<CleanerVisibleSection>>(
+    () => new Set<CleanerVisibleSection>(["all", visibleSection]),
+  );
+  useEffect(() => {
+    setActivated((prev) => {
+      if (prev.has(visibleSection)) return prev;
+      const next = new Set(prev);
+      next.add(visibleSection);
+      return next;
+    });
+  }, [visibleSection]);
+  const liveEmpty = showAll || activated.has("empty");
+  const liveSpl = showAll || activated.has("tokens");
+  const liveLegacy = showAll || activated.has("nfts");
+  const livePnft = showAll || activated.has("nfts");
+  const liveCore = showAll || activated.has("core");
   // Selected mints across the burn-candidates table. Mint is the discriminator
   // because the backend uses it as the allowlist key in the build request.
   const [selectedMints, setSelectedMints] = useState<Set<string>>(new Set());
@@ -2359,6 +2567,19 @@ function CleanerDetails({
     burnBuild.status !== "loading" &&
     !burnPending;
 
+  // Publish SPL selection state for the page-level sticky action bar.
+  // Reclaim sum walks the burn-candidate list once per selection change
+  // (memoized below) — cheap (≤ a few hundred mints in the worst case).
+  const splReclaimSol = useMemo(() => {
+    if (selectedMints.size === 0) return 0;
+    let sum = 0;
+    for (const c of burn.candidates) {
+      if (selectedMints.has(c.mint)) sum += c.estimatedReclaimSolAfterBurnAndClose;
+    }
+    return sum;
+  }, [selectedMints, burn.candidates]);
+  useBurnSelectionPublisher("splBurn", selectedMints.size, splReclaimSol, canBuild);
+
   return (
     <ReclaimSummaryCtx.Provider value={reclaimCtx}>
     <div className="border-t border-[color:var(--vl-border)] bg-[rgba(0,0,0,0.22)]">
@@ -2384,9 +2605,10 @@ function CleanerDetails({
       )}
 
       {/* SECTION 1 — empty accounts (closing). Plain neutral surface so this
-          section reads as the "safe / implemented" path. */}
-      {showEmpty && (
-      <div ref={closeEmptyRef}>
+          section reads as the "safe / implemented" path. Lazy-mounted +
+          hidden across tab switches to preserve in-flight build state. */}
+      {liveEmpty && (
+      <div ref={closeEmptyRef} hidden={!showEmpty}>
         <SubHeader
           label="Empty token accounts (closing)"
           right={`${scan.emptyTokenAccounts.length} · reclaim ${fmtSol(scan.totals.estimatedReclaimSol)} SOL`}
@@ -2404,9 +2626,10 @@ function CleanerDetails({
           wired through BurnSignAndSendBlock (NOT the close-empty Sign & send
           button) and gated on: wallet match + audit pass + destructive ack
           checkbox. */}
-      {showSpl && (
+      {liveSpl && (
       <div
         ref={splRef}
+        hidden={!showSpl}
         className="vl-burn-card m-3 overflow-hidden"
       >
         <CollapsibleBurnHeader
@@ -2448,7 +2671,9 @@ function CleanerDetails({
                         ? "Select at least one candidate above"
                         : undefined
                     }
-                    aria-label="Build burn transaction"
+                    aria-label="Burn selected SPL tokens"
+                    data-vl-burn-trigger="splBurn"
+                    hidden={isCompact}
                     className={
                       canBuild
                         ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
@@ -2456,10 +2681,10 @@ function CleanerDetails({
                     }
                   >
                     {burnBuild.status === "loading" || burnPending
-                      ? "Building…"
+                      ? "Preparing…"
                       : burnBuild.status === "ready"
-                      ? "Rebuild burn transaction"
-                      : "Build burn transaction"}
+                      ? "Re-prepare burn"
+                      : "Burn selected"}
                   </button>
                   <span className="text-[11px] text-red-200/70">
                     {selectedMints.size === 0
@@ -2489,9 +2714,11 @@ function CleanerDetails({
 
       {/* SECTION 3 — Legacy Metaplex NFT burn (Milestone 1).
           Distinct red-quarantined card from the SPL fungible burn above.
-          Backend BurnV1 reclaims token + metadata + master edition rent. */}
-      {showLegacy && (
-      <div ref={legacyRef}>
+          Backend BurnV1 reclaims token + metadata + master edition rent.
+          Lazy-mounted + hidden across tab switches to preserve discovery
+          + selection state. */}
+      {liveLegacy && (
+      <div ref={legacyRef} hidden={!showLegacy}>
         <LegacyNftBurnSection
           walletAddress={walletAddress}
           nftAccountCount={scan.nftTokenAccounts.length}
@@ -2508,8 +2735,8 @@ function CleanerDetails({
           a backend preflight simulation gate. Visually distinct from the
           legacy NFT card — a slightly deeper red border so the user can't
           confuse the two flows. */}
-      {showPnft && (
-      <div ref={pnftRef}>
+      {livePnft && (
+      <div ref={pnftRef} hidden={!showPnft}>
         <PnftBurnSection
           walletAddress={walletAddress}
           nftAccountCount={scan.nftTokenAccounts.length}
@@ -2527,8 +2754,8 @@ function CleanerDetails({
           doesn't see them, so this section always probes the chain on mount
           (no nftAccountCount gate). Reclaims the Core asset account rent via
           Core BurnV1 and gates on a backend preflight simulation. */}
-      {showCore && (
-      <div ref={coreRef}>
+      {liveCore && (
+      <div ref={coreRef} hidden={!showCore}>
         <CoreBurnSection
           walletAddress={walletAddress}
           collapsed={!openCore}
@@ -3776,6 +4003,7 @@ function LegacyNftBurnSection({
   onWalletRescan: () => void;
   rescanPending: boolean;
 }) {
+  const isCompact = useCompactMode();
   const [discover, setDiscover] = useState<LegacyDiscoverState>(
     nftAccountCount === 0 ? { status: "empty" } : { status: "loading" },
   );
@@ -3900,6 +4128,22 @@ function LegacyNftBurnSection({
   const canBuild =
     selectedMints.size > 0 && build.status !== "loading" && !buildPending;
 
+  // Publish Legacy NFT selection state for the page-level sticky bar.
+  // Reclaim sum walks the burnable list once per selection change. Each
+  // burnable carries a per-NFT `estimatedGrossReclaimSol` from the
+  // backend; missing values are skipped (rare but defensive).
+  const legacyReclaimSol = useMemo(() => {
+    if (selectedMints.size === 0 || !candidates) return 0;
+    let sum = 0;
+    for (const c of candidates.burnable) {
+      if (selectedMints.has(c.mint) && typeof c.estimatedGrossReclaimSol === "number") {
+        sum += c.estimatedGrossReclaimSol;
+      }
+    }
+    return sum;
+  }, [selectedMints, candidates]);
+  useBurnSelectionPublisher("legacyNft", selectedMints.size, legacyReclaimSol, canBuild);
+
   // Toggle every mint in a collection group at once. If `selectAll` is
   // true, ensure all are in the selection set; otherwise remove all.
   function toggleGroupSelected(ids: string[], selectAll: boolean): void {
@@ -4017,7 +4261,9 @@ function LegacyNftBurnSection({
                           ? "Select at least one NFT above"
                           : undefined
                       }
-                      aria-label="Build legacy NFT burn transaction"
+                      aria-label="Burn selected legacy NFTs"
+                      data-vl-burn-trigger="legacyNft"
+                      hidden={isCompact}
                       className={
                         canBuild
                           ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
@@ -4025,10 +4271,10 @@ function LegacyNftBurnSection({
                       }
                     >
                       {build.status === "loading" || buildPending
-                        ? "Building…"
+                        ? "Preparing…"
                         : build.status === "ready"
-                        ? "Rebuild legacy NFT burn"
-                        : "Build legacy NFT burn"}
+                        ? "Re-prepare burn"
+                        : "Burn selected"}
                     </button>
                     <span className="text-[11px] text-red-200/70">
                       {selectedMints.size === 0
@@ -4148,7 +4394,11 @@ function LegacyNftCandidatesTable({
 // and broken-image icons never flash. Lazy + async decode + no-referrer keep
 // rendering 200+ candidates from blasting the network on first paint or
 // leaking the wallet page URL to image hosts.
-function NftThumbnail({
+// Memoized so re-renders of a parent (selection toggles, scroll, hover
+// state on a sibling card, etc.) don't re-mount the underlying <img>
+// for every card in a 200+ NFT grid. With memoization the image element
+// only re-renders when (src, alt, size) actually change.
+const NftThumbnail = React.memo(function NftThumbnail({
   src,
   alt,
   size = "sm",
@@ -4187,7 +4437,7 @@ function NftThumbnail({
       onError={() => setErrored(true)}
     />
   );
-}
+});
 
 // Generic burn candidate item shape — the three flows (legacy/pNFT/Core)
 // share enough that one grid component renders all three. Each flow's
@@ -4886,6 +5136,7 @@ function PnftBurnSection({
   onWalletRescan: () => void;
   rescanPending: boolean;
 }) {
+  const isCompact = useCompactMode();
   const [discover, setDiscover] = useState<PnftDiscoverState>(
     nftAccountCount === 0 ? { status: "empty" } : { status: "loading" },
   );
@@ -4993,6 +5244,19 @@ function PnftBurnSection({
   // No upfront selection cap — backend slices into per-tx batches.
   const canBuild =
     selectedMints.size > 0 && build.status !== "loading" && !buildPending;
+
+  // Publish pNFT selection state for the page-level sticky bar.
+  const pnftReclaimSol = useMemo(() => {
+    if (selectedMints.size === 0 || !candidates) return 0;
+    let sum = 0;
+    for (const c of candidates.burnable) {
+      if (selectedMints.has(c.mint) && typeof c.estimatedGrossReclaimSol === "number") {
+        sum += c.estimatedGrossReclaimSol;
+      }
+    }
+    return sum;
+  }, [selectedMints, candidates]);
+  useBurnSelectionPublisher("pnft", selectedMints.size, pnftReclaimSol, canBuild);
 
   function toggleGroupSelected(ids: string[], selectAll: boolean): void {
     setSelectedMints((prev) => {
@@ -5106,7 +5370,9 @@ function PnftBurnSection({
                           ? "Select at least one pNFT above"
                           : undefined
                       }
-                      aria-label="Build pNFT burn transaction"
+                      aria-label="Burn selected pNFTs"
+                      data-vl-burn-trigger="pnft"
+                      hidden={isCompact}
                       className={
                         canBuild
                           ? "inline-flex items-center rounded-lg border-2 border-red-600/70 bg-red-700 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-700/40 transition-colors duration-100 hover:bg-red-600"
@@ -5114,10 +5380,10 @@ function PnftBurnSection({
                       }
                     >
                       {build.status === "loading" || buildPending
-                        ? "Building…"
+                        ? "Preparing…"
                         : build.status === "ready"
-                        ? "Rebuild pNFT burn"
-                        : "Build pNFT burn"}
+                        ? "Re-prepare burn"
+                        : "Burn selected"}
                     </button>
                     <span className="text-[11px] text-red-200/70">
                       {selectedMints.size === 0
@@ -5514,6 +5780,7 @@ function CoreBurnSection({
   onWalletRescan: () => void;
   rescanPending: boolean;
 }) {
+  const isCompact = useCompactMode();
   const [discover, setDiscover] = useState<CoreDiscoverState>({
     status: "loading",
   });
@@ -5617,6 +5884,19 @@ function CoreBurnSection({
 
   const canBuild =
     selectedAssets.size > 0 && build.status !== "loading" && !buildPending;
+
+  // Publish Core selection state for the page-level sticky bar.
+  const coreReclaimSol = useMemo(() => {
+    if (selectedAssets.size === 0 || !candidates) return 0;
+    let sum = 0;
+    for (const c of candidates.burnable) {
+      if (selectedAssets.has(c.asset) && typeof c.estimatedGrossReclaimSol === "number") {
+        sum += c.estimatedGrossReclaimSol;
+      }
+    }
+    return sum;
+  }, [selectedAssets, candidates]);
+  useBurnSelectionPublisher("core", selectedAssets.size, coreReclaimSol, canBuild);
 
   function toggleGroupSelected(ids: string[], selectAll: boolean): void {
     setSelectedAssets((prev) => {
@@ -5723,7 +6003,9 @@ function CoreBurnSection({
                           ? "Select at least one Core asset above"
                           : undefined
                       }
-                      aria-label="Build Core asset burn transaction"
+                      aria-label="Burn selected Core assets"
+                      data-vl-burn-trigger="core"
+                      hidden={isCompact}
                       className={
                         canBuild
                           ? "inline-flex items-center rounded-lg border-2 border-red-700/80 bg-red-800 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-800/40 transition-colors duration-100 hover:bg-red-700"
@@ -5731,10 +6013,10 @@ function CoreBurnSection({
                       }
                     >
                       {build.status === "loading" || buildPending
-                        ? "Building…"
+                        ? "Preparing…"
                         : build.status === "ready"
-                        ? "Rebuild Core burn"
-                        : "Build Core burn"}
+                        ? "Re-prepare burn"
+                        : "Burn selected"}
                     </button>
                     <span className="text-[11px] text-red-200/70">
                       {selectedAssets.size === 0
@@ -6121,15 +6403,48 @@ function EmptyHint({ children }: { children: React.ReactNode }) {
 // section body — discovery state is preserved by virtue of the parent
 // keeping the section component mounted; only the inner content is
 // conditionally rendered. Pure UI; no fetch is triggered.
+// Hidden close-empty trigger + selection publisher. Close-empty has no
+// per-item selection — every empty account in the wallet is a candidate
+// — so the "selected count" is the empty-account count and the reclaim
+// is the total empty-account rent. Publishes both into the registry so
+// the sticky bar can show real numbers when the Empty Accounts tab is
+// active. The hidden button is the actual `.click()` target.
+function CloseEmptyHiddenTrigger({
+  handleBuildTx,
+  disabled,
+  emptyCount,
+  reclaimSol,
+}: {
+  handleBuildTx: () => void;
+  disabled: boolean;
+  emptyCount: number;
+  reclaimSol: number;
+}) {
+  useBurnSelectionPublisher(
+    "closeEmpty",
+    emptyCount,
+    reclaimSol,
+    !disabled && emptyCount > 0,
+  );
+  return (
+    <button
+      type="button"
+      hidden
+      aria-hidden
+      tabIndex={-1}
+      onClick={handleBuildTx}
+      disabled={disabled}
+      data-vl-burn-trigger="closeEmpty"
+    />
+  );
+}
+
 function CollapsibleBurnHeader({
   collapsed,
   onToggle,
   title,
   count,
   estSol,
-  toneBorder,
-  toneBg,
-  toneText,
 }: {
   collapsed: boolean;
   onToggle: () => void;
@@ -6138,9 +6453,13 @@ function CollapsibleBurnHeader({
   // a placeholder ("scanning…") rather than zeroes.
   count: string | null;
   estSol: number | null;
-  toneBorder: string;
-  toneBg: string;
-  toneText: string;
+  // Legacy red-tone props are accepted-and-ignored for back-compat with
+  // the four existing call sites — visual tone now comes from the
+  // unified .vl-burn-section-* utilities so every burn section reads as
+  // a product section, not a red error accordion.
+  toneBorder?: string;
+  toneBg?: string;
+  toneText?: string;
 }) {
   const summary =
     count === null
@@ -6153,19 +6472,15 @@ function CollapsibleBurnHeader({
       type="button"
       onClick={onToggle}
       aria-expanded={!collapsed}
-      className={`flex w-full flex-wrap items-baseline justify-between gap-2 border-b ${toneBorder} ${toneBg} px-3 py-1.5 text-left transition-colors hover:brightness-125`}
+      className="vl-burn-section-head"
     >
-      <span
-        className={`flex flex-wrap items-baseline gap-2 text-[10px] font-bold uppercase tracking-wider ${toneText}`}
-      >
+      <span className="vl-burn-section-title">
         <span className="inline-block w-2 text-[9px] opacity-70">
           {collapsed ? "▶" : "▼"}
         </span>
         {title}
       </span>
-      <span className={`text-[11px] tabular-nums ${toneText} opacity-80`}>
-        {summary}
-      </span>
+      <span className="vl-burn-section-summary">{summary}</span>
     </button>
   );
 }

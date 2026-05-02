@@ -258,15 +258,73 @@ body {
   border-top: 1px solid rgba(168,144,232,0.18);
 }
 
-/* Destructive container — for the action-plan / burn-preview wrapper
-   that owns the actual sign-and-send button. Quiet red surface + ring
-   so the destructive context is obvious without flooding the section
-   in red blocks. */
+/* Destructive container — neutral lifted surface (matches `.vl-card`)
+   plus a thin red top-stripe + soft red border. Reads as a product
+   section with a destructive accent, not a red-error-accordion. The
+   actual burn button inside is the only place red still floods. */
 .vl-burn-card {
-  background: rgba(239,120,120,0.04);
-  border: 1px solid rgba(239,120,120,0.30);
+  position: relative;
+  background:
+    linear-gradient(rgba(255,255,255,0.03), rgba(255,255,255,0.03)),
+    var(--vl-surface);
+  border: 1px solid rgba(239,120,120,0.22);
   border-radius: 10px;
-  box-shadow: 0 0 0 1px rgba(239,120,120,0.10) inset;
+  box-shadow: var(--vl-shadow-card);
+}
+.vl-burn-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    rgba(239,120,120,0.0) 0%,
+    rgba(239,120,120,0.55) 30%,
+    rgba(239,120,120,0.55) 70%,
+    rgba(239,120,120,0.0) 100%
+  );
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  pointer-events: none;
+}
+
+/* Section header used inside vl-burn-card — replaces the previous
+   per-caller `toneBorder/toneBg/toneText` red flood (used by
+   CollapsibleBurnHeader). Neutral surface, fg-2 text; only the slim
+   "destructive" pill / red border on the parent signals danger. */
+.vl-burn-section-head {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--vl-border);
+  background: rgba(168,144,232,0.04);
+  padding: 8px 12px;
+  text-align: left;
+  transition: background var(--vl-motion);
+  cursor: pointer;
+}
+.vl-burn-section-head:hover { background: rgba(168,144,232,0.08); }
+.vl-burn-section-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--vl-fg);
+}
+.vl-burn-section-summary {
+  font-family: var(--vl-font-mono);
+  font-size: 11px;
+  color: var(--vl-fg-3);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Sticky/elevated action bar — for the burn-confirm bar that holds
