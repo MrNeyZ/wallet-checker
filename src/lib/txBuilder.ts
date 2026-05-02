@@ -16,6 +16,20 @@ import {
   fetchCoreAssetsByOwner,
 } from "../services/helius/das.js";
 import { CappedLruMap } from "./lruCache.js";
+import { burnV1 as mplCoreBurnV1, mplCore } from "@metaplex-foundation/mpl-core";
+import {
+  createNoopSigner,
+  publicKey as umiPublicKey,
+} from "@metaplex-foundation/umi";
+import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
+import { toWeb3JsInstruction } from "@metaplex-foundation/umi-web3js-adapters";
+
+// Module-scope Umi context. We never use it for RPC — only as a
+// program registry so the generated `burnV1` builder can resolve the
+// mpl-core program ID and emit the correct account metas. The RPC URL
+// passed to `createUmi` is ignored at instruction build time. The
+// `mplCore()` plugin registers the Core program so `burnV1` works.
+const coreUmi = createUmi("http://localhost").use(mplCore());
 
 export const MAX_CLOSE_IX_PER_TX = 10;
 
@@ -2827,11 +2841,6 @@ const MPL_CORE_PROGRAM_ID = new PublicKey(
   "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
 );
 
-// Static instruction data: `BurnV1` discriminator (12) + `Option<CompressionProof>`
-// encoded as None (1-byte tag = 0). Confirmed by serializing via the Umi
-// `getBurnV1InstructionDataSerializer` in a probe.
-const CORE_BURN_V1_DATA = Buffer.from([0x0c, 0x00]);
-
 // AssetV1 key discriminator from mpl-core's `Key` enum.
 const CORE_KEY_ASSET_V1 = 1;
 
@@ -3104,33 +3113,44 @@ async function findCoreAssetsViaProgramScan(
   return out;
 }
 
-// Hand-rolled BurnV1 ix. Six positional account slots; optional ones use
-// the Core program ID itself as the placeholder. The on-chain program
-// detects placeholders by `pubkey === programId` and treats the slot as
-// absent — same convention used by Metaplex Token Metadata.
+// BurnV1 ix built via the official mpl-core `burnV1` generated builder.
+// Hand-rolling the metas was rejected on chain with `IncorrectAccount`
+// (custom error 0x6) — kinobi-generated layout is the source of truth,
+// don't guess. We use a Umi noop signer for the owner so the helper
+// can mark the right slots as `isSigner` without needing a real
+// keypair (the user's wallet signs client-side as before).
+//
+// Per task spec: do NOT pass `collection` unless we know it (the helper
+// requires the actual collection PDA when the asset belongs to one,
+// otherwise it must be omitted so the placeholder slot is used).
 function buildCoreBurnIx(
   asset: PublicKey,
   owner: PublicKey,
   collection: PublicKey | null,
 ): TransactionInstruction {
-  return new TransactionInstruction({
-    programId: MPL_CORE_PROGRAM_ID,
-    keys: [
-      { pubkey: asset, isSigner: false, isWritable: true },
-      collection
-        ? { pubkey: collection, isSigner: false, isWritable: true }
-        : { pubkey: MPL_CORE_PROGRAM_ID, isSigner: false, isWritable: false },
-      // payer = owner (signs + pays for the tx; receives rent)
-      { pubkey: owner, isSigner: true, isWritable: true },
-      // authority placeholder — defers to payer-as-authority
-      { pubkey: MPL_CORE_PROGRAM_ID, isSigner: false, isWritable: false },
-      // systemProgram — required for rent reclaim
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      // logWrapper placeholder — not using SPL noop logging
-      { pubkey: MPL_CORE_PROGRAM_ID, isSigner: false, isWritable: false },
-    ],
-    data: CORE_BURN_V1_DATA,
+  console.log("[coreBurn] burn input:", {
+    asset: asset.toBase58(),
+    owner: owner.toBase58(),
+    authority: owner.toBase58(),
+    payer: owner.toBase58(),
+    collection: collection ? collection.toBase58() : null,
   });
+  const ownerSigner = createNoopSigner(umiPublicKey(owner.toBase58()));
+  const builder = mplCoreBurnV1(coreUmi, {
+    asset: umiPublicKey(asset.toBase58()),
+    payer: ownerSigner,
+    authority: ownerSigner,
+    ...(collection
+      ? { collection: umiPublicKey(collection.toBase58()) }
+      : {}),
+  });
+  const umiIxs = builder.getInstructions();
+  if (umiIxs.length !== 1) {
+    throw new Error(
+      `[coreBurn] expected 1 burnV1 instruction, got ${umiIxs.length}`,
+    );
+  }
+  return toWeb3JsInstruction(umiIxs[0]);
 }
 
 export interface BuildCoreBurnTxOptions {

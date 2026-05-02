@@ -11,7 +11,11 @@
     "signals:dedup-smoke": "tsx src/lib/__signal-sent-smoke.ts"
   },
   "dependencies": {
+    "@metaplex-foundation/mpl-core": "^1.10.0",
     "@metaplex-foundation/mpl-token-metadata": "^2.13.0",
+    "@metaplex-foundation/umi": "^1.5.1",
+    "@metaplex-foundation/umi-bundle-defaults": "^1.5.1",
+    "@metaplex-foundation/umi-web3js-adapters": "^1.5.1",
     "@solana/spl-token": "^0.4.9",
     "@solana/web3.js": "^1.95.4",
     "dotenv": "^16.4.5",
