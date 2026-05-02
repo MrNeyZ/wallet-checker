@@ -21,10 +21,20 @@ import { NextResponse, type NextRequest } from "next/server";
 
 export const runtime = "nodejs";
 
-const FETCH_TIMEOUT_MS = 5_000;
+// Bumped 5s → 10s — Arweave / IPFS public gateways routinely take 5–8s on
+// first fetch, especially for cold images. The caller is non-blocking
+// (lazy <img> with onError → placeholder), so a longer ceiling buys real
+// hit-rate without harming UX.
+const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BYTES = 5 * 1024 * 1024; // 5 MB cap — NFT thumbnails are small
 const CACHE_TTL_SECONDS = 60 * 60 * 24; // 24h browser cache
 const CACHE_DIR = path.join(process.cwd(), "data", "image-cache");
+// Throttle the slow-path log so a 200-thumb grid that all misses cache
+// doesn't spam the server logs. Uncached miss / failure paths still log
+// concisely; cache HITs only log every Nth request to confirm the cache
+// is actually warm.
+const HIT_LOG_EVERY = 50;
+let hitCounter = 0;
 
 const ALLOWED_CONTENT_TYPES = new Set([
   "image/png",
@@ -35,6 +45,39 @@ const ALLOWED_CONTENT_TYPES = new Set([
   "image/avif",
   "image/svg+xml",
 ]);
+
+// Once-per-process flag so we only attempt to create the cache dir on the
+// first request, not on every fetch. Subsequent calls short-circuit.
+let cacheDirReady: Promise<void> | null = null;
+function ensureCacheDir(): Promise<void> {
+  if (!cacheDirReady) {
+    cacheDirReady = fs.mkdir(CACHE_DIR, { recursive: true }).then(
+      () => undefined,
+      (err: unknown) => {
+        // Reset so a transient failure (e.g. permissions just fixed) can
+        // be retried on the next request, not poisoned for the lifetime
+        // of the worker.
+        cacheDirReady = null;
+        console.warn(
+          `[image-proxy] cache dir mkdir failed at ${CACHE_DIR}: ${(err as Error)?.message ?? err}`,
+        );
+      },
+    );
+  }
+  return cacheDirReady;
+}
+
+// Safe URL summary for logs — host + truncated path. Never logs full
+// query strings (some gateways embed signed tokens / API keys there).
+function logHost(url: string): string {
+  try {
+    const u = new URL(url);
+    const p = u.pathname.length > 24 ? `${u.pathname.slice(0, 21)}…` : u.pathname;
+    return `${u.host}${p}`;
+  } catch {
+    return "<unparseable>";
+  }
+}
 
 function cachePathFor(url: string): { file: string; meta: string } {
   const hash = createHash("sha256").update(url).digest("hex");
@@ -71,6 +114,8 @@ async function writeCached(
 ): Promise<void> {
   const { file, meta } = cachePathFor(url);
   try {
+    // Recursive ensure — covers the case where the cache dir was deleted
+    // out from under the worker between requests.
     await fs.mkdir(CACHE_DIR, { recursive: true });
     await Promise.all([
       fs.writeFile(file, bytes),
@@ -79,7 +124,7 @@ async function writeCached(
   } catch (err) {
     // Cache write failure shouldn't fail the response — log + continue.
     console.warn(
-      `[image-proxy] cache write failed: ${(err as Error)?.message ?? err}`,
+      `[image-proxy] cache write failed for ${logHost(url)}: ${(err as Error)?.message ?? err}`,
     );
   }
 }
@@ -94,9 +139,23 @@ export async function GET(req: NextRequest): Promise<Response> {
     return NextResponse.json({ error: "Invalid url scheme" }, { status: 400 });
   }
 
+  // Ensure the cache dir exists before either branch (read returns null on
+  // a missing dir, write would silently retry on every miss). Best-effort
+  // — failure here is logged but doesn't block the response.
+  await ensureCacheDir();
+
+  const host = logHost(url);
+  const startedAt = Date.now();
+
   // Cache hit short-circuit.
   const cached = await readCached(url);
   if (cached) {
+    hitCounter++;
+    if (hitCounter % HIT_LOG_EVERY === 0) {
+      console.log(
+        `[image-proxy] cache=hit count=${hitCounter} host=${host} ms=${Date.now() - startedAt}`,
+      );
+    }
     return new Response(new Uint8Array(cached.bytes), {
       status: 200,
       headers: {
@@ -123,14 +182,25 @@ export async function GET(req: NextRequest): Promise<Response> {
     });
   } catch (err) {
     clearTimeout(timer);
+    const ms = Date.now() - startedAt;
+    const aborted = controller.signal.aborted;
+    const reason = aborted
+      ? `timeout(${FETCH_TIMEOUT_MS}ms)`
+      : (err as Error)?.message ?? String(err);
+    console.warn(
+      `[image-proxy] cache=miss reason=${aborted ? "timeout" : "fetch-error"} host=${host} ms=${ms} detail=${reason}`,
+    );
     return NextResponse.json(
-      { error: `Upstream fetch failed: ${(err as Error)?.message ?? err}` },
+      { error: `Upstream fetch failed: ${reason}` },
       { status: 502 },
     );
   }
   clearTimeout(timer);
 
   if (!upstream.ok) {
+    console.warn(
+      `[image-proxy] cache=miss reason=http-${upstream.status} host=${host} ms=${Date.now() - startedAt}`,
+    );
     return NextResponse.json(
       { error: `Upstream ${upstream.status}` },
       { status: 502 },
@@ -142,6 +212,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   // falls back to the placeholder.
   const ct = (upstream.headers.get("content-type") ?? "").split(";")[0].trim();
   if (ct && !ALLOWED_CONTENT_TYPES.has(ct)) {
+    console.warn(
+      `[image-proxy] cache=miss reason=bad-ct ct=${ct} host=${host} ms=${Date.now() - startedAt}`,
+    );
     return NextResponse.json(
       { error: `Unsupported content-type ${ct}` },
       { status: 415 },
@@ -152,6 +225,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   // fine for thumbnails; full streaming is overkill at this size.
   const ab = await upstream.arrayBuffer();
   if (ab.byteLength > MAX_BYTES) {
+    console.warn(
+      `[image-proxy] cache=miss reason=too-large bytes=${ab.byteLength} host=${host} ms=${Date.now() - startedAt}`,
+    );
     return NextResponse.json(
       { error: "Upstream image exceeds size cap" },
       { status: 413 },
@@ -162,6 +238,10 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   // Best-effort write — never blocks the response.
   void writeCached(url, bytes, contentType);
+
+  console.log(
+    `[image-proxy] cache=miss reason=ok status=${upstream.status} ct=${contentType} bytes=${bytes.byteLength} host=${host} ms=${Date.now() - startedAt}`,
+  );
 
   return new Response(new Uint8Array(bytes), {
     status: 200,
