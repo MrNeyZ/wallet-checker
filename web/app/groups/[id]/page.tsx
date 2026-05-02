@@ -239,13 +239,13 @@ function Hero({
   groupName: string;
   walletsCount: number;
 }) {
-  // Hero is a top-tier card — should clearly lift above the page surface,
-  // hence Card with tone="vl". The purple-gradient wash is layered on top
-  // via the existing Tailwind gradient utility for the brand glow.
+  // Hero is the page-anchor card. `is-hero` gives the slightly brighter
+  // wash + the stronger lavender border so it reads first; the gradient
+  // utility adds a subtle brand glow without flooding the whole surface.
   return (
     <Card
       tone="vl"
-      className="mt-3 overflow-hidden bg-gradient-to-br from-[rgba(168,144,232,0.10)] via-transparent to-transparent"
+      className="mt-3 overflow-hidden is-hero bg-gradient-to-br from-[rgba(168,144,232,0.06)] via-transparent to-transparent"
     >
       <div className="relative grid grid-cols-1 gap-4 px-4 py-3 sm:grid-cols-2 sm:px-5 sm:py-4">
         <div>

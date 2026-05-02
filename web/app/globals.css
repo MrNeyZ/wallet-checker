@@ -163,14 +163,17 @@ body {
 /* Card — frosted lavender surface that LIFTS above the page. The
    gradient overlay on top of the opaque base produces the "two-layer"
    effect from the polish pass; backdrop-filter is a progressive
-   enhancement so safari/chromium feel a touch crisper. */
+   enhancement so safari/chromium feel a touch crisper.
+   Wash dialed down (0.05 → 0.03) to soften the "flat purple flood"
+   complaint. Border eased to `--vl-border` (0.30 alpha); the stronger
+   0.40 lavender now only fires on hover or `is-hero`. */
 .vl-card {
   background:
-    linear-gradient(rgba(255,255,255,0.05), rgba(255,255,255,0.05)),
+    linear-gradient(rgba(255,255,255,0.03), rgba(255,255,255,0.03)),
     var(--vl-surface);
   backdrop-filter: blur(14px) saturate(140%);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
-  border: 1px solid var(--vl-purple-border);
+  border: 1px solid var(--vl-border);
   border-radius: 10px;
   box-shadow: var(--vl-shadow-card);
   transition: border-color var(--vl-motion), background var(--vl-motion),
@@ -179,17 +182,109 @@ body {
 }
 .vl-card:hover {
   background:
-    linear-gradient(rgba(168,144,232,0.08), rgba(168,144,232,0.08)),
+    linear-gradient(rgba(168,144,232,0.05), rgba(168,144,232,0.05)),
     var(--vl-surface);
-  border-color: rgba(168,144,232,0.70);
+  border-color: var(--vl-border-h);
 }
 .vl-card.is-interactive { cursor: pointer; }
 .vl-card.is-interactive:hover {
   transform: scale(1.01);
-  box-shadow: 0 8px 24px -10px rgba(168,144,232,0.50),
-              0 0 0 1px rgba(168,144,232,0.18),
-              0 0 22px -8px rgba(168,144,232,0.35);
+  border-color: rgba(168,144,232,0.65);
+  box-shadow: 0 8px 24px -10px rgba(168,144,232,0.40),
+              0 0 0 1px rgba(168,144,232,0.14),
+              0 0 22px -8px rgba(168,144,232,0.28);
 }
+/* Hero / first-tier card — slightly brighter wash + stronger border so
+   it reads as the page anchor without becoming a giant purple block. */
+.vl-card.is-hero {
+  background:
+    linear-gradient(rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
+    var(--vl-surface);
+  border-color: var(--vl-purple-border);
+}
+/* Inset surface — darker than the parent .vl-card. Use for tables /
+   row lists / metric grids that should read as content NESTED inside
+   a panel rather than another lifted card. Mirrors the Burner.html
+   `.vl-coll-grid` "darker inner surface" trick. */
+.vl-card-inset {
+  background: rgba(0,0,0,0.22);
+  border-top: 1px solid rgba(168,144,232,0.14);
+}
+/* Standalone darker tile — for metric/stat tiles inside a hero card
+   or for row entries inside a panel. Reads as content nested in the
+   surface, not as another lifted card. */
+.vl-tile {
+  background: rgba(13, 11, 26, 0.55);
+  border: 1px solid var(--vl-border);
+  border-radius: 8px;
+  transition: border-color var(--vl-motion), background var(--vl-motion);
+}
+.vl-tile:hover {
+  background: rgba(13, 11, 26, 0.72);
+  border-color: var(--vl-border-h);
+}
+
+/* NFT-card selection state — PURPLE accent per polish-pass spec
+   (red is reserved for the actual burn button + destructive
+   containers). Layered with .vl-card.is-interactive so the same card
+   gets the brighter wash + glow + 1px purple ring when toggled on.
+   Use on the per-NFT tile inside a burn discovery section. */
+.vl-card.is-selected {
+  border-color: var(--vl-purple);
+  background:
+    linear-gradient(rgba(168,144,232,0.16), rgba(168,144,232,0.16)),
+    var(--vl-surface);
+  box-shadow:
+    0 0 0 1px rgba(168,144,232,0.55),
+    0 0 18px -4px rgba(168,144,232,0.45),
+    0 6px 20px -10px rgba(168,144,232,0.35);
+  opacity: 1 !important;
+}
+.vl-card.is-selected:hover {
+  border-color: var(--vl-purple);
+  background:
+    linear-gradient(rgba(168,144,232,0.20), rgba(168,144,232,0.20)),
+    var(--vl-surface);
+  box-shadow:
+    0 0 0 1px rgba(168,144,232,0.7),
+    0 0 24px -4px rgba(168,144,232,0.55),
+    0 8px 24px -10px rgba(168,144,232,0.45);
+}
+
+/* Card-grid container — darker than the panel that holds it so cards
+   visibly LIFT on top. Mirrors the Burner.html `.vl-coll-grid`. */
+.vl-card-grid {
+  background: rgba(0,0,0,0.30);
+  border-top: 1px solid rgba(168,144,232,0.18);
+}
+
+/* Destructive container — for the action-plan / burn-preview wrapper
+   that owns the actual sign-and-send button. Quiet red surface + ring
+   so the destructive context is obvious without flooding the section
+   in red blocks. */
+.vl-burn-card {
+  background: rgba(239,120,120,0.04);
+  border: 1px solid rgba(239,120,120,0.30);
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px rgba(239,120,120,0.10) inset;
+}
+
+/* Sticky/elevated action bar — for the burn-confirm bar that holds
+   the destructive sign-and-send. Same blur/lift treatment as the
+   Burner.html `.vl-action-bar`. */
+.vl-action-bar {
+  background: rgba(13,13,20,0.88);
+  border: 1px solid var(--vl-border-h);
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 12px 30px rgba(0,0,0,0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* Checkbox accent — purple by default for selection inputs that ride
+   on the new VL surface. Use as `accent-[color:var(--vl-purple)]` or
+   add `vl-checkbox` to the input element. */
+.vl-checkbox { accent-color: var(--vl-purple); }
 
 /* Badge — small label pill. */
 .vl-badge {
@@ -210,14 +305,18 @@ body {
 .vl-badge-red { background: rgba(239,120,120,0.10); border-color: rgba(239,120,120,0.30); color: var(--vl-red); }
 .vl-badge-amber { background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.28); color: var(--vl-amber); }
 
-/* Table — wrapper + row helpers. */
+/* Table — wrapper + row helpers.
+   Wrapper uses the standard surface; the BODY of the table (rows) is
+   washed darker than the header so the head reads as a "panel header"
+   above darker rows — fixes the "muddy" feel from a uniform surface.
+   Polish-pass spec: rows < header < panel brightness. */
 .vl-table {
   background:
-    linear-gradient(rgba(255,255,255,0.04), rgba(255,255,255,0.04)),
+    linear-gradient(rgba(255,255,255,0.03), rgba(255,255,255,0.03)),
     var(--vl-surface);
   backdrop-filter: blur(14px) saturate(140%);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
-  border: 1px solid var(--vl-purple-border);
+  border: 1px solid var(--vl-border);
   border-radius: 10px;
   box-shadow: var(--vl-shadow-card);
   overflow: hidden;
@@ -229,16 +328,21 @@ body {
   letter-spacing: 0.3px;
   text-transform: uppercase;
   color: var(--vl-fg-3);
-  background: rgba(0,0,0,0.20);
+  /* Slightly brighter than the row body so the header floats above the
+     rows — the inverse of pre-polish where head was darker than body. */
+  background: rgba(168,144,232,0.05);
   border-bottom: 1px solid var(--vl-border);
 }
 .vl-table-row {
+  /* Rows sit on a darker tint inside the panel — gives the "tables
+     darker than panel header" hierarchy the user asked for. */
+  background: rgba(0,0,0,0.18);
   border-bottom: 1px solid var(--vl-border);
-  transition: background var(--vl-motion), transform var(--vl-motion);
+  transition: background var(--vl-motion);
 }
 .vl-table-row:last-child { border-bottom: none; }
 .vl-table-row:hover {
-  background: rgba(168,144,232,0.06);
+  background: rgba(168,144,232,0.07);
 }
 
 /* SectionHeader — uppercase mono tracker. */

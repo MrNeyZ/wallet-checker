@@ -145,7 +145,9 @@ export function GroupsListClient({
         </Card>
       ) : (
         <Card tone="vl" className="overflow-hidden p-0">
-          <ul className="divide-y divide-[color:var(--vl-border)]">
+          {/* Inner row list reads as nested content (darker tint),
+              not as another stacked card on top of the panel. */}
+          <ul className="vl-card-inset divide-y divide-[color:var(--vl-border)]">
             {groups.map((g) => (
               <GroupRow
                 key={g.id}

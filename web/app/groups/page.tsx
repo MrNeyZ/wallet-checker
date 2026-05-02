@@ -3,7 +3,7 @@ import { createGroupAction } from "./actions";
 import { GroupsListClient } from "./groups-list-client";
 import { Card } from "@/ui-kit/components/Card";
 import { SectionHeader } from "@/ui-kit/components/SectionHeader";
-import { btnVlPrimary } from "@/lib/buttonStyles";
+import { btnVlGhost } from "@/lib/buttonStyles";
 
 export const dynamic = "force-dynamic";
 
@@ -52,7 +52,7 @@ export default async function GroupsPage() {
               placeholder="e.g. Whales"
               className="vl-text-input flex-1"
             />
-            <button type="submit" className={btnVlPrimary}>
+            <button type="submit" className={btnVlGhost}>
               Create
             </button>
           </form>

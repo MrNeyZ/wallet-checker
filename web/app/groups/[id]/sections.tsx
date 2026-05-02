@@ -92,7 +92,7 @@ export function PnlOverviewView({
     <section className="space-y-2">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         {metrics.map((m) => (
-          <div key={m.label} className="vl-card p-3">
+          <div key={m.label} className="vl-tile p-3">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--vl-fg-3)]">
               {m.label}
             </div>
@@ -1263,7 +1263,7 @@ export function PnlOverviewLoadingSkeleton() {
         {Array.from({ length: 5 }).map((_, i) => (
           <div
             key={i}
-            className="vl-card p-3 animate-pulse"
+            className="vl-tile p-3 animate-pulse"
             style={{ animationDelay: `${i * 60}ms` }}
           >
             <div className="h-2 w-16 rounded bg-[color:var(--vl-surface-2)]" />

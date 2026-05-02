@@ -159,12 +159,12 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 export function WalletConnectBar() {
   const w = useWallet();
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-md border border-neutral-700 bg-neutral-900 p-3 text-xs">
+    <div className="vl-card flex flex-wrap items-center gap-2 p-3 text-xs">
       <span className="font-semibold text-white">Wallet</span>
       {w.connected ? (
         <>
-          <Badge variant="buy">Connected</Badge>
-          <span className="font-mono text-[11px] text-neutral-200">
+          <Badge variant="vlGreen">Connected</Badge>
+          <span className="font-mono text-[11px] text-[color:var(--vl-fg)]">
             {shortAddr(w.connected, 6, 6)}
           </span>
           <button
@@ -670,7 +670,7 @@ function GroupAllActions({
 
   // ---- render ----
   return (
-    <div className="border-t border-neutral-800 bg-neutral-950">
+    <div className="border-t border-[color:var(--vl-border)] bg-[rgba(0,0,0,0.22)]">
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
         <button
           type="button"
@@ -751,7 +751,7 @@ function GroupAllActions({
       )}
 
       {isCleaning && cleanAll.status === "running" && (
-        <div className="border-t border-neutral-800 bg-neutral-900 px-3 py-1.5 text-[11px] text-neutral-300">
+        <div className="border-t border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.04)] px-3 py-1.5 text-[11px] text-[color:var(--vl-fg-2)]">
           {cleanAll.step === "building" && "Building close tx for"}
           {cleanAll.step === "signing" && "Awaiting wallet signature for"}
           {cleanAll.step === "rescanning" && "Rescanning"}{" "}
@@ -767,7 +767,7 @@ function GroupAllActions({
       )}
 
       {scanAll.status === "done" && (
-        <div className="border-t border-neutral-800 bg-neutral-900 px-3 py-1.5 text-[11px]">
+        <div className="border-t border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.04)] px-3 py-1.5 text-[11px]">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-neutral-300">
             {scanAll.cancelled ? (
               // When cancelled the counts are 0/unknown (the backend may
@@ -854,7 +854,7 @@ function CleanAllResults({
     {} as Record<CleanResult["outcome"], number>,
   );
   return (
-    <div className="border-t border-neutral-800 bg-neutral-900 px-3 py-1.5 text-[11px]">
+    <div className="border-t border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.04)] px-3 py-1.5 text-[11px]">
       <div className="text-neutral-300">
         Clean all done:
         <span className="ml-1 text-emerald-300">
@@ -965,14 +965,14 @@ function GroupCleanerSummary({
     { label: "NFTs", value: dimWhenZero ? "—" : totals.nft },
   ];
   return (
-    <div className="overflow-hidden rounded-md border border-neutral-700 bg-neutral-900">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-700 px-3 py-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-300">
+    <div className="vl-card overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[color:var(--vl-border)] px-3 py-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--vl-fg-3)]">
           Group cleaner overview
         </span>
         <span className="inline-flex items-center gap-2">
           {scanned < totalWallets && (
-            <span className="text-[11px] text-neutral-500">
+            <span className="text-[11px] text-[color:var(--vl-fg-3)]">
               {totalWallets - scanned} wallet
               {totalWallets - scanned === 1 ? "" : "s"} not scanned yet
             </span>
@@ -987,16 +987,19 @@ function GroupCleanerSummary({
                 : "Download scanned wallets as CSV"
             }
             aria-label="Export cleaner overview as CSV"
-            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] font-semibold text-neutral-300 transition-colors duration-100 hover:border-emerald-500/60 hover:bg-emerald-500/10 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-neutral-700 disabled:hover:bg-neutral-900 disabled:hover:text-neutral-300"
+            className="rounded border border-[color:var(--vl-border)] bg-transparent px-2 py-0.5 text-[10px] font-semibold text-[color:var(--vl-fg-2)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[rgba(79,182,125,0.50)] hover:bg-[rgba(79,182,125,0.08)] hover:text-[color:var(--vl-green)] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-[color:var(--vl-border)] disabled:hover:bg-transparent disabled:hover:text-[color:var(--vl-fg-2)]"
           >
             Export CSV ↓
           </button>
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-px bg-neutral-800 sm:grid-cols-5">
+      {/* 5-up tile strip — darker tiles inside the panel so the panel
+          header reads above them. Pixel borders provided by the gap-px
+          on the parent grid + the inset background. */}
+      <div className="vl-card-inset grid grid-cols-2 gap-px sm:grid-cols-5">
         {tiles.map((t) => (
-          <div key={t.label} className="bg-neutral-900 px-3 py-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
+          <div key={t.label} className="bg-transparent px-3 py-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[color:var(--vl-fg-3)]">
               {t.label}
             </div>
             <div className="mt-0.5 text-sm font-bold tabular-nums text-white">
@@ -1019,7 +1022,7 @@ export function CleanerSection({
 }) {
   if (wallets.length === 0) {
     return (
-      <div className="rounded-md border border-neutral-700 bg-neutral-900 p-6 text-center text-sm text-neutral-500">
+      <div className="vl-card p-6 text-center text-sm text-[color:var(--vl-fg-3)]">
         Add a wallet to this group first (Settings tab) to run cleanup scans.
       </div>
     );
@@ -1028,9 +1031,9 @@ export function CleanerSection({
     <WalletProvider>
       <ScanRegistryProvider>
         <div className="space-y-3">
-          <div className="rounded-md border border-neutral-700 bg-neutral-900 p-3 text-xs text-neutral-300">
+          <div className="vl-card p-3 text-xs text-[color:var(--vl-fg-2)]">
             <span className="font-semibold text-white">Wallet Cleaner</span>
-            <span className="ml-2 text-neutral-500">
+            <span className="ml-2 text-[color:var(--vl-fg-3)]">
               Scans report empty SPL token accounts (rent reclaimable) and burn
               candidates (SPL, Legacy NFT, pNFT, Core). Connect a wallet to
               build a preview, then sign to execute. Every burn requires a
@@ -1086,7 +1089,38 @@ const CONFIRM_POLL_MAX_ATTEMPTS = 8; // ≤ 8 s wall-clock worst case
 // for progress display ("Closing batch K / N").
 const MAX_CLOSE_IX_PER_TX = 10;
 
-export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
+// `visibleSection` filters which destructive sub-section renders inside
+// CleanerDetails. Used by the standalone `/burner` page to render one
+// burn category at a time (NFTs / Core / Tokens / Empty) under tabs.
+// Default `'all'` keeps `/groups/[id]?tab=cleaner` rendering every
+// section, so existing callers stay byte-for-byte unchanged.
+//
+// `compact` collapses the per-wallet header strip (wallet label / stats /
+// scan-buttons) to a slim wallet-+-rescan row so the page-level chrome
+// (stat cards, tabs, toolbar) can own those affordances.
+//
+// `onSummaryChange` lifts the per-wallet scan summary up to the parent
+// (used by /burner to populate its top-level stat cards). Optional;
+// existing callers don't need to wire it.
+export type CleanerVisibleSection = "all" | "tokens" | "nfts" | "core" | "empty";
+export interface CleanerRowSummary {
+  empty: number;
+  reclaimSol: number;
+  fungible: number;
+  nft: number;
+}
+
+export function CleanerRow({
+  wallet,
+  visibleSection = "all",
+  compact = false,
+  onSummaryChange,
+}: {
+  wallet: WalletEntry;
+  visibleSection?: CleanerVisibleSection;
+  compact?: boolean;
+  onSummaryChange?: (s: CleanerRowSummary | null) => void;
+}) {
   const [state, setState] = useState<ScanState>({ status: "idle" });
   const [showDetails, setShowDetails] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -1298,8 +1332,16 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
     [state],
   );
 
+  // Lift the per-wallet summary so a parent (e.g. the standalone /burner
+  // page) can populate its top-level "Items Found / Reclaim" stat cards
+  // without duplicating the scan request. No-op when `onSummaryChange`
+  // isn't passed.
+  useEffect(() => {
+    if (onSummaryChange) onSummaryChange(summary);
+  }, [summary, onSummaryChange]);
+
   return (
-    <div className="overflow-hidden rounded-md border border-neutral-700 bg-neutral-900">
+    <div className="vl-card overflow-hidden">
       {/* Mobile: stack header / stats / actions vertically. md+: original
           12-col grid layout. Avoids horizontal overflow on phones/tablets
           while preserving the dense desktop table look. */}
@@ -1311,16 +1353,19 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
           <WalletLink address={wallet.address} chars={6} className="text-xs" />
         </div>
 
+        {/* Per-wallet stats columns — suppressed in compact mode (page
+            owns the top-level stat cards). */}
+        {!compact && (
         <div className="grid grid-cols-4 gap-2 md:contents">
           <div className="md:col-span-2 md:text-right">
-            <div className="text-[10px] uppercase tracking-wider text-neutral-400">Empty</div>
+            <div className="text-[10px] uppercase tracking-wider text-[color:var(--vl-fg-3)]">Empty</div>
             <div className="text-sm font-bold tabular-nums text-white">
               {summary ? summary.empty : "—"}
             </div>
           </div>
           <div className="md:col-span-2 md:text-right">
-            <div className="text-[10px] uppercase tracking-wider text-neutral-400">Reclaim SOL</div>
-            <div className="text-sm font-bold tabular-nums text-emerald-300">
+            <div className="text-[10px] uppercase tracking-wider text-[color:var(--vl-fg-3)]">Reclaim SOL</div>
+            <div className="text-sm font-bold tabular-nums text-[color:var(--vl-green)]">
               {summary ? fmtSol(summary.reclaimSol) : "—"}
             </div>
           </div>
@@ -1337,6 +1382,7 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
             </div>
           </div>
         </div>
+        )}
 
         <div className="flex flex-wrap gap-2 md:col-span-2 md:justify-end">
           <button
@@ -1407,7 +1453,7 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
       </div>
 
       {state.status === "error" && (
-        <div className="border-t border-neutral-800 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+        <div className="border-t border-[color:var(--vl-border)] bg-red-500/5 px-3 py-2 text-xs text-red-400">
           {prettifyApiError(state.error)}
         </div>
       )}
@@ -1416,7 +1462,7 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
         <FullCleanProgress state={fullClean} />
       )}
       {fullClean.status === "done" && (
-        <div className="border-t border-neutral-800 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">
+        <div className="border-t border-[color:var(--vl-border)] bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">
           ✓ Wallet fully cleaned in {fullClean.batches} batch
           {fullClean.batches === 1 ? "" : "es"}.
           {fullClean.signatures.length > 0 && (
@@ -1437,13 +1483,13 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
         </div>
       )}
       {fullClean.status === "cancelled" && (
-        <div className="border-t border-neutral-800 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+        <div className="border-t border-[color:var(--vl-border)] bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
           Cancelled after {fullClean.batches} batch
           {fullClean.batches === 1 ? "" : "es"}. Rescan to refresh totals.
         </div>
       )}
       {fullClean.status === "error" && (
-        <div className="border-t border-neutral-800 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+        <div className="border-t border-[color:var(--vl-border)] bg-red-500/5 px-3 py-2 text-xs text-red-400">
           Full clean stopped at batch {fullClean.batches}:{" "}
           {prettifyApiError(fullClean.error)}
         </div>
@@ -1451,7 +1497,7 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
 
       {state.status === "scanned" && state.scan.emptyTokenAccounts.length === 0 && (
         <div
-          className={`border-t border-neutral-800 px-3 py-2 text-xs ${
+          className={`border-t border-[color:var(--vl-border)] px-3 py-2 text-xs ${
             lastSentSig
               ? "bg-emerald-500/5 text-emerald-300"
               : "bg-neutral-950 text-neutral-500"
@@ -1464,13 +1510,13 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
       )}
 
       {buildState.status === "error" && (
-        <div className="border-t border-neutral-800 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+        <div className="border-t border-[color:var(--vl-border)] bg-red-500/5 px-3 py-2 text-xs text-red-400">
           Build failed: {prettifyApiError(buildState.error)}
         </div>
       )}
 
       {state.status === "idle" && !pending && (
-        <div className="border-t border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+        <div className="border-t border-[color:var(--vl-border)] bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
           Scan wallet to discover reclaimable SOL.
         </div>
       )}
@@ -1485,13 +1531,14 @@ export function CleanerRow({ wallet }: { wallet: WalletEntry }) {
         />
       )}
 
-      {state.status === "scanned" && showDetails && (
+      {state.status === "scanned" && (showDetails || compact) && (
         <CleanerDetails
           scan={state.scan}
           burn={state.burn}
           walletAddress={wallet.address}
           onWalletRescan={handleScan}
           rescanPending={pending}
+          visibleSection={visibleSection}
         />
       )}
     </div>
@@ -1601,18 +1648,18 @@ function CloseTxPreview({
     },
   ];
   return (
-    <div className="border-t border-neutral-800 bg-neutral-950">
-      <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-1.5">
+    <div className="border-t border-[color:var(--vl-border)] bg-[rgba(0,0,0,0.22)]">
+      <div className="flex items-center justify-between border-b border-[color:var(--vl-border)] px-3 py-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-300">
           Close transaction preview
         </span>
         <Badge variant="warn">unsigned</Badge>
       </div>
-      <div className="border-b border-neutral-800 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+      <div className="border-b border-[color:var(--vl-border)] bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
         ⚠ {result.warning}
       </div>
       {result.includedAccounts.length > 0 && (
-        <div className="border-b border-neutral-800 bg-violet-500/5 px-3 py-1.5 text-[11px] text-violet-200">
+        <div className="border-b border-[color:var(--vl-border)] bg-violet-500/5 px-3 py-1.5 text-[11px] text-violet-200">
           ℹ Closing {result.includedAccounts.length} account
           {result.includedAccounts.length === 1 ? "" : "s"} in this transaction.
           {result.skippedAccounts > 0 && (
@@ -1624,7 +1671,7 @@ function CloseTxPreview({
           )}
         </div>
       )}
-      <dl className="divide-y divide-neutral-800">
+      <dl className="divide-y divide-[color:var(--vl-border)]">
         {rows.map((r) => (
           <div
             key={r.label}
@@ -1728,9 +1775,9 @@ function SignAndSendBlock({
   }
 
   return (
-    <div className="border-t border-neutral-800 bg-neutral-950">
+    <div className="border-t border-[color:var(--vl-border)] bg-[rgba(0,0,0,0.22)]">
       {cleanedVsConnectedMismatch && (
-        <div className="border-b border-neutral-800 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+        <div className="border-b border-[color:var(--vl-border)] bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
           ⚠ Connected wallet must match the wallet being cleaned.{" "}
           <span className="text-amber-200/80">
             Connected: <span className="font-mono">{shortAddr(w.connected!, 4, 4)}</span>{" "}
@@ -1738,7 +1785,7 @@ function SignAndSendBlock({
           </span>
         </div>
       )}
-      <div className="border-b border-neutral-800 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
+      <div className="border-b border-[color:var(--vl-border)] bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-300">
         ⚠ This only closes empty token accounts and returns rent. It does not
         burn tokens or NFTs.
       </div>
@@ -1864,7 +1911,7 @@ function SignAndSendBlock({
       </div>
 
       {send.status === "sent" && (
-        <div className="border-t border-neutral-800 bg-emerald-500/5 px-3 py-2 text-xs">
+        <div className="border-t border-[color:var(--vl-border)] bg-emerald-500/5 px-3 py-2 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="buy">Sent</Badge>
             <span className="text-neutral-300">Tx signature:</span>
@@ -1891,7 +1938,7 @@ function SignAndSendBlock({
       )}
 
       {send.status === "error" && (
-        <div className="border-t border-neutral-800 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+        <div className="border-t border-[color:var(--vl-border)] bg-red-500/5 px-3 py-2 text-xs text-red-400">
           {send.error}
         </div>
       )}
@@ -1943,7 +1990,7 @@ function signSendButtonClass(state: SignButtonState): string {
     case "blocked":
       return (
         `${base} cursor-not-allowed ` +
-        "border-neutral-700 bg-neutral-800 text-neutral-400 " +
+        "border-[color:var(--vl-border)] bg-neutral-800 text-neutral-400 " +
         "focus:ring-neutral-700/60"
       );
     case "secondary":
@@ -1972,20 +2019,20 @@ function ScanAllProgress({
   state: Extract<ScanAllState, { status: "running" }>;
 }) {
   return (
-    <div className="border-t border-neutral-800 bg-neutral-900">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3 py-1.5 text-[11px] text-neutral-300">
+    <div className="border-t border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.05)]">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3 py-1.5 text-[11px] text-[color:var(--vl-fg-2)]">
         <span>
           <span className="font-semibold text-white">
             Scanning wallets…
           </span>
-          <span className="ml-1 text-neutral-500">
+          <span className="ml-1 text-[color:var(--vl-fg-3)]">
             Fast summary scan. NFT discovery loads when you open a wallet
             section.
           </span>
         </span>
       </div>
-      <div className="h-0.5 w-full overflow-hidden bg-neutral-800">
-        <div className="ui-indeterminate-bar h-full bg-violet-500/70" />
+      <div className="h-0.5 w-full overflow-hidden bg-[color:var(--vl-surface-2)]">
+        <div className="ui-indeterminate-bar h-full bg-[color:var(--vl-purple)]/70" />
       </div>
     </div>
   );
@@ -2005,7 +2052,7 @@ function FullCleanProgress({
       ? "Waiting for confirmation…"
       : "Rescanning";
   return (
-    <div className="border-t border-neutral-800 bg-violet-500/5 px-3 py-2 text-xs">
+    <div className="border-t border-[color:var(--vl-border)] bg-violet-500/5 px-3 py-2 text-xs">
       <div className="flex flex-wrap items-center gap-2">
         <Spinner />
         <span className="font-semibold text-white">
@@ -2102,7 +2149,7 @@ interface SafetyCheckItem {
 
 function SafetyChecklist({ items }: { items: SafetyCheckItem[] }) {
   return (
-    <ul className="divide-y divide-neutral-800 border-b border-neutral-800 bg-neutral-950 text-[11px]">
+    <ul className="divide-y divide-[color:var(--vl-border)] border-b border-[color:var(--vl-border)] bg-neutral-950 text-[11px]">
       {items.map((item, i) => (
         <li
           key={i}
@@ -2180,13 +2227,24 @@ function CleanerDetails({
   walletAddress,
   onWalletRescan,
   rescanPending,
+  visibleSection = "all",
 }: {
   scan: CleanupScanResult;
   burn: BurnCandidatesResult;
   walletAddress: string;
   onWalletRescan: () => void;
   rescanPending: boolean;
+  visibleSection?: CleanerVisibleSection;
 }) {
+  // Tab-mode helpers — gate which destructive section renders so the
+  // standalone /burner page can show one category at a time under tabs
+  // without cleaner.tsx restructuring.
+  const showAll = visibleSection === "all";
+  const showEmpty = showAll || visibleSection === "empty";
+  const showSpl = showAll || visibleSection === "tokens";
+  const showLegacy = showAll || visibleSection === "nfts";
+  const showPnft = showAll || visibleSection === "nfts";
+  const showCore = showAll || visibleSection === "core";
   // Selected mints across the burn-candidates table. Mint is the discriminator
   // because the backend uses it as the allowlist key in the build request.
   const [selectedMints, setSelectedMints] = useState<Set<string>>(new Set());
@@ -2228,10 +2286,14 @@ function CleanerDetails({
   // (rendered below ReclaimSummary) can expand a target section in one
   // click. Discovery state still lives inside each section component, so
   // toggling never re-fires the network call.
-  const [openSpl, setOpenSpl] = useState(false);
-  const [openLegacy, setOpenLegacy] = useState(false);
-  const [openPnft, setOpenPnft] = useState(false);
-  const [openCore, setOpenCore] = useState(false);
+  // In tab mode (single-section /burner view) auto-expand the section
+  // that matches the active tab so the user lands on the discovery/grid
+  // immediately, without an extra collapse-toggle click. In `'all'` mode
+  // every section starts collapsed (original /groups/[id] behavior).
+  const [openSpl, setOpenSpl] = useState(visibleSection === "tokens");
+  const [openLegacy, setOpenLegacy] = useState(visibleSection === "nfts");
+  const [openPnft, setOpenPnft] = useState(visibleSection === "nfts");
+  const [openCore, setOpenCore] = useState(visibleSection === "core");
 
   // Refs used by the action-plan "Go to / Expand" buttons to scroll the
   // chosen section into view.
@@ -2299,25 +2361,31 @@ function CleanerDetails({
 
   return (
     <ReclaimSummaryCtx.Provider value={reclaimCtx}>
-    <div className="border-t border-neutral-800 bg-neutral-950">
+    <div className="border-t border-[color:var(--vl-border)] bg-[rgba(0,0,0,0.22)]">
       {/* SECTION 0 — Unified reclaim summary + recommended action plan.
           Read-only roll-up of every cleanup/burn path's discovery result.
           Auto-build/sign is never triggered from here — the plan's buttons
           only expand and scroll. */}
-      <ReclaimSummary summary={summary} />
-      <ActionPlan
-        summary={summary}
-        openSections={{
-          spl: openSpl,
-          legacy: openLegacy,
-          pnft: openPnft,
-          core: openCore,
-        }}
-        onFocus={focusSection}
-      />
+      {/* ReclaimSummary + ActionPlan are roll-ups across all 5 sections —
+          only meaningful in the original /groups/[id]?tab=cleaner view
+          where every section renders. Hidden in single-section tab mode. */}
+      {showAll && <ReclaimSummary summary={summary} />}
+      {showAll && (
+        <ActionPlan
+          summary={summary}
+          openSections={{
+            spl: openSpl,
+            legacy: openLegacy,
+            pnft: openPnft,
+            core: openCore,
+          }}
+          onFocus={focusSection}
+        />
+      )}
 
       {/* SECTION 1 — empty accounts (closing). Plain neutral surface so this
           section reads as the "safe / implemented" path. */}
+      {showEmpty && (
       <div ref={closeEmptyRef}>
         <SubHeader
           label="Empty token accounts (closing)"
@@ -2329,15 +2397,17 @@ function CleanerDetails({
           <EmptyAccountsTable rows={scan.emptyTokenAccounts} />
         )}
       </div>
+      )}
 
       {/* SECTION 2 — burn candidates. Visually quarantined inside a red-tinted
           card so it reads as a separate, dangerous surface. Sign+send is
           wired through BurnSignAndSendBlock (NOT the close-empty Sign & send
           button) and gated on: wallet match + audit pass + destructive ack
           checkbox. */}
+      {showSpl && (
       <div
         ref={splRef}
-        className="m-3 overflow-hidden rounded-md border-2 border-red-500/40 bg-red-500/[0.04]"
+        className="vl-burn-card m-3 overflow-hidden"
       >
         <CollapsibleBurnHeader
           collapsed={!openSpl}
@@ -2415,10 +2485,12 @@ function CleanerDetails({
           </>
         )}
       </div>
+      )}
 
       {/* SECTION 3 — Legacy Metaplex NFT burn (Milestone 1).
           Distinct red-quarantined card from the SPL fungible burn above.
           Backend BurnV1 reclaims token + metadata + master edition rent. */}
+      {showLegacy && (
       <div ref={legacyRef}>
         <LegacyNftBurnSection
           walletAddress={walletAddress}
@@ -2429,12 +2501,14 @@ function CleanerDetails({
           rescanPending={rescanPending}
         />
       </div>
+      )}
 
       {/* SECTION 4 — Programmable NFT (pNFT) burn (Milestone 2).
           Adds token-record + collection-metadata + auth-rules accounts and
           a backend preflight simulation gate. Visually distinct from the
           legacy NFT card — a slightly deeper red border so the user can't
           confuse the two flows. */}
+      {showPnft && (
       <div ref={pnftRef}>
         <PnftBurnSection
           walletAddress={walletAddress}
@@ -2445,6 +2519,7 @@ function CleanerDetails({
           rescanPending={rescanPending}
         />
       </div>
+      )}
 
       {/* SECTION 5 — Metaplex Core asset burn (Milestone 3).
           Core assets are NOT held in SPL token accounts — they're standalone
@@ -2452,6 +2527,7 @@ function CleanerDetails({
           doesn't see them, so this section always probes the chain on mount
           (no nftAccountCount gate). Reclaims the Core asset account rent via
           Core BurnV1 and gates on a backend preflight simulation. */}
+      {showCore && (
       <div ref={coreRef}>
         <CoreBurnSection
           walletAddress={walletAddress}
@@ -2461,6 +2537,7 @@ function CleanerDetails({
           rescanPending={rescanPending}
         />
       </div>
+      )}
     </div>
     </ReclaimSummaryCtx.Provider>
   );
@@ -2540,7 +2617,7 @@ function ReclaimSummary({ summary }: { summary: ReclaimSummaryState }) {
   }
 
   return (
-    <div className="border-b border-neutral-800 bg-neutral-900/60 px-3 py-1.5">
+    <div className="border-b border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.05)] px-3 py-1.5">
       <div className="mb-1 flex items-baseline justify-between">
         <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-300">
           Total possible reclaim
@@ -2683,7 +2760,7 @@ function ActionPlan({
   }
 
   return (
-    <div className="border-b border-neutral-800 bg-neutral-900/40 px-3 py-1.5">
+    <div className="border-b border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.04)] px-3 py-1.5">
       <div className="mb-1 flex items-baseline justify-between">
         <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-300">
           Recommended plan
@@ -3857,7 +3934,7 @@ function LegacyNftBurnSection({
       : null;
 
   return (
-    <div className="m-3 overflow-hidden rounded-md border-2 border-red-500/40 bg-red-500/[0.04]">
+    <div className="vl-burn-card m-3 overflow-hidden">
       <CollapsibleBurnHeader
         collapsed={collapsed}
         onToggle={onToggle}
@@ -4021,8 +4098,8 @@ function LegacyNftCandidatesTable({
           return (
             <label
               key={r.tokenAccount}
-              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-red-500/15 px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-100 hover:bg-red-500/[0.08] ${
-                isChecked ? "bg-red-500/[0.06] ring-1 ring-inset ring-red-400/40" : ""
+              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-[color:var(--vl-border)] px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-[var(--vl-motion,180ms)] hover:bg-[rgba(168,144,232,0.06)] ${
+                isChecked ? "bg-[var(--vl-purple-soft)] ring-1 ring-inset ring-[var(--vl-purple-border)]" : ""
               }`}
             >
               <div className="col-span-1">
@@ -4031,7 +4108,7 @@ function LegacyNftCandidatesTable({
                   checked={isChecked}
                   onChange={() => onToggle(r.mint)}
                   aria-label={`Select ${r.name ?? "NFT"} for burn`}
-                  className="h-3.5 w-3.5 cursor-pointer accent-red-500"
+                  className="vl-checkbox h-3.5 w-3.5 cursor-pointer"
                 />
               </div>
               <div className="col-span-5 flex min-w-0 items-center gap-2">
@@ -4221,20 +4298,20 @@ function BurnCandidateGroupGrid({
         return (
           <div
             key={groupKey}
-            className="overflow-hidden rounded-md border border-red-500/15 bg-red-500/[0.03]"
+            className="vl-card overflow-hidden"
           >
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-500/15 bg-red-500/[0.05] px-3 py-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.05)] px-3 py-1.5">
               <div className="flex flex-wrap items-baseline gap-2">
-                <span className="text-sm font-semibold text-neutral-100">
+                <span className="text-sm font-semibold text-white">
                   {label}
                 </span>
-                <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-200/90">
+                <span className="rounded-full border border-[color:var(--vl-border)] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[color:var(--vl-fg-2)]">
                   {visibleGroupCount < fullGroupCount
                     ? `${visibleGroupCount} / ${fullGroupCount}`
                     : fullGroupCount}
                 </span>
                 {!isUncollected && (
-                  <span className="font-mono text-[10px] text-neutral-500">
+                  <span className="font-mono text-[10px] text-[color:var(--vl-fg-3)]">
                     {shortAddr(groupKey, 4, 4)}
                   </span>
                 )}
@@ -4242,7 +4319,7 @@ function BurnCandidateGroupGrid({
               <button
                 type="button"
                 onClick={() => onToggleGroup(ids, !allSelected)}
-                className="text-[11px] font-semibold text-red-200/90 hover:text-red-100"
+                className="text-[11px] font-semibold text-[color:var(--vl-purple-2)] transition-colors duration-[var(--vl-motion,180ms)] hover:text-white"
                 aria-label={
                   allSelected ? "Deselect all in group" : "Select all in group"
                 }
@@ -4254,16 +4331,17 @@ function BurnCandidateGroupGrid({
                     : "Select all"}
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+            {/* Card-grid: darker than the panel so cards visibly LIFT.
+                Selected card flips to PURPLE accent (red is reserved
+                for the actual burn-button, per polish-pass spec). */}
+            <div className="vl-card-grid grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
               {groupItems.map((item) => {
                 const isChecked = selected.has(item.id);
                 return (
                   <label
                     key={item.id}
-                    className={`flex cursor-pointer flex-col gap-1 rounded-md border p-2 text-left transition-colors duration-100 ${
-                      isChecked
-                        ? "border-red-400/60 bg-red-500/15 ring-1 ring-inset ring-red-400/40"
-                        : "border-red-500/20 bg-red-500/[0.02] hover:bg-red-500/[0.07]"
+                    className={`vl-card is-interactive flex cursor-pointer flex-col gap-1 p-2 text-left ${
+                      isChecked ? "is-selected" : ""
                     }`}
                   >
                     <div className="relative">
@@ -4277,29 +4355,29 @@ function BurnCandidateGroupGrid({
                         checked={isChecked}
                         onChange={() => onToggle(item.id)}
                         aria-label={`Select ${item.name ?? itemKindLabel} for burn`}
-                        className="absolute right-1 top-1 h-4 w-4 cursor-pointer accent-red-500"
+                        className="vl-checkbox absolute right-1 top-1 h-4 w-4 cursor-pointer"
                       />
                     </div>
                     <div className="min-w-0">
                       {item.name ? (
-                        <div className="truncate text-[11px] font-semibold text-neutral-100">
+                        <div className="truncate text-[11px] font-semibold text-white">
                           {item.name}
                         </div>
                       ) : (
-                        <div className="truncate font-mono text-[10px] text-neutral-400">
+                        <div className="truncate font-mono text-[10px] text-[color:var(--vl-fg-3)]">
                           {shortAddr(item.id, 4, 4)}
                         </div>
                       )}
                       <div className="flex flex-wrap items-baseline gap-1">
-                        <span className="rounded bg-neutral-800 px-1 py-px text-[9px] font-bold uppercase tracking-wider text-neutral-300">
+                        <span className="rounded bg-[rgba(255,255,255,0.04)] px-1 py-px text-[9px] font-bold uppercase tracking-wider text-[color:var(--vl-fg-2)]">
                           {itemKindLabel}
                         </span>
-                        <span className="font-mono text-[9px] text-neutral-500">
+                        <span className="font-mono text-[9px] text-[color:var(--vl-fg-3)]">
                           {shortAddr(item.id, 3, 3)}
                         </span>
                       </div>
                       {item.estimatedGrossReclaimSol !== null && (
-                        <div className="mt-0.5 text-[10px] tabular-nums text-emerald-300/90">
+                        <div className="mt-0.5 text-[10px] tabular-nums text-[color:var(--vl-green)]">
                           {fmtSol(item.estimatedGrossReclaimSol)} SOL
                         </div>
                       )}
@@ -4312,8 +4390,8 @@ function BurnCandidateGroupGrid({
         );
       })}
       {visibleCount < totalCount && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-500/15 bg-red-500/[0.03] px-3 py-2 text-[11px]">
-          <span className="text-neutral-400">
+        <div className="vl-card flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[11px]">
+          <span className="text-[color:var(--vl-fg-2)]">
             Showing{" "}
             <span className="font-semibold text-neutral-200">
               {visibleCount}
@@ -4943,7 +5021,7 @@ function PnftBurnSection({
       : null;
 
   return (
-    <div className="m-3 overflow-hidden rounded-md border-2 border-red-600/50 bg-red-500/[0.05]">
+    <div className="vl-burn-card m-3 overflow-hidden">
       <CollapsibleBurnHeader
         collapsed={collapsed}
         onToggle={onToggle}
@@ -5107,8 +5185,8 @@ function PnftCandidatesTable({
           return (
             <label
               key={r.tokenAccount}
-              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-red-600/15 px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-100 hover:bg-red-600/[0.10] ${
-                isChecked ? "bg-red-600/[0.10] ring-1 ring-inset ring-red-400/40" : ""
+              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-[color:var(--vl-border)] px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-[var(--vl-motion,180ms)] hover:bg-[rgba(168,144,232,0.06)] ${
+                isChecked ? "bg-[var(--vl-purple-soft)] ring-1 ring-inset ring-[var(--vl-purple-border)]" : ""
               }`}
             >
               <div className="col-span-1">
@@ -5117,7 +5195,7 @@ function PnftCandidatesTable({
                   checked={isChecked}
                   onChange={() => onToggle(r.mint)}
                   aria-label={`Select ${r.name ?? "pNFT"} for burn`}
-                  className="h-3.5 w-3.5 cursor-pointer accent-red-600"
+                  className="vl-checkbox h-3.5 w-3.5 cursor-pointer"
                 />
               </div>
               <div className="col-span-5 flex min-w-0 items-center gap-2">
@@ -5566,7 +5644,7 @@ function CoreBurnSection({
       : null;
 
   return (
-    <div className="m-3 overflow-hidden rounded-md border-2 border-red-700/60 bg-red-700/[0.06]">
+    <div className="vl-burn-card m-3 overflow-hidden">
       <CollapsibleBurnHeader
         collapsed={collapsed}
         onToggle={onToggle}
@@ -5723,9 +5801,9 @@ function CoreCandidatesTable({
           return (
             <label
               key={r.asset}
-              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-red-700/20 px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-100 hover:bg-red-700/[0.10] ${
+              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-[color:var(--vl-border)] px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-[var(--vl-motion,180ms)] hover:bg-[rgba(168,144,232,0.06)] ${
                 isChecked
-                  ? "bg-red-700/[0.10] ring-1 ring-inset ring-red-400/40"
+                  ? "bg-[var(--vl-purple-soft)] ring-1 ring-inset ring-[var(--vl-purple-border)]"
                   : ""
               }`}
             >
@@ -5735,7 +5813,7 @@ function CoreCandidatesTable({
                   checked={isChecked}
                   onChange={() => onToggle(r.asset)}
                   aria-label={`Select ${r.name ?? "Core asset"} for burn`}
-                  className="h-3.5 w-3.5 cursor-pointer accent-red-700"
+                  className="vl-checkbox h-3.5 w-3.5 cursor-pointer"
                 />
               </div>
               <div className="col-span-6 flex min-w-0 items-center gap-2">
@@ -6021,7 +6099,7 @@ function CoreBurnPreview({
 
 function SubHeader({ label, right }: { label: string; right?: string }) {
   return (
-    <div className="flex items-baseline justify-between border-b border-neutral-800 px-3 py-1.5">
+    <div className="flex items-baseline justify-between border-b border-[color:var(--vl-border)] px-3 py-1.5">
       <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-300">
         {label}
       </span>
@@ -6096,7 +6174,7 @@ function EmptyAccountsTable({ rows }: { rows: ScannedTokenAccount[] }) {
   return (
     <div className="overflow-x-auto">
      <div className="min-w-[480px]">
-      <div className="grid grid-cols-12 gap-3 border-b border-neutral-800 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
+      <div className="grid grid-cols-12 gap-3 border-b border-[color:var(--vl-border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
         <div className="col-span-5">Token account</div>
         <div className="col-span-5">Mint</div>
         <div className="col-span-2 text-right">Reclaim SOL</div>
@@ -6105,7 +6183,7 @@ function EmptyAccountsTable({ rows }: { rows: ScannedTokenAccount[] }) {
         {rows.map((r) => (
           <div
             key={r.tokenAccount}
-            className="grid grid-cols-12 items-center gap-3 border-b border-neutral-800 px-3 py-1.5 text-xs last:border-b-0"
+            className="grid grid-cols-12 items-center gap-3 border-b border-[color:var(--vl-border)] px-3 py-1.5 text-xs last:border-b-0"
           >
             <div className="col-span-5 truncate font-mono text-neutral-100">
               {shortAddr(r.tokenAccount, 6, 6)}
@@ -6164,7 +6242,7 @@ function BurnCandidatesTable({
           return (
             <label
               key={r.tokenAccount}
-              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-red-500/15 px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-100 hover:bg-red-500/[0.08] ${rowTint} ${isChecked ? "ring-1 ring-inset ring-red-400/40" : ""}`}
+              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-[color:var(--vl-border)] px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-[var(--vl-motion,180ms)] hover:bg-[rgba(168,144,232,0.06)] ${rowTint} ${isChecked ? "bg-[var(--vl-purple-soft)] ring-1 ring-inset ring-[var(--vl-purple-border)]" : ""}`}
             >
               <div className="col-span-1">
                 <input
@@ -6172,7 +6250,7 @@ function BurnCandidatesTable({
                   checked={isChecked}
                   onChange={() => onToggle(r.mint)}
                   aria-label={`Select ${r.symbol ?? r.name ?? r.mint} for burn`}
-                  className="h-3.5 w-3.5 cursor-pointer accent-red-500"
+                  className="vl-checkbox h-3.5 w-3.5 cursor-pointer"
                 />
               </div>
               <div className="col-span-2 flex min-w-0 items-center gap-2">
