@@ -12,11 +12,9 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, sha256Hex } from "@/lib/auth";
+import { BACKEND_URL, authHeaders } from "@/lib/api";
 
 export const runtime = "nodejs";
-
-const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:3002";
-const BACKEND_APP_API_KEY = process.env.BACKEND_APP_API_KEY;
 
 export async function GET(
   req: NextRequest,
@@ -37,9 +35,23 @@ export async function GET(
     ? "?refresh=true"
     : "";
 
+  // Source the upstream auth headers from the shared helper used by
+  // server actions in `lib/api.ts` — guarantees the same header name
+  // + value across every backend call (Express middleware reads
+  // `x-app-key`). Hand-rolling the header here was the cause of the
+  // earlier 401: drift between the proxy and the helper.
+  const auth = authHeaders();
+  // Temporary diagnostic — confirms BACKEND_APP_API_KEY is actually
+  // loaded into the route's process.env at request time. Remove once
+  // the 401 is gone.
+  console.log("[cleanup-scan proxy]", {
+    backendUrl: BACKEND_URL,
+    hasKey: Boolean(auth["x-app-key"]),
+    keyPrefix: auth["x-app-key"]?.slice(0, 6),
+  });
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    ...(BACKEND_APP_API_KEY ? { "x-app-key": BACKEND_APP_API_KEY } : {}),
+    ...auth,
   };
 
   try {

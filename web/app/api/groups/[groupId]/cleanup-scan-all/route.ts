@@ -15,11 +15,9 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, sha256Hex } from "@/lib/auth";
+import { BACKEND_URL, authHeaders } from "@/lib/api";
 
 export const runtime = "nodejs";
-
-const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:3002";
-const BACKEND_APP_API_KEY = process.env.BACKEND_APP_API_KEY;
 
 export async function POST(
   req: NextRequest,
@@ -42,9 +40,11 @@ export async function POST(
       `${BACKEND_URL}/api/groups/${encodeURIComponent(groupId)}/cleanup-scan-all`,
       {
         method: "POST",
+        // Same shared helper used by server actions in lib/api.ts so
+        // the upstream auth header is always identical (`x-app-key`).
         headers: {
           "content-type": "application/json",
-          ...(BACKEND_APP_API_KEY ? { "x-app-key": BACKEND_APP_API_KEY } : {}),
+          ...authHeaders(),
         },
         body,
         cache: "no-store",

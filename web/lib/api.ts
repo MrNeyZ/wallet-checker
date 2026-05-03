@@ -1,7 +1,13 @@
 export const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:3002";
 const BACKEND_APP_API_KEY = process.env.BACKEND_APP_API_KEY;
 
-function authHeaders(): Record<string, string> {
+// Exported so same-origin Next.js proxy routes (e.g.
+// /api/wallet/[address]/cleanup-scan) build identical upstream headers
+// to the server-action `request()` helper. Hand-rolling `x-app-key` in
+// each new route invites drift; sourcing the header name + value from a
+// single helper keeps every backend call going through the same gate
+// (Express's `apiKeyAuth` middleware reads `req.header("x-app-key")`).
+export function authHeaders(): Record<string, string> {
   return BACKEND_APP_API_KEY ? { "x-app-key": BACKEND_APP_API_KEY } : {};
 }
 
