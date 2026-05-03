@@ -3135,6 +3135,9 @@ function buildCoreBurnIx(
     payer: owner.toBase58(),
     collection: collection ? collection.toBase58() : null,
   });
+  console.log(
+    `[coreBurn] collection ${collection ? collection.toBase58() : "<none>"} for asset ${asset.toBase58()}`,
+  );
   const ownerSigner = createNoopSigner(umiPublicKey(owner.toBase58()));
   const builder = mplCoreBurnV1(coreUmi, {
     asset: umiPublicKey(asset.toBase58()),
@@ -3285,7 +3288,17 @@ export async function buildCoreBurnTx(
   // (10 min) keeps `candidates` fresh enough for grid display, but a real
   // burn tx must be built from current on-chain state — never from cached
   // DAS rows. Verify each selected asset still exists, is still owned by
-  // the Core program, and update its lamports to the on-chain value.
+  // the Core program, update its lamports to the on-chain value, AND
+  // re-derive its `update_authority::Collection(pubkey)` from the
+  // freshly-decoded account data.
+  //
+  // The collection re-derivation is the fix for the on-chain
+  // `IncorrectAccount` (custom error 0x6) we kept hitting: DAS sometimes
+  // returned `collection = null` for an asset whose on-chain
+  // update_authority is actually a Collection. The mpl-core BurnV1
+  // handler then rejects because the collection slot must hold the
+  // real collection pubkey when the asset belongs to one. Source of
+  // truth = the on-chain bytes we just fetched, never the cached DAS row.
   if (allowSet && included.length > 0) {
     try {
       const refreshKeys = included.map((a) => a.asset);
@@ -3309,7 +3322,48 @@ export async function buildCoreBurnTx(
           });
           continue;
         }
-        verified.push({ ...cur, lamports: info.lamports });
+        // Decode update_authority from the fresh bytes. If parsing fails
+        // we keep the cached collection (best effort) rather than block
+        // the burn; the on-chain handler will still reject if it's wrong.
+        const parsed = parseCoreAssetData(Buffer.from(info.data));
+        const onChainCollection = parsed?.collection ?? null;
+        // Defensive guard: if the cached collection AND the on-chain
+        // parse both came back null, but the asset clearly references a
+        // collection we couldn't decode (parse returned non-null but
+        // its `collection` field is still null because the variant tag
+        // was unrecognized), skip with the explicit reason from spec.
+        // We treat this as: parser reached the update_authority byte
+        // but couldn't surface a usable collection pubkey.
+        if (
+          parsed === null &&
+          cur.collection === null &&
+          info.data.length >= 33
+        ) {
+          skippedAssets.push({
+            asset: cur.asset.toBase58(),
+            reason: "Missing Core collection account",
+          });
+          continue;
+        }
+        const collection = onChainCollection ?? cur.collection;
+        if (collection !== null && cur.collection !== null) {
+          if (!collection.equals(cur.collection)) {
+            console.warn(
+              `[coreBurn] collection drift for ${cur.asset.toBase58()} cached=${cur.collection.toBase58()} onChain=${collection.toBase58()} — using on-chain`,
+            );
+          }
+        } else if (collection !== null && cur.collection === null) {
+          console.log(
+            `[coreBurn] recovered collection ${collection.toBase58()} for ${cur.asset.toBase58()} (DAS returned null)`,
+          );
+        }
+        console.log("[coreBurn] asset classification:", {
+          asset: cur.asset.toBase58(),
+          collection: collection ? collection.toBase58() : null,
+          lamports: info.lamports,
+          source: onChainCollection ? "onChain" : cur.collection ? "cache" : "none",
+        });
+        verified.push({ ...cur, lamports: info.lamports, collection });
       }
       included = verified;
     } catch (err) {

@@ -13,7 +13,7 @@
 //     BurnSelectionProvider registry that each burn section publishes
 //     into via useBurnSelectionPublisher
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   BurnAckProvider,
   BurnSelectionProvider,
@@ -224,6 +224,23 @@ function BurnerStatTiles({ summary }: { summary: CleanerRowSummary | null }) {
   // tiles read as "what's currently staged for burn", which spans tabs.
   const totalSelected = totalSelectedAcrossSections(registry);
   const totalReclaimSelected = totalReclaimAcrossSections(registry);
+
+  // Routing summary log — fires only when one of the per-type discovery
+  // counts actually changes (selection toggles don't move these), so we
+  // get one stable line per "discovery completed" event rather than a
+  // log spam on every checkbox click. `skipped` is best-effort: the
+  // registry doesn't carry per-section non-burnable counts (those live
+  // inside each section's local state), so we surface only the four
+  // burnable totals here.
+  useEffect(() => {
+    console.log("[burner] routing summary", {
+      legacy: legacyBurnable,
+      pnft: pnftBurnable,
+      core: coreBurnable,
+      spl: splBurnable,
+      skipped: "see per-section discovery logs",
+    });
+  }, [legacyBurnable, pnftBurnable, coreBurnable, splBurnable]);
 
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
