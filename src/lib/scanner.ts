@@ -49,18 +49,40 @@ async function fetchTokenAccountsForProgram(owner: PublicKey, programId: PublicK
   return res.value.map((entry) => ({ entry, programId: programId.toBase58() }));
 }
 
-// A token account passing the NFT-shape gate (1 supply, 0 decimals) is
-// only treated as a real burnable NFT if Helius DAS surfaces actual
-// metadata for its mint. Spam / abandoned / non-Metaplex 1-supply
-// tokens (no name, no symbol, no image) are demoted to
-// `unknownTokenAccounts` instead of polluting the NFT burn flow.
+// Classify a 1-supply / 0-decimal token account by what Helius DAS says
+// about the mint. We route on `interface` / `tokenStandard` — NOT on
+// whether the metadata happens to surface a name/symbol/image. The
+// previous name+image gate dropped legitimate NFTs whose off-chain
+// metadata had been pruned by hosting providers; the actual on-chain
+// Token Metadata account is what determines burnability.
 //
-// `uri` alone is intentionally NOT enough — a lot of spam tokens point
-// at a 404 or an unreachable IPFS gateway with no actual content. We
-// require at least one of the human-display fields to be present.
-function isValidNft(meta: AssetMetadata | undefined): boolean {
-  if (!meta) return false;
-  return Boolean(meta.name || meta.symbol || meta.image);
+// Returns:
+//   "legacy"   → Token Metadata NonFungible       → Legacy section
+//   "pnft"     → Token Metadata ProgrammableNFT   → pNFT section
+//   "unknown"  → DAS resolved but it's something else (e.g. cNFT,
+//                 fungible-asset misshape, MplCoreCollection, etc.) —
+//                 demote to unknownTokenAccounts so the burn flows
+//                 don't see it.
+//   null       → DAS didn't return an entry at all → treat as a
+//                 candidate (permissive fallback) so a missing
+//                 HELIUS_API_KEY / outage doesn't silently wipe the
+//                 user's NFT list.
+function classifyNftCandidate(
+  meta: AssetMetadata | undefined,
+): "legacy" | "pnft" | "unknown" | null {
+  if (!meta) return null;
+  const iface = meta.iface;
+  const std = meta.tokenStandard;
+  if (iface === "ProgrammableNFT") return "pnft";
+  if (iface === "NonFungibleToken" || iface === "NonFungibleEdition") {
+    // tokenStandard is the secondary classifier: occasionally DAS surfaces
+    // ProgrammableNonFungible under the NonFungibleToken interface.
+    if (std === "ProgrammableNonFungible") return "pnft";
+    return "legacy";
+  }
+  if (std === "NonFungible") return "legacy";
+  if (std === "ProgrammableNonFungible") return "pnft";
+  return "unknown";
 }
 
 async function performScan(address: string): Promise<CleanupScanResult> {
@@ -123,33 +145,52 @@ async function performScan(address: string): Promise<CleanupScanResult> {
     }
   }
 
-  // Second pass: validate NFT-shape candidates against DAS metadata.
-  // Only mints that resolve to a real NFT (has a name, symbol, or
-  // image) stay classified as NFTs; the rest are demoted to
-  // `unknownTokenAccounts` so the SPL/empty close paths can still see
-  // them but the Legacy/pNFT burn flows don't.
+  // Second pass: classify NFT-shape candidates by what DAS reports for
+  // their mint. Legacy + pNFT both land in `nftTokenAccounts` (the
+  // Legacy and pNFT burn sections each filter that list down by their
+  // own tokenStandard check during discovery). Unknown / cNFT / Core /
+  // FungibleAsset misshapes are demoted to `unknownTokenAccounts`
+  // so they're still cleanable via the close-empty path but never
+  // appear in the burn flows.
+  let legacyKept = 0;
+  let pnftKept = 0;
+  let unknownDropped = 0;
   if (nftCandidates.length > 0) {
     const dasMap = await fetchAssetMetadataBatch(
       nftCandidates.map((c) => c.mint),
     );
-    // Permissive fallback: when DAS returned NOTHING for any candidate
-    // (typically `HELIUS_API_KEY` isn't configured, or the upstream is
-    // down), we treat every shape-NFT as a candidate so we don't wipe
-    // a user's NFT list silently. The diagnostic log below makes the
-    // distinction visible to operators.
     const dasResolved = dasMap.size > 0;
-    let demoted = 0;
     for (const acc of nftCandidates) {
       const meta = dasMap.get(acc.mint);
-      if (isValidNft(meta) || !dasResolved) {
+      const cls = classifyNftCandidate(meta);
+      // Permissive fallback: if DAS didn't resolve at all (no API key,
+      // outage), or this specific mint wasn't returned, accept it as
+      // an NFT candidate. The per-section discovery (Legacy / pNFT)
+      // does its own on-chain Token Metadata read and will skip
+      // mismatched mints with a clear reason.
+      if (cls === null || !dasResolved) {
         result.nftTokenAccounts.push(acc);
+        continue;
+      }
+      if (cls === "legacy") {
+        result.nftTokenAccounts.push(acc);
+        legacyKept++;
+      } else if (cls === "pnft") {
+        result.nftTokenAccounts.push(acc);
+        pnftKept++;
       } else {
         result.unknownTokenAccounts.push(acc);
-        demoted++;
+        unknownDropped++;
       }
     }
     console.log(
-      `[scanner] NFT filter for ${address}: candidates=${nftCandidates.length} valid=${result.nftTokenAccounts.length} demoted=${demoted} dasResolved=${dasResolved}`,
+      `[scanner] nft routing ${JSON.stringify({
+        candidates: nftCandidates.length,
+        legacy: legacyKept,
+        pnft: pnftKept,
+        unknown: unknownDropped,
+        dasResolved,
+      })}`,
     );
   }
 

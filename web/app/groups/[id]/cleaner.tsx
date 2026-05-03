@@ -1305,12 +1305,52 @@ export function CleanerRow({
   const fullCleanCancelRef = useRef(false);
   const isFullCleaning = fullClean.status === "running";
 
+  // AbortController + scanRunId for the wallet's cleanup scan.
+  // - controller.abort() actually tears down the upstream HTTP fetch via
+  //   the same-origin /api/wallet/[address]/cleanup-scan proxy, which
+  //   forwards request.signal into the Express backend. Without this the
+  //   Cancel button stopped only the UI; the backend kept walking the
+  //   wallet on RPC.
+  // - scanRunId guards against a stale response landing into setState
+  //   AFTER the user has already cancelled or kicked off a fresh scan.
+  //   Each scan increments runId; the in-flight handler closes over its
+  //   own snapshot and bails if it doesn't match the live ref.
+  const scanAbortRef = useRef<AbortController | null>(null);
+  const scanRunIdRef = useRef(0);
+
   const handleScan = useCallback(() => {
+    // Tear down any in-flight scan before kicking off a new one — protects
+    // against a double-click hammering both the proxy and the backend.
+    scanAbortRef.current?.abort();
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
+    const myRunId = ++scanRunIdRef.current;
+
     setState({ status: "loading" });
     setBuildState({ status: "idle" });
     startTransition(async () => {
-      const res = await scanCleanupAction(wallet.address);
-      if (res.ok) {
+      try {
+        const httpRes = await fetch(
+          `/api/wallet/${encodeURIComponent(wallet.address)}/cleanup-scan`,
+          { method: "GET", cache: "no-store", signal: controller.signal },
+        );
+        // 499 = client-closed (we aborted). Any other non-2xx is a real
+        // backend error worth surfacing.
+        if (httpRes.status === 499) return;
+        if (!httpRes.ok) {
+          if (myRunId !== scanRunIdRef.current) return;
+          const detail = await httpRes.text().catch(() => "");
+          setState({
+            status: "error",
+            error: `Backend ${httpRes.status}: ${detail.slice(0, 300)}`,
+          });
+          return;
+        }
+        const res = (await httpRes.json()) as {
+          scan: CleanupScanResult;
+          burn: BurnCandidatesResult;
+        };
+        if (myRunId !== scanRunIdRef.current) return;
         setState({ status: "scanned", scan: res.scan, burn: res.burn });
         setShowDetails(true);
         setScan(wallet.address, {
@@ -1319,11 +1359,35 @@ export function CleanerRow({
           fungible: res.burn.count,
           nft: res.scan.nftTokenAccounts.length,
         });
-      } else {
-        setState({ status: "error", error: res.error });
+      } catch (err) {
+        if (
+          (err as Error)?.name === "AbortError" ||
+          controller.signal.aborted
+        ) {
+          // Cancel handler already reset the UI state.
+          return;
+        }
+        if (myRunId !== scanRunIdRef.current) return;
+        setState({
+          status: "error",
+          error: err instanceof Error ? err.message : "Scan failed",
+        });
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.address]);
+
+  // Cancel the current cleanup scan. Bumps scanRunId so any late-landing
+  // response is dropped, aborts the in-flight fetch (which propagates to
+  // the backend via /api/wallet/[address]/cleanup-scan), and snaps the UI
+  // back to "idle" so the Scan button re-appears immediately.
+  const cancelScan = useCallback(() => {
+    if (!scanAbortRef.current) return;
+    console.log(`[burner] scan aborted client ${wallet.address}`);
+    scanRunIdRef.current++;
+    scanAbortRef.current.abort();
+    scanAbortRef.current = null;
+    setState({ status: "idle" });
   }, [wallet.address]);
 
   function handleBuildTx() {
@@ -1574,6 +1638,22 @@ export function CleanerRow({
           >
             {state.status === "loading" || pending ? "Scanning…" : state.status === "scanned" ? "Rescan" : "Scan"}
           </button>
+          {/* Cancel button — only visible while a scan is in flight. Wired to
+              cancelScan, which aborts the upstream fetch (so the backend
+              actually stops too) and snaps the UI state back to idle. */}
+          {(state.status === "loading" || pending) && (
+            <button
+              type="button"
+              onClick={cancelScan}
+              className={
+                compact
+                  ? "rounded-md border border-[rgba(239,120,120,0.45)] bg-transparent px-3 py-1 text-[11px] font-semibold text-[color:var(--vl-red)] transition-all duration-[var(--vl-motion,180ms)] hover:bg-[rgba(239,120,120,0.08)]"
+                  : "inline-flex items-center rounded-md border border-red-500/40 bg-transparent px-3 py-1 text-xs font-semibold text-red-300 transition-colors duration-100 hover:bg-red-500/10"
+              }
+            >
+              Cancel
+            </button>
+          )}
           {/* Compact mode (standalone /burner) suppresses these legacy
               affordances — the page-level tabs already drive section
               navigation, and "Build close transaction" / "Clean wallet

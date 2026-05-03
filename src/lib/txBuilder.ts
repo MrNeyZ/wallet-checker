@@ -3315,6 +3315,9 @@ export async function buildCoreBurnTx(
           });
           continue;
         }
+        console.log(
+          `[coreBurn] asset owner from getAccountInfo ${cur.asset.toBase58()} = ${info.owner.toBase58()}`,
+        );
         if (info.owner.toBase58() !== corePid) {
           skippedAssets.push({
             asset: cur.asset.toBase58(),
@@ -3468,11 +3471,59 @@ export async function buildCoreBurnTx(
   // pattern. Catches plugin-level rejections (Frozen, Royalty, etc.) and any
   // other chain-side issue.
   // ============================================================================
+  // mpl-core "IncorrectAccount" surfaces as either the literal log line
+  // "Program log: Incorrect account" or the raw `custom program error: 0x6`.
+  // Detect both so we can hard-stop the trim loop instead of shrinking the
+  // batch (which never helps — every asset has the same wrong meta).
+  const isIncorrectAccount = (
+    err: string | undefined,
+    logs: string[],
+  ): boolean => {
+    if (err && /incorrect account/i.test(err)) return true;
+    if (err && /custom program error:\s*0x6\b/i.test(err)) return true;
+    for (const l of logs) {
+      if (/incorrect account/i.test(l)) return true;
+      if (/custom program error:\s*0x6\b/i.test(l)) return true;
+    }
+    return false;
+  };
+  // Snapshot of the ix metas for the most recent simulate call. Logged
+  // before every preflight, AND surfaced via simulationError when we
+  // hard-stop on IncorrectAccount so the frontend's compact error +
+  // backend logs together explain exactly what we sent.
+  let lastIxAccountsSnapshot: Array<{
+    asset: string;
+    collection: string | null;
+    keys: Array<{ pubkey: string; signer: boolean; writable: boolean }>;
+  }> = [];
+
   let simulationOk = false;
   let simulationError: string | undefined;
   let isolated: CoreBurnSkippedEntry | null = null;
   while (included.length > 0) {
     let simErr: string | undefined;
+    // Hard debug — log every burn ix's account metas before the preflight
+    // call. Skips the two ComputeBudget instructions at the head of the
+    // tx so the log is just the BurnV1 ix list. Snapshotted so the
+    // hard-stop branch below can include it in the compact error.
+    lastIxAccountsSnapshot = [];
+    for (let i = 0; i < included.length; i++) {
+      const ix = built.tx.instructions[built.tx.instructions.length - included.length + i];
+      const a = included[i];
+      const keys = ix.keys.map((k) => ({
+        pubkey: k.pubkey.toBase58(),
+        signer: k.isSigner,
+        writable: k.isWritable,
+      }));
+      lastIxAccountsSnapshot.push({
+        asset: a.asset.toBase58(),
+        collection: a.collection ? a.collection.toBase58() : null,
+        keys,
+      });
+      console.log(
+        `[coreBurn] ix accounts asset=${a.asset.toBase58()} collection=${a.collection ? a.collection.toBase58() : "<none>"} keys=${JSON.stringify(keys)}`,
+      );
+    }
     try {
       const sim = await connection.simulateTransaction(built.tx);
       if (!sim.value.err) {
@@ -3480,9 +3531,30 @@ export async function buildCoreBurnTx(
         break;
       }
       simErr = parseSimulationError(sim.value.err, sim.value.logs ?? []);
+      const hardStop = isIncorrectAccount(simErr, sim.value.logs ?? []);
       console.warn(
-        `[coreBurn] preflight rejected for ${ownerStr} at batch=${included.length}: friendly="${simErr}" rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
+        `[coreBurn] preflight rejected for ${ownerStr} at batch=${included.length}: friendly="${simErr}" hardStop=${hardStop} rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
       );
+      if (hardStop) {
+        // Per spec: do NOT silently trim/retry batch for IncorrectAccount.
+        // Stop immediately at any batch size and surface a compact error
+        // that includes the ix accounts + collection source we just
+        // sent — that's the actionable diagnostic.
+        const compact = `Incorrect account · accounts=${JSON.stringify(lastIxAccountsSnapshot)}`;
+        simulationError = "Core burn preflight failed: Incorrect account";
+        // Mark every selected asset as skipped so the frontend doesn't
+        // think any of them passed.
+        for (const a of included) {
+          skippedAssets.push({
+            asset: a.asset.toBase58(),
+            collection: a.collection ? a.collection.toBase58() : null,
+            reason: simulationError,
+          });
+        }
+        console.warn(`[coreBurn] preflight hardStop for ${ownerStr}: ${compact}`);
+        included = [];
+        break;
+      }
     } catch (err) {
       simErr =
         err instanceof Error ? err.message : "Simulation request failed";

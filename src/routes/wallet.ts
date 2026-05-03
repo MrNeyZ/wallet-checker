@@ -101,10 +101,26 @@ router.get("/:address/cleanup-scan", async (req, res) => {
     typeof req.query.refresh === "string" &&
     /^(true|1|yes)$/i.test(req.query.refresh);
 
+  // Track client-side abort so we don't try to write the response after the
+  // browser has hung up. The cache is shared with other concurrent callers
+  // so we never tear it down — we just skip writing back to the closed
+  // connection.
+  let clientClosed = false;
+  req.on("close", () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      console.log(
+        `[burner] scan aborted server cleanup-scan ${parsed.data}`,
+      );
+    }
+  });
+
   try {
     const result = await scanWalletForCleanup(parsed.data, { refresh });
+    if (clientClosed) return;
     res.json(result);
   } catch (err) {
+    if (clientClosed) return;
     sendCleanerError(res, err);
   }
 });
@@ -115,8 +131,19 @@ router.get("/:address/burn-candidates", async (req, res) => {
     return res.status(400).json({ error: parsed.error.issues[0].message });
   }
 
+  let clientClosed = false;
+  req.on("close", () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      console.log(
+        `[burner] scan aborted server burn-candidates ${parsed.data}`,
+      );
+    }
+  });
+
   try {
     const scan = await scanWalletForCleanup(parsed.data);
+    if (clientClosed) return;
     const baseCandidates = scan.fungibleTokenAccounts
       .filter((acc) => acc.mint !== WSOL_MINT)
       .map((acc) => ({
@@ -158,6 +185,7 @@ router.get("/:address/burn-candidates", async (req, res) => {
       };
     });
 
+    if (clientClosed) return;
     res.json({
       wallet: parsed.data,
       count: candidates.length,
@@ -169,6 +197,7 @@ router.get("/:address/burn-candidates", async (req, res) => {
       warning: BURN_WARNING,
     });
   } catch (err) {
+    if (clientClosed) return;
     sendCleanerError(res, err);
   }
 });

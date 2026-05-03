@@ -20,6 +20,17 @@ export interface AssetMetadata {
   symbol: string | null;
   image: string | null;
   uri: string | null;
+  // Helius DAS top-level `interface` field. Used by the scanner to route
+  // a 1-supply / 0-decimal token account to the correct burn flow:
+  //   "NonFungibleToken"   → Legacy Metaplex NFT
+  //   "ProgrammableNFT"    → pNFT
+  //   "MplCoreAsset"       → Core (separate discovery path)
+  // null when DAS didn't return an entry for the mint.
+  iface: string | null;
+  // Token Metadata standard from `content.metadata.token_standard`.
+  // Surfaced as a secondary classifier — `iface` is more reliable, but
+  // some legacy mints set token_standard explicitly.
+  tokenStandard: string | null;
 }
 
 interface CacheEntry {
@@ -115,7 +126,13 @@ function parse(asset: DasAsset): AssetMetadata {
     strOrNull(asset.content?.files?.[0]?.cdn_uri) ??
     strOrNull(asset.content?.files?.[0]?.uri);
   const uri = strOrNull(asset.content?.json_uri);
-  return { name, symbol, image, uri };
+  const iface =
+    typeof asset.interface === "string" ? asset.interface : null;
+  const tokenStandard = strOrNull(
+    (asset.content?.metadata as Record<string, unknown> | undefined)
+      ?.token_standard,
+  );
+  return { name, symbol, image, uri, iface, tokenStandard };
 }
 
 // Resolves metadata for a list of asset ids (NFT mints OR Core asset ids).
