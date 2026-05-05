@@ -3696,45 +3696,63 @@ function BurnSignAndSendBlock({
         lastValidBlockHeight,
       });
 
-      // Step 3: confirmation — Phantom's return is OPTIMISTIC. Poll OUR
-      // RPC to verify the tx actually landed. Use the strategy form with
-      // blockhash + lastValidBlockHeight so confirmTransaction times out
-      // when the blockhash expires (~60-90s) instead of hanging forever.
+      // Step 3+4: confirmation via HTTP polling of getSignatureStatuses.
+      // We deliberately avoid Connection.confirmTransaction because it
+      // relies on websocket subscriptions, which the public mainnet RPC
+      // (and many gated providers) drop — leaving the UI hung at
+      // "submitted" forever even though the tx already landed.
+      // Polls every 2s up to ~90s; bails when the blockhash expires.
       const connection = getConnection();
-      const confirmed = await connection.confirmTransaction(
-        { signature, blockhash, lastValidBlockHeight },
-        "confirmed",
-      );
-      if (confirmed.value.err) {
+      let confirmedSeen = false;
+      const pollStart = Date.now();
+      const POLL_TIMEOUT_MS = 90_000;
+      const POLL_INTERVAL_MS = 2_000;
+      while (Date.now() - pollStart < POLL_TIMEOUT_MS) {
+        const statuses = await connection.getSignatureStatuses([signature]);
+        const st = statuses.value[0];
+        if (st) {
+          if (st.err) {
+            throw new Error(
+              `Tx failed on chain: ${JSON.stringify(st.err)}`,
+            );
+          }
+          const cs = st.confirmationStatus;
+          if (!confirmedSeen && (cs === "confirmed" || cs === "finalized")) {
+            confirmedSeen = true;
+            setSend({ status: "confirmed", signature });
+            console.log("[burnSend] confirmed", {
+              kind: kindLabel,
+              signature,
+              slot: st.slot,
+            });
+          }
+          if (cs === "finalized") {
+            setSend({ status: "finalized", signature });
+            console.log("[burnSend] finalized", {
+              kind: kindLabel,
+              signature,
+              slot: st.slot,
+            });
+            break;
+          }
+        }
+        // Bail early if the blockhash has expired and we still haven't
+        // seen the tx — at that point it can't land.
+        if (!confirmedSeen) {
+          const currentHeight = await connection.getBlockHeight("confirmed");
+          if (currentHeight > lastValidBlockHeight) {
+            throw new Error(
+              "Transaction expired before landing (blockhash window passed).",
+            );
+          }
+        }
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      }
+      if (!confirmedSeen) {
         throw new Error(
-          `Tx failed at confirmed commitment: ${JSON.stringify(confirmed.value.err)}`,
+          "Timed out waiting for confirmation. Check Solscan for the signature.",
         );
       }
-      setSend({ status: "confirmed", signature });
-      console.log("[burnSend] confirmed", {
-        kind: kindLabel,
-        signature,
-        slot: confirmed.context.slot,
-      });
-
-      // Step 4: wait for finalized — irreversible. Same strategy form so
-      // we time out cleanly if the network can't finalize before the
-      // blockhash expires.
-      const finalized = await connection.confirmTransaction(
-        { signature, blockhash, lastValidBlockHeight },
-        "finalized",
-      );
-      if (finalized.value.err) {
-        throw new Error(
-          `Tx failed at finalized commitment: ${JSON.stringify(finalized.value.err)}`,
-        );
-      }
-      setSend({ status: "finalized", signature });
-      console.log("[burnSend] finalized", {
-        kind: kindLabel,
-        signature,
-        slot: finalized.context.slot,
-      });
     } catch (err) {
       setSend({
         status: "error",
