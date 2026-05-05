@@ -2667,6 +2667,35 @@ function CleanerDetails({
     });
   }
 
+  // Mints the user has just burned in this session. Adds to a local set
+  // (instead of mutating `burn.candidates`, which is owned by the
+  // parent scan result) so the filter is purely render-side: candidates
+  // pass through `.filter(c => !splBurnedMints.has(c.mint))` below, and
+  // any in-flight selection in `selectedMints` for those mints is
+  // cleared. Survives re-renders; cleared only when the user kicks off
+  // a fresh wallet scan (which remounts the section via its key).
+  const [splBurnedMints, setSplBurnedMints] = useState<Set<string>>(new Set());
+  const handleSplBurned = useCallback((mints: string[]) => {
+    if (mints.length === 0) return;
+    setSplBurnedMints((prev) => {
+      const next = new Set(prev);
+      for (const m of mints) next.add(m);
+      return next;
+    });
+    setSelectedMints((prev) => {
+      const next = new Set(prev);
+      for (const m of mints) next.delete(m);
+      return next;
+    });
+    // Clear the build preview so the user doesn't see stale "Re-prepare
+    // burn" pointing at mints that no longer exist.
+    setBurnBuild({ status: "idle" });
+  }, []);
+  const visibleSplCandidates = useMemo(
+    () => burn.candidates.filter((c) => !splBurnedMints.has(c.mint)),
+    [burn.candidates, splBurnedMints],
+  );
+
   function handleBuildBurnTx(): void {
     if (selectedMints.size === 0) return;
     setBurnBuild({ status: "loading" });
@@ -2774,12 +2803,16 @@ function CleanerDetails({
                 ⚠ {burn.warning}
               </div>
             )}
-            {burn.candidates.length === 0 ? (
-              <EmptyHint>No fungible burn candidates.</EmptyHint>
+            {visibleSplCandidates.length === 0 ? (
+              <EmptyHint>
+                {burn.candidates.length === 0
+                  ? "No fungible burn candidates."
+                  : "All SPL candidates burned in this session. Rescan to refresh."}
+              </EmptyHint>
             ) : (
               <>
                 <BurnCandidatesTable
-                  rows={burn.candidates}
+                  rows={visibleSplCandidates}
                   selected={selectedMints}
                   onToggle={toggleSelected}
                 />
@@ -2825,6 +2858,7 @@ function CleanerDetails({
                     walletAddress={walletAddress}
                     onWalletRescan={onWalletRescan}
                     rescanPending={rescanPending}
+                    onBurned={handleSplBurned}
                   />
                 )}
               </>
@@ -3484,6 +3518,7 @@ function BurnSignAndSendBlock({
   rescanPending,
   onBuildNext,
   nextBatchRemaining,
+  onBurned,
 }: {
   kindLabel: string;
   transactionBase64: string | null;
@@ -3516,6 +3551,13 @@ function BurnSignAndSendBlock({
   // continue burning without rescanning between batches.
   onBuildNext?: () => void;
   nextBatchRemaining?: number;
+  // Fired exactly once per send when the tx reaches `finalized` on chain.
+  // Lets the parent section strip the just-burned items from its
+  // discovery list + selection set so the user doesn't see them as
+  // candidates anymore. We don't take the burned IDs as an argument —
+  // each preview already knows which ids it built the tx for and binds
+  // them via closure.
+  onBurned?: () => void;
 }) {
   const w = useWallet();
   // Compact mode = standalone /burner. In that mode the sticky page-level
@@ -3535,33 +3577,33 @@ function BurnSignAndSendBlock({
   // calls in flight, so the ref short-circuits subsequent invocations
   // synchronously inside the click handler.
   const inFlightRef = useRef(false);
-  // Stash onBuildNext in a ref so the auto-advance useEffect doesn't need
-  // it in its dep array (the callback's identity changes every render
-  // because it's a closure over `result.nextBatchCandidates`).
-  const onBuildNextRef = useRef(onBuildNext);
-  onBuildNextRef.current = onBuildNext;
+  // Stash onBurned in a ref so the post-finalize useEffect doesn't need
+  // it in its dep array (its identity changes every render because it's
+  // a closure over the parent's candidates state).
+  const onBurnedRef = useRef(onBurned);
+  onBurnedRef.current = onBurned;
+  // Single-shot guard: ensure onBurned() fires exactly once per send,
+  // even if React re-renders the block between "finalized" and unmount.
+  const burnedFiredRef = useRef(false);
 
-  // Auto-advance: when a batch reaches "finalized" and there are leftover
-  // items for the next batch, kick off the next build automatically after
-  // a brief pause so the user sees the success state. They still sign
-  // each batch in Phantom — only the manual "Build next batch" click is
-  // removed. Previous batch's BurnSignAndSendBlock unmounts as soon as
-  // the parent's build state flips to "loading", which clears this
-  // timeout via the cleanup.
+  // On finalize: fire the parent's `onBurned` callback so the section
+  // can strip the just-burned ids from its discovery list + selection
+  // set. Single-shot via `burnedFiredRef`. We do this in an effect
+  // (rather than inline at the setSend site) because finalization runs
+  // through several setSend calls (signing → submitted → confirmed →
+  // finalized) and an effect keyed on `send.status === "finalized"` is
+  // the cleanest single edge.
+  //
+  // We deliberately do NOT auto-advance into the next batch here — the
+  // session burn filter already strips finalized items from the
+  // candidate grid, so leftover counts are no longer reliable. The user
+  // clicks "Build next batch" manually if they want to continue.
   useEffect(() => {
     if (send.status !== "finalized") return;
-    if (
-      nextBatchRemaining === undefined ||
-      nextBatchRemaining <= 0 ||
-      !onBuildNextRef.current
-    ) {
-      return;
-    }
-    const t = setTimeout(() => {
-      onBuildNextRef.current?.();
-    }, 1500);
-    return () => clearTimeout(t);
-  }, [send.status, nextBatchRemaining]);
+    if (burnedFiredRef.current) return;
+    burnedFiredRef.current = true;
+    onBurnedRef.current?.();
+  }, [send.status]);
 
   const noTx = transactionBase64 === null;
   const walletMismatch =
@@ -4064,11 +4106,13 @@ function BurnTxPreview({
   walletAddress,
   onWalletRescan,
   rescanPending,
+  onBurned,
 }: {
   result: BuildBurnAndCloseTxResult;
   walletAddress: string;
   onWalletRescan: () => void;
   rescanPending: boolean;
+  onBurned?: (mints: string[]) => void;
 }) {
   const isCompact = useCompactMode();
   // Audit the actual bytes the backend produced. The check is memoised on
@@ -4202,6 +4246,9 @@ function BurnTxPreview({
       showAckCheckbox={false}
       onWalletRescan={onWalletRescan}
       rescanPending={rescanPending}
+      onBurned={() =>
+        onBurned?.(result.includedAccounts.map((a) => a.mint))
+      }
     />
   );
   if (isCompact) return burnBlock;
@@ -4382,17 +4429,41 @@ function LegacyNftBurnSection({
   //                    metadata, etc.). Grouped by reason for compact display.
   // The current-tx batch (includedNfts) is consumed by the preview, not
   // by this table.
+  // Mints already burned in this session. Filtered out of `candidates`
+  // below so the just-burned NFTs disappear from the selection grid the
+  // moment their tx finalizes (no rescan required). Cleared only when
+  // discovery re-runs (which re-mounts state).
+  const [burnedMints, setBurnedMints] = useState<Set<string>>(new Set());
+  const handleBurned = useCallback((mints: string[]) => {
+    if (mints.length === 0) return;
+    setBurnedMints((prev) => {
+      const next = new Set(prev);
+      for (const m of mints) next.add(m);
+      return next;
+    });
+    setSelectedMints((prev) => {
+      const next = new Set(prev);
+      for (const m of mints) next.delete(m);
+      return next;
+    });
+    // Drop the build preview so the user doesn't see stale tx state
+    // pointing at mints that no longer exist on-chain.
+    setBuild({ status: "idle" });
+  }, []);
+
   const candidates = useMemo(() => {
     if (discover.status !== "ready") return null;
-    const burnable = discover.result.burnableCandidates.map((c) => ({
-      mint: c.mint,
-      tokenAccount: c.tokenAccount,
-      name: c.name,
-      symbol: c.symbol,
-      image: c.image,
-      collection: c.collection,
-      estimatedGrossReclaimSol: c.estimatedGrossReclaimSol as number | null,
-    }));
+    const burnable = discover.result.burnableCandidates
+      .filter((c) => !burnedMints.has(c.mint))
+      .map((c) => ({
+        mint: c.mint,
+        tokenAccount: c.tokenAccount,
+        name: c.name,
+        symbol: c.symbol,
+        image: c.image,
+        collection: c.collection,
+        estimatedGrossReclaimSol: c.estimatedGrossReclaimSol as number | null,
+      }));
     // Defensive: if a future backend reverts to pushing cap-overflow into
     // skipped, exclude them from nonBurnable.
     const nonBurnable = discover.result.skippedNfts.filter(
@@ -4400,7 +4471,7 @@ function LegacyNftBurnSection({
         !(s.reason.startsWith("Cap of") || s.reason.startsWith("Trimmed to fit")),
     );
     return { burnable, nonBurnable };
-  }, [discover]);
+  }, [discover, burnedMints]);
 
   // Stable across renders so the memoized BurnCandidateCard children
   // skip re-render when other items toggle. setSelectedMints from
@@ -4619,6 +4690,7 @@ function LegacyNftBurnSection({
                       onWalletRescan={onWalletRescan}
                       rescanPending={rescanPending}
                       onBuildBatch={handleBuildBatch}
+                      onBurned={handleBurned}
                     />
                   )}
                   {candidates.nonBurnable.length > 0 && (
@@ -4829,24 +4901,31 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
   compact: boolean;
 }) {
   if (compact) {
-    // Card label is INTRA-group, so the collection name (already shown
-    // in the group header) is redundant — and identical-prefixed
-    // names like "More Beautiful Honey Pot #1 / #2 / #3" all collapse
-    // to "More Be…" after truncation, making the cards
-    // indistinguishable. Drop the prefix and show just the unique
-    // suffix:
-    //   • everything after the LAST "#" → "#420"
-    //   • else last 4 chars after the last whitespace → "0123"
-    //   • else the last 4 chars of the mint as a stable fallback
-    const compactLabel = (() => {
-      if (name) {
-        const hash = name.lastIndexOf("#");
-        if (hash >= 0 && hash < name.length - 1) return `#${name.slice(hash + 1).trim()}`;
-        const ws = name.lastIndexOf(" ");
-        if (ws >= 0 && ws < name.length - 1) return name.slice(ws + 1).trim();
-        return name;
+    // Compact card label: split into two parts so both stay readable
+    // when 22 NFTs in the same collection have an identical prefix.
+    //   • Left  → the name PREFIX (everything before the last "#" or
+    //             trailing whitespace+number). Truncated by CSS when
+    //             the column is narrow.
+    //   • Right → the unique SUFFIX (`#255`, `420`, …). Never
+    //             truncates — that's the differentiator.
+    // If the name has no recognisable suffix we just show the full
+    // name (truncated). If there's no name at all, fall back to the
+    // last 4 chars of the mint.
+    const split = (() => {
+      if (!name) return { prefix: shortAddr(id, 4, 4), suffix: null as string | null };
+      const hash = name.lastIndexOf("#");
+      if (hash >= 0 && hash < name.length - 1) {
+        return {
+          prefix: name.slice(0, hash).trim(),
+          suffix: `#${name.slice(hash + 1).trim()}`,
+        };
       }
-      return shortAddr(id, 4, 4);
+      // Trailing-number heuristic ("Claws Mythic 12" → prefix "Claws
+      // Mythic", suffix "12"). Only fires when the trailing token is
+      // pure digits — names like "Genesis V2" stay intact.
+      const m = name.match(/^(.*\S)\s+(\d+)\s*$/);
+      if (m) return { prefix: m[1], suffix: m[2] };
+      return { prefix: name, suffix: null };
     })();
     return (
       <label
@@ -4863,8 +4942,13 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
           className="vl-checkbox h-3.5 w-3.5 shrink-0 cursor-pointer"
         />
         <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white">
-          {compactLabel}
+          {split.prefix || (name ?? shortAddr(id, 4, 4))}
         </span>
+        {split.suffix && (
+          <span className="shrink-0 font-mono text-[10px] text-[color:var(--vl-fg-3)]">
+            {split.suffix}
+          </span>
+        )}
       </label>
     );
   }
@@ -5089,7 +5173,11 @@ function BurnCandidateGroupGrid({
             <div
               className={
                 isCompact
-                  ? "vl-card-grid grid grid-cols-3 gap-1 p-1.5 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-10 xl:grid-cols-12"
+                  ? // 6 columns at lg+ instead of 10–12 — at 12 cols the
+                    // prefix had ~6 chars before ellipsis, killing
+                    // readability. 6 cols leaves enough width for
+                    // "Collection Name… #420" to read on one line.
+                    "vl-card-grid grid grid-cols-2 gap-1 p-1.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7"
                   : "vl-card-grid grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
               }
             >
@@ -5399,6 +5487,7 @@ function LegacyNftBurnPreview({
   onWalletRescan,
   rescanPending,
   onBuildBatch,
+  onBurned,
 }: {
   result: BuildLegacyNftBurnTxResult;
   walletAddress: string;
@@ -5408,6 +5497,11 @@ function LegacyNftBurnPreview({
   // shortcut). Section computes the wrapper; preview just supplies the
   // current build's nextBatchCandidates as the mint list.
   onBuildBatch: (mints: string[]) => void;
+  // Section-level callback: receives the just-burned mints once the tx
+  // reaches `finalized` so the section can strip them from
+  // `candidates.burnable` + `selectedMints`. Bound by closure to
+  // `result.includedNfts` here.
+  onBurned?: (mints: string[]) => void;
 }) {
   const isCompact = useCompactMode();
   // Audit the actual produced bytes. Memoised on the base64 string so the
@@ -5543,6 +5637,9 @@ function LegacyNftBurnPreview({
       nextBatchRemaining={result.nextBatchCandidates.length}
       onBuildNext={() =>
         onBuildBatch(result.nextBatchCandidates.map((c) => c.mint))
+      }
+      onBurned={() =>
+        onBurned?.(result.includedNfts.map((n) => n.mint))
       }
     />
   );
@@ -5767,23 +5864,44 @@ function PnftBurnSection({
   // Two buckets — see LegacyNftBurnSection.candidates for the rationale.
   // Selectable table renders the full burnableCandidates list; the build
   // call narrows to the user's selection.
+  // Local set of pNFT mints burned in this session — same pattern as
+  // the legacy section. Filtered out of `candidates.burnable` so the
+  // grid drops the just-finalized items without waiting for a rescan.
+  const [burnedMints, setBurnedMints] = useState<Set<string>>(new Set());
+  const handleBurned = useCallback((mints: string[]) => {
+    if (mints.length === 0) return;
+    setBurnedMints((prev) => {
+      const next = new Set(prev);
+      for (const m of mints) next.add(m);
+      return next;
+    });
+    setSelectedMints((prev) => {
+      const next = new Set(prev);
+      for (const m of mints) next.delete(m);
+      return next;
+    });
+    setBuild({ status: "idle" });
+  }, []);
+
   const candidates = useMemo(() => {
     if (discover.status !== "ready") return null;
-    const burnable = discover.result.burnableCandidates.map((c) => ({
-      mint: c.mint,
-      tokenAccount: c.tokenAccount,
-      name: c.name,
-      symbol: c.symbol,
-      image: c.image,
-      collection: c.collection,
-      estimatedGrossReclaimSol: c.estimatedGrossReclaimSol as number | null,
-    }));
+    const burnable = discover.result.burnableCandidates
+      .filter((c) => !burnedMints.has(c.mint))
+      .map((c) => ({
+        mint: c.mint,
+        tokenAccount: c.tokenAccount,
+        name: c.name,
+        symbol: c.symbol,
+        image: c.image,
+        collection: c.collection,
+        estimatedGrossReclaimSol: c.estimatedGrossReclaimSol as number | null,
+      }));
     const nonBurnable = discover.result.skippedPnfts.filter(
       (s) =>
         !(s.reason.startsWith("Cap of") || s.reason.startsWith("Trimmed to fit")),
     );
     return { burnable, nonBurnable };
-  }, [discover]);
+  }, [discover, burnedMints]);
 
   const toggleSelected = useCallback((mint: string): void => {
     setSelectedMints((prev) => {
@@ -5986,6 +6104,7 @@ function PnftBurnSection({
                       onWalletRescan={onWalletRescan}
                       rescanPending={rescanPending}
                       onBuildBatch={handleBuildBatch}
+                      onBurned={handleBurned}
                     />
                   )}
                   {candidates.nonBurnable.length > 0 && (
@@ -6085,12 +6204,14 @@ function PnftBurnPreview({
   onWalletRescan,
   rescanPending,
   onBuildBatch,
+  onBurned,
 }: {
   result: BuildPnftBurnTxResult;
   walletAddress: string;
   onWalletRescan: () => void;
   rescanPending: boolean;
   onBuildBatch: (mints: string[]) => void;
+  onBurned?: (mints: string[]) => void;
 }) {
   const isCompact = useCompactMode();
   // pNFT BurnV1 uses the same Token Metadata program + opcode 41 as the
@@ -6224,6 +6345,9 @@ function PnftBurnPreview({
       nextBatchRemaining={result.nextBatchCandidates.length}
       onBuildNext={() =>
         onBuildBatch(result.nextBatchCandidates.map((c) => c.mint))
+      }
+      onBurned={() =>
+        onBurned?.(result.includedPnfts.map((n) => n.mint))
       }
     />
   );
@@ -6436,22 +6560,44 @@ function CoreBurnSection({
   // Two buckets — see LegacyNftBurnSection.candidates for the rationale.
   // Selectable table renders the full burnableCandidates list; the build
   // call narrows to the user's selection.
+  // Local set of Core asset ids burned in this session — same pattern
+  // as the legacy / pNFT sections. Filtered out of `candidates.burnable`
+  // so the just-finalized assets disappear from the grid without
+  // waiting for a rescan.
+  const [burnedAssets, setBurnedAssets] = useState<Set<string>>(new Set());
+  const handleBurned = useCallback((assets: string[]) => {
+    if (assets.length === 0) return;
+    setBurnedAssets((prev) => {
+      const next = new Set(prev);
+      for (const a of assets) next.add(a);
+      return next;
+    });
+    setSelectedAssets((prev) => {
+      const next = new Set(prev);
+      for (const a of assets) next.delete(a);
+      return next;
+    });
+    setBuild({ status: "idle" });
+  }, []);
+
   const candidates = useMemo(() => {
     if (discover.status !== "ready") return null;
-    const burnable = discover.result.burnableCandidates.map((c) => ({
-      asset: c.asset,
-      collection: c.collection,
-      name: c.name,
-      uri: c.uri,
-      image: c.image,
-      estimatedGrossReclaimSol: c.estimatedGrossReclaimSol as number | null,
-    }));
+    const burnable = discover.result.burnableCandidates
+      .filter((c) => !burnedAssets.has(c.asset))
+      .map((c) => ({
+        asset: c.asset,
+        collection: c.collection,
+        name: c.name,
+        uri: c.uri,
+        image: c.image,
+        estimatedGrossReclaimSol: c.estimatedGrossReclaimSol as number | null,
+      }));
     const nonBurnable = discover.result.skippedAssets.filter(
       (s) =>
         !(s.reason.startsWith("Cap of") || s.reason.startsWith("Trimmed to fit")),
     );
     return { burnable, nonBurnable };
-  }, [discover]);
+  }, [discover, burnedAssets]);
 
   const toggleSelected = useCallback((asset: string): void => {
     setSelectedAssets((prev) => {
@@ -6646,6 +6792,7 @@ function CoreBurnSection({
                       onWalletRescan={onWalletRescan}
                       rescanPending={rescanPending}
                       onBuildBatch={handleBuildBatch}
+                      onBurned={handleBurned}
                     />
                   )}
                 </>
@@ -6750,12 +6897,14 @@ function CoreBurnPreview({
   onWalletRescan,
   rescanPending,
   onBuildBatch,
+  onBurned,
 }: {
   result: BuildCoreBurnTxResult;
   walletAddress: string;
   onWalletRescan: () => void;
   rescanPending: boolean;
   onBuildBatch: (assetIds: string[]) => void;
+  onBurned?: (assets: string[]) => void;
 }) {
   const isCompact = useCompactMode();
   const audit: CoreBurnAuditResult | null = useMemo(() => {
@@ -6886,6 +7035,9 @@ function CoreBurnPreview({
       nextBatchRemaining={result.nextBatchCandidates.length}
       onBuildNext={() =>
         onBuildBatch(result.nextBatchCandidates.map((c) => c.asset))
+      }
+      onBurned={() =>
+        onBurned?.(result.includedAssets.map((a) => a.asset))
       }
     />
   );
