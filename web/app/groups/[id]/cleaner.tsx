@@ -4528,7 +4528,7 @@ function LegacyNftBurnSection({
   // per-tx batches automatically and the frontend walks them sequentially
   // through the existing "Build next batch" flow.
   const canBuild =
-    selectedMints.size > 0 && build.status !== "loading" && !buildPending;
+    selectedMints.size > 0 && build.status !== "loading";
 
   // Publish Legacy NFT selection state for the page-level sticky bar.
   // Reclaim sum walks the burnable list once per selection change. Each
@@ -4688,7 +4688,7 @@ function LegacyNftBurnSection({
                           : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
                       }
                     >
-                      {build.status === "loading" || buildPending
+                      {build.status === "loading"
                         ? "Preparing…"
                         : build.status === "ready"
                         ? "Re-prepare burn"
@@ -5950,7 +5950,7 @@ function PnftBurnSection({
 
   // No upfront selection cap — backend slices into per-tx batches.
   const canBuild =
-    selectedMints.size > 0 && build.status !== "loading" && !buildPending;
+    selectedMints.size > 0 && build.status !== "loading";
 
   // Publish pNFT selection state for the page-level sticky bar.
   const pnftReclaimSol = useMemo(() => {
@@ -6102,7 +6102,7 @@ function PnftBurnSection({
                           : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
                       }
                     >
-                      {build.status === "loading" || buildPending
+                      {build.status === "loading"
                         ? "Preparing…"
                         : build.status === "ready"
                         ? "Re-prepare burn"
@@ -6645,7 +6645,7 @@ function CoreBurnSection({
   }
 
   const canBuild =
-    selectedAssets.size > 0 && build.status !== "loading" && !buildPending;
+    selectedAssets.size > 0 && build.status !== "loading";
 
   // Publish Core selection state for the page-level sticky bar.
   const coreReclaimSol = useMemo(() => {
@@ -6790,7 +6790,7 @@ function CoreBurnSection({
                           : "inline-flex items-center rounded-lg border-2 border-red-600/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
                       }
                     >
-                      {build.status === "loading" || buildPending
+                      {build.status === "loading"
                         ? "Preparing…"
                         : build.status === "ready"
                         ? "Re-prepare burn"
