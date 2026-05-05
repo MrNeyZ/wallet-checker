@@ -1651,7 +1651,25 @@ async function buildLegacyNftBurnTxImpl(
   while (built !== null && included.length > 0) {
     let simErr: string | undefined;
     try {
-      const sim = await connection.simulateTransaction(built.tx);
+      console.log(
+        `[legacyNftBurn] simulateTransaction start owner=${ownerStr} batch=${included.length}`,
+      );
+      const simStart = Date.now();
+      // 20s hard timeout — public mainnet-beta sometimes hangs indefinitely
+      // on simulate, leaving the user with a forever-spinning "Preparing…".
+      // Cleaner to fail fast and surface a clear error than to hang.
+      const sim = await Promise.race([
+        connection.simulateTransaction(built.tx),
+        new Promise<never>((_, rej) =>
+          setTimeout(
+            () => rej(new Error("simulateTransaction timed out after 20s — RPC unresponsive")),
+            20_000,
+          ),
+        ),
+      ]);
+      console.log(
+        `[legacyNftBurn] simulateTransaction done owner=${ownerStr} batch=${included.length} ms=${Date.now() - simStart} err=${sim.value.err ? "yes" : "no"}`,
+      );
       if (!sim.value.err) {
         simulationOk = true;
         break;
