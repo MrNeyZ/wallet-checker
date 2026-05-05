@@ -1049,16 +1049,29 @@ async function confirmLegacyNfts(
       tokenStandard === TokenStandard.ProgrammableNonFungibleEdition;
     const isEdition = tokenStandard === TokenStandard.NonFungibleEdition;
     const isStandard = tokenStandard === TokenStandard.NonFungible;
-    const isLegacy = isStandard || isEdition;
+    // Pre-Metaplex / pre-tokenStandard NFTs: minted before mid-2022 when
+    // the `tokenStandard` field was added, so it deserializes as null
+    // even though the metadata is a real NFT. We accept these as legacy
+    // ONLY when a master-edition account exists on-chain — that's the
+    // signature of a real NFT mint vs a 1/0 spam token. Without this
+    // recovery the operator was losing ~45 burnable NFTs to the
+    // "Metadata has no tokenStandard" skip.
+    const hasMasterEdition = (editionInfo?.lamports ?? 0) > 0;
+    const isPreMetaplexNft = tokenStandard === null && hasMasterEdition;
+    const isLegacy = isStandard || isEdition || isPreMetaplexNft;
 
     let isBurnable = false;
     let unburnableReason: string | undefined;
     if (isProgrammable) {
-      unburnableReason = "ProgrammableNonFungible (pNFT) — Milestone 2";
+      // pNFTs ARE burnable, just not by this section. Point the user at
+      // the pNFT section that shares the same /burner "NFTs" tab so they
+      // realise these aren't lost — the old "Milestone 2" wording read
+      // as "deferred / not implemented", which it isn't anymore.
+      unburnableReason = "ProgrammableNonFungible (pNFT) — see pNFT section below";
     } else if (!isLegacy) {
       unburnableReason =
         tokenStandard === null
-          ? "Metadata has no tokenStandard — likely pre-Metaplex or non-standard mint"
+          ? "Metadata has no tokenStandard and no master edition — likely a 1-supply spam token, not an NFT"
           : `Unsupported tokenStandard ${tokenStandard}`;
     } else if (isEdition) {
       unburnableReason =
@@ -2097,16 +2110,26 @@ async function confirmPnfts(
       }
     }
     for (let k = 0; k < collectionEntries.length; k++) {
-      const [candidateIdx] = collectionEntries[k];
+      const [candidateIdx, collectionMint] = collectionEntries[k];
       const colInfo = collectionInfos[k];
       const colPda = collectionPdas[k].toBase58();
       const conf = out[candidateIdx];
-      // Best-effort burn — see confirmLegacyNfts Pass 2 for the full
-      // rationale. Don't pre-skip; let the preflight sim-trim isolate any
-      // pNFT that the on-chain program actually rejects without the
-      // collection slot.
+      console.log("[pnftBurn] collection metadata", {
+        mint: conf.mint,
+        collectionMint: collectionMint.toBase58(),
+        collectionMetadata: colInfo ? colPda : null,
+      });
+      // Strict: pNFT BurnV1 rejects collection-verified pNFTs (`0x67 /
+      // Missing collection metadata account`) when the
+      // `collectionMetadata` slot isn't supplied. Mirror the legacy
+      // section's strict pre-skip so the failure surfaces as a clean
+      // discovery skip with a clear reason instead of a preflight
+      // rejection that mass-trims the batch.
       if (colInfo) {
         conf.collectionMetadataPda = colPda;
+      } else {
+        conf.isBurnable = false;
+        conf.unburnableReason = "Missing verified collection metadata account";
       }
     }
   }

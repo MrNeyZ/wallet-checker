@@ -4829,11 +4829,31 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
   compact: boolean;
 }) {
   if (compact) {
+    // Card label is INTRA-group, so the collection name (already shown
+    // in the group header) is redundant — and identical-prefixed
+    // names like "More Beautiful Honey Pot #1 / #2 / #3" all collapse
+    // to "More Be…" after truncation, making the cards
+    // indistinguishable. Drop the prefix and show just the unique
+    // suffix:
+    //   • everything after the LAST "#" → "#420"
+    //   • else last 4 chars after the last whitespace → "0123"
+    //   • else the last 4 chars of the mint as a stable fallback
+    const compactLabel = (() => {
+      if (name) {
+        const hash = name.lastIndexOf("#");
+        if (hash >= 0 && hash < name.length - 1) return `#${name.slice(hash + 1).trim()}`;
+        const ws = name.lastIndexOf(" ");
+        if (ws >= 0 && ws < name.length - 1) return name.slice(ws + 1).trim();
+        return name;
+      }
+      return shortAddr(id, 4, 4);
+    })();
     return (
       <label
         className={`vl-card is-interactive flex cursor-pointer items-center gap-1.5 px-1.5 py-1 text-left ${
           isChecked ? "is-selected" : ""
         }`}
+        title={name ?? id}
       >
         <input
           type="checkbox"
@@ -4843,7 +4863,7 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
           className="vl-checkbox h-3.5 w-3.5 shrink-0 cursor-pointer"
         />
         <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white">
-          {name ?? shortAddr(id, 4, 4)}
+          {compactLabel}
         </span>
       </label>
     );
@@ -5157,14 +5177,19 @@ function PickNInGroup({
   };
   return (
     <span className="inline-flex items-center gap-1">
+      {/* Plain text input with `inputMode="numeric"` instead of
+          `type="number"` — browser spinner arrows on number inputs
+          covered the "N" placeholder + ate ~12px of horizontal space
+          inside the 48px field, so the user couldn't read or hit the
+          input cleanly. Mobile keyboards still show the numeric pad
+          via `inputMode`; we strip non-digits in onChange. */}
       <input
-        type="number"
+        type="text"
         inputMode="numeric"
-        min={1}
-        max={remaining || undefined}
+        pattern="[0-9]*"
         placeholder="N"
         value={raw}
-        onChange={(e) => setRaw(e.target.value)}
+        onChange={(e) => setRaw(e.target.value.replace(/\D+/g, ""))}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -5173,7 +5198,7 @@ function PickNInGroup({
         }}
         aria-label="Pick first N items in this group"
         disabled={remaining === 0}
-        className="w-12 rounded border border-[color:var(--vl-border)] bg-transparent px-1.5 py-0.5 text-right text-[11px] font-mono text-[color:var(--vl-fg)] outline-none transition-colors duration-[var(--vl-motion,180ms)] focus:border-[var(--vl-purple)] disabled:opacity-50"
+        className="w-10 rounded border border-[color:var(--vl-border)] bg-transparent px-1.5 py-0.5 text-right text-[11px] font-mono text-[color:var(--vl-fg)] outline-none transition-colors duration-[var(--vl-motion,180ms)] focus:border-[var(--vl-purple)] disabled:opacity-50"
       />
       <button
         type="button"
