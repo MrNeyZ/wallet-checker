@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { api, type Group, type SystemStatus } from "@/lib/api";
 import { createGroupAction } from "./actions";
 import { GroupsListClient } from "./groups-list-client";
@@ -6,6 +7,10 @@ import { SectionHeader } from "@/ui-kit/components/SectionHeader";
 import { btnVlGhost } from "@/lib/buttonStyles";
 
 export const dynamic = "force-dynamic";
+
+// Tab title resolves through the layout's `template: "VictoryLabs — %s"`,
+// so this becomes "VictoryLabs — Groups".
+export const metadata: Metadata = { title: "Groups" };
 
 // Server component renders the page chrome + does the initial data
 // fetch for fast first paint. Refresh / retry / polling are handled by

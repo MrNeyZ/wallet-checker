@@ -10,7 +10,14 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Wallet Checker",
+  // Per-page metadata sets a short string ("Burner", "Groups", group
+  // name…) and the template wraps it as "VictoryLabs — <page>". The
+  // `default` is the fallback when a page doesn't override (e.g. error
+  // pages or routes without their own metadata export).
+  title: {
+    default: "VictoryLabs",
+    template: "VictoryLabs — %s",
+  },
   description: "Solana wallet group dashboard",
 };
 

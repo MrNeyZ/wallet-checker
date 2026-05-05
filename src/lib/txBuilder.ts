@@ -1121,20 +1121,34 @@ async function confirmLegacyNfts(
       }
     }
     for (let k = 0; k < collectionEntries.length; k++) {
-      const [candidateIdx] = collectionEntries[k];
+      const [candidateIdx, collectionMint] = collectionEntries[k];
       const colInfo = collectionInfos[k];
       const colPda = collectionPdas[k].toBase58();
       const conf = out[candidateIdx];
-      // Best-effort burn (SolRip-style): if the verified collection's parent
-      // metadata is missing, leave collectionMetadataPda null and still
-      // attempt the burn. The BurnV1 ix is built without the collection slot;
-      // if the on-chain program rejects it for that reason, the preflight
-      // sim-trim loop isolates that single item with its own simulationError
-      // reason. Pre-skipping here was over-strict and produced false negatives
-      // for NFTs whose verified collection's parent metadata had been moved /
-      // closed but the child burn would have succeeded anyway.
+      console.log("[legacyNftBurn] collection metadata", {
+        mint: conf.mint,
+        collectionMint: collectionMint.toBase58(),
+        collectionMetadata: colInfo ? colPda : null,
+      });
+      // Strict: BurnV1 rejects collection-verified NFTs (`0x67 / Missing
+      // collection metadata account`) when the `collectionMetadata` slot
+      // isn't supplied. The previous "best-effort" branch (leave the slot
+      // null and let the sim-trim loop catch it) was the actual cause of
+      // the preflight error the operator was seeing — we'd build a tx the
+      // program guaranteed to reject.
+      //
+      // If we have the parent metadata account on-chain → wire it in.
+      // If the metadata's `collection` says verified but we can't fetch
+      // the parent metadata account → skip this NFT with the explicit
+      // "Missing verified collection metadata account" reason. The user
+      // sees it surfaced in the section's non-burnable summary and can
+      // burn other NFTs in the wallet without one bad collection
+      // gumming up the whole batch.
       if (colInfo) {
         conf.collectionMetadataPda = colPda;
+      } else {
+        conf.isBurnable = false;
+        conf.unburnableReason = "Missing verified collection metadata account";
       }
     }
   }
@@ -2251,10 +2265,12 @@ function parseSimulationError(err: unknown, logs: string[]): string {
       return "Asset's plugin chain rejected this authority. Owner-burn may be blocked by a Freeze / Permanent plugin.";
     }
     // --- Token Metadata (legacy NFT / pNFT) signals ---
-    // Collection-verified pNFTs: program demands the real collection
-    // Metadata PDA, not the program-id placeholder the v2 SDK supplies.
+    // Collection-verified NFTs: program demands the real collection
+    // Metadata PDA in the `collectionMetadata` slot. Fires for legacy
+    // BurnV1 too (custom error 0x67), not just pNFT — keep the wording
+    // generic.
     if (/missing collection metadata/i.test(log)) {
-      return "Collection-verified pNFT — burn requires the parent collection's Metadata account, which this builder does not yet supply.";
+      return "Collection-verified NFT requires parent collection metadata account";
     }
     if (/token record.*lock/i.test(log)) {
       return "Token record is locked. Unfreeze the pNFT before burning.";

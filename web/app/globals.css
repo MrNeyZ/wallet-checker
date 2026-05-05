@@ -567,3 +567,49 @@ body {
   border-bottom-color: var(--vl-purple);
   background: linear-gradient(180deg, rgba(128,104,216,0.08) 0%, rgba(128,104,216,0.00) 100%);
 }
+
+/* ============================================================================
+   /burner perf-trim overrides. Scoped to `.vl-burner` (set on the
+   /burner page root only) so the full /groups/[id]?tab=cleaner view
+   keeps its lifted/frosted look untouched.
+
+   Two cheap wins for laptops with 1000+ NFT wallets:
+
+   1. Strip backdrop-filter blur from every .vl-card / .vl-burn-card /
+      .vl-action-bar / .vl-table inside the burner. Each frosted
+      surface forces the compositor to re-blur its backing layer on
+      every scroll, hover, and selection toggle — for 200+ on-screen
+      cards that adds up to a constant GPU load.
+   2. Drop the heavy multi-layer box-shadow glows. The selected-card
+      pulse + hover-lift ring + action-bar drop-shadow each blur a
+      ~30px shadow which is also a per-frame GPU cost. We keep a thin
+      1px border outline so the selected/hover state is still readable.
+
+   Selection / hover affordance is preserved via border-color +
+   background tint — the actual semantics of "this card is selected"
+   are unchanged.
+   ============================================================================ */
+.vl-burner .vl-card,
+.vl-burner .vl-burn-card,
+.vl-burner .vl-action-bar,
+.vl-burner .vl-table {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+.vl-burner .vl-card.is-interactive:hover {
+  /* Same border tweak; drop the multi-layer purple glow + scale lift. */
+  transform: none;
+  box-shadow: none;
+}
+.vl-burner .vl-card.is-selected,
+.vl-burner .vl-card.is-selected:hover {
+  /* 1px border still flips to purple via the existing border-color
+     rule; drop the three-layer box-shadow that produced the glow. */
+  box-shadow: none;
+}
+.vl-burner .vl-action-bar {
+  /* Keep a single hairline outline so the bar still reads as a lifted
+     element against the dark page, but no expensive blur shadow. */
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+}

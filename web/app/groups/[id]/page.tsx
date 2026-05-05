@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { addWalletAction, removeWalletAction } from "../actions";
@@ -25,6 +26,27 @@ import { WalletLink } from "@/ui-kit/components/WalletLink";
 import { btnVlPrimary, btnDangerLink } from "@/lib/buttonStyles";
 
 export const dynamic = "force-dynamic";
+
+// Browser tab title for /groups/[id]. Reads the group's user-facing
+// name from the same `listGroups()` call the page already uses, then
+// pipes it through the layout's "VictoryLabs — %s" template — so the
+// tab shows e.g. `VictoryLabs — Alpha hunters`. Failures fall back to
+// "Group" so a transient backend error doesn't crash the head render.
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
+  const { id } = await params;
+  try {
+    const groups = await api.listGroups();
+    const found = groups.groups.find((g) => g.id === id);
+    if (found?.name) return { title: found.name };
+  } catch {
+    /* fall through to generic title */
+  }
+  return { title: "Group" };
+}
 
 interface PageSearchParams {
   minUsd?: string;

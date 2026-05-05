@@ -53,11 +53,16 @@ function BurnerBody() {
   const { connected, connecting, connect } = useWallet();
   const [tab, setTab] = useState<CleanerVisibleSection>("nfts");
   const [summary, setSummary] = useState<CleanerRowSummary | null>(null);
-  // Page-level destructive acknowledgement. Replaces the per-preview
-  // checkbox in compact mode — the gate is preserved (the BurnSignAndSendBlock
-  // reads it via BurnAckCtx and still refuses to sign without it), it just
-  // lives on the sticky action bar so the user only ticks once per session.
-  const [ack, setAck] = useState(false);
+
+  // The page-level "Acknowledge irreversible burn" checkbox was removed
+  // (operator was tired of the extra click). Phantom's own wallet sign
+  // dialog already requires an explicit user confirmation per burn, and
+  // the audit / wallet-match / simulation gates inside
+  // BurnSignAndSendBlock are unchanged — that's the safety boundary the
+  // burn pipeline actually relies on. We keep the BurnAckProvider with
+  // a hard-coded `true` so the compact `BurnSignAndSendBlock` (which
+  // still reads `useBurnAck()`) sees the ack as always-satisfied
+  // without us having to touch its internals.
 
   // NOTE: this component intentionally does NOT subscribe to the burn
   // selection registry. Every per-section publisher tick (selection toggle,
@@ -69,8 +74,13 @@ function BurnerBody() {
   // ticks while CleanerRow stays put.
 
   return (
-    <BurnAckProvider value={ack}>
-    <div className="space-y-2.5">
+    <BurnAckProvider value={true}>
+    {/* `vl-burner` scopes a perf-trim CSS block in globals.css that
+        disables backdrop-filter blur + heavy box-shadow glow on every
+        .vl-card / .vl-burn-card / .vl-action-bar inside this subtree.
+        Hundreds of frosted cards on a 1000+ NFT wallet were a major
+        compositor hot path. The full /groups/[id] view stays untouched. */}
+    <div className="vl-burner space-y-2.5">
       {/* Warning strip — slim red-coded banner; matches Burner.html. */}
       <div
         role="note"
@@ -133,8 +143,6 @@ function BurnerBody() {
           <StickyActionBarWired
             tab={tab}
             hasScan={summary !== null}
-            ack={ack}
-            onToggleAck={() => setAck((v) => !v)}
           />
         </>
       ) : (
@@ -293,24 +301,14 @@ function BurnerStatTiles({ summary }: { summary: CleanerRowSummary | null }) {
 function StickyActionBarWired({
   tab,
   hasScan,
-  ack,
-  onToggleAck,
 }: {
   tab: CleanerVisibleSection;
   hasScan: boolean;
-  ack: boolean;
-  onToggleAck: () => void;
 }) {
   const registry = useBurnSelectionRegistry();
   const aggregate = aggregateForTab(registry, tab);
   return (
-    <StickyActionBar
-      tab={tab}
-      hasScan={hasScan}
-      aggregate={aggregate}
-      ack={ack}
-      onToggleAck={onToggleAck}
-    />
+    <StickyActionBar tab={tab} hasScan={hasScan} aggregate={aggregate} />
   );
 }
 
@@ -447,24 +445,22 @@ function StickyActionBar({
   tab,
   hasScan,
   aggregate,
-  ack,
-  onToggleAck,
 }: {
   tab: CleanerVisibleSection;
   hasScan: boolean;
   aggregate: TabAggregate;
-  ack: boolean;
-  onToggleAck: () => void;
 }) {
   const actionVerb = TAB_ACTION_VERB[tab];
   const itemLabel = TAB_LABEL[tab];
   const { selectedCount, reclaimSol, canBuild, triggerOrder } = aggregate;
-  // Ack-gated trigger. Even with selections + canBuild green, the user
-  // must tick destructive ack here before the page-level click is wired.
-  // Defence-in-depth: BurnSignAndSendBlock also reads the same ack via
-  // BurnAckCtx and refuses to sign without it, so a stale DOM dispatch
-  // can't bypass the gate either.
-  const canFire = canBuild && ack && triggerOrder.length > 0;
+  // The page-level destructive-ack checkbox was removed (operator
+  // request — Phantom's own sign confirmation already requires an
+  // explicit click per burn). The remaining gate `canBuild` is what
+  // actually matters: it requires a non-empty selection AND the
+  // section's own discovery / build pipeline to be ready. Audit /
+  // wallet-match / simulation gates still run inside
+  // BurnSignAndSendBlock before the wallet ever opens.
+  const canFire = canBuild && triggerOrder.length > 0;
 
   const handleBurn = () => {
     if (typeof document === "undefined") return;
@@ -495,9 +491,6 @@ function StickyActionBar({
     if (selectedCount === 0) {
       return `Select ${itemLabel}s in the section above to enable.`;
     }
-    if (!ack) {
-      return `${selectedCount} ${itemLabel}${selectedCount === 1 ? "" : "s"} · +${fmtSol(reclaimSol)} SOL · tick acknowledge to enable`;
-    }
     return `${selectedCount} ${itemLabel}${selectedCount === 1 ? "" : "s"} · +${fmtSol(reclaimSol)} SOL reclaim`;
   })();
 
@@ -515,21 +508,6 @@ function StickyActionBar({
           {subline}
         </div>
       </div>
-      <label
-        className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors duration-[var(--vl-motion,180ms)] ${
-          ack
-            ? "border-[rgba(239,120,120,0.45)] bg-[rgba(239,120,120,0.08)] text-[color:var(--vl-red)]"
-            : "border-[color:var(--vl-border)] bg-transparent text-[color:var(--vl-fg-2)] hover:border-[var(--vl-purple)]"
-        }`}
-      >
-        <input
-          type="checkbox"
-          checked={ack}
-          onChange={onToggleAck}
-          className="h-3 w-3 cursor-pointer accent-[color:var(--vl-red)]"
-        />
-        <span className="font-semibold">Acknowledge irreversible burn</span>
-      </label>
       <button
         type="button"
         onClick={handleBurn}
@@ -538,9 +516,7 @@ function StickyActionBar({
         aria-label={
           canFire
             ? `${actionVerb} (${selectedCount} item${selectedCount === 1 ? "" : "s"})`
-            : !canBuild
-              ? `${actionVerb} — disabled, no items selected`
-              : `${actionVerb} — disabled, acknowledge required`
+            : `${actionVerb} — disabled, no items selected`
         }
       >
         {actionVerb}

@@ -4727,12 +4727,37 @@ const NftThumbnail = React.memo(function NftThumbnail({
   src,
   alt,
   size = "sm",
+  kindLabel,
 }: {
   src: string | null;
   alt: string;
   size?: "sm" | "lg";
+  // Optional short label ("NFT" / "pNFT" / "Core" / "SPL") shown inside
+  // the compact-mode placeholder when image loading is suppressed. Only
+  // used when `useCompactMode()` is true; rendered as a small centered
+  // text so the cards stay visually distinguishable without doing any
+  // network/decode work.
+  kindLabel?: string;
 }) {
+  const isCompact = useCompactMode();
   const cls = size === "lg" ? "h-16 w-16" : "h-7 w-7";
+  // /burner runs CleanerRow with `compact`, which flips this context on.
+  // In that mode we deliberately render a labelled placeholder instead of
+  // ever touching `proxyImageUrl(src)` or mounting an <img>. Hundreds of
+  // image-proxy round-trips + decodes per scan was a major source of
+  // the laptop CPU/GPU heat the operator reported. The full /groups/[id]
+  // view (non-compact) still loads images normally.
+  if (isCompact) {
+    const label = kindLabel ?? alt;
+    return (
+      <span
+        aria-hidden
+        className={`inline-flex ${cls} shrink-0 items-center justify-center rounded bg-neutral-800 font-mono text-[9px] font-bold uppercase tracking-wider text-[color:var(--vl-fg-3)]`}
+      >
+        {label}
+      </span>
+    );
+  }
   // Hide-on-error needs state so the placeholder takes over reliably across
   // re-renders (style.visibility hack survived for one render only).
   const [errored, setErrored] = useState(false);
@@ -4789,6 +4814,7 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
   estimatedGrossReclaimSol,
   isChecked,
   onToggle,
+  compact,
 }: {
   id: string;
   name: string | null;
@@ -4797,7 +4823,31 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
   estimatedGrossReclaimSol: number | null;
   isChecked: boolean;
   onToggle: (id: string) => void;
+  // Compact = `/burner`. Tightens padding, drops the redundant
+  // short-mint chip + per-card SOL line, smaller checkbox — DOM stays
+  // light when 1000+ cards render at once.
+  compact: boolean;
 }) {
+  if (compact) {
+    return (
+      <label
+        className={`vl-card is-interactive flex cursor-pointer items-center gap-1.5 px-1.5 py-1 text-left ${
+          isChecked ? "is-selected" : ""
+        }`}
+      >
+        <input
+          type="checkbox"
+          checked={isChecked}
+          onChange={() => onToggle(id)}
+          aria-label={`Select ${name ?? itemKindLabel} for burn`}
+          className="vl-checkbox h-3.5 w-3.5 shrink-0 cursor-pointer"
+        />
+        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white">
+          {name ?? shortAddr(id, 4, 4)}
+        </span>
+      </label>
+    );
+  }
   return (
     <label
       className={`vl-card is-interactive flex cursor-pointer flex-col gap-1 p-2 text-left ${
@@ -4809,6 +4859,7 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
           src={image}
           alt={name ?? itemKindLabel}
           size="lg"
+          kindLabel={itemKindLabel}
         />
         <input
           type="checkbox"
@@ -4886,17 +4937,17 @@ function BurnCandidateGroupGrid({
   onToggleGroup: (ids: string[], selectAll: boolean) => void;
   itemKindLabel: string; // "NFT" / "pNFT" / "asset"
 }) {
-  // Pagination cap: render at most `visibleCount` thumbnails so a 200-item
-  // wallet doesn't fire 200 cross-origin image requests on first paint.
-  // Selection state is lifted (the `selected` Set), so it persists across
-  // "Show more" clicks even though hidden items aren't rendered.
-  // "Select all in group" still operates on every id in that group, not
-  // just the rendered subset — see `groups` below for the full list.
+  // Compact (`/burner`) renders every candidate up-front — images are
+  // already disabled in NftThumbnail for compact mode, so a 1000-card
+  // grid is just memoized DOM, not 1000 image decodes. The full
+  // `/groups/[id]?tab=cleaner` view keeps the 60-per-page guard
+  // because it still loads thumbnails.
+  const isCompact = useCompactMode();
   const [visibleCount, setVisibleCount] = useState(GRID_PAGE_SIZE);
   const totalCount = items.length;
   const visibleItems = useMemo(
-    () => items.slice(0, visibleCount),
-    [items, visibleCount],
+    () => (isCompact ? items : items.slice(0, visibleCount)),
+    [items, visibleCount, isCompact],
   );
 
   // Group by collection mint. Items with no verified collection fall into
@@ -4921,9 +4972,9 @@ function BurnCandidateGroupGrid({
     return entries;
   }, [visibleItems]);
 
-  // Full per-group ids — used by "Select all in group" so the toggle
-  // operates on every item in the collection, not just the currently-
-  // visible page. Built from the raw `items` list, not `visibleItems`.
+  // Full per-group ids — used by "Select all in group" + "Pick N" so
+  // both operate on every item in the collection, not just the
+  // currently-visible page. Built from the raw `items` list.
   const fullGroupIds = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const item of items) {
@@ -4981,25 +5032,47 @@ function BurnCandidateGroupGrid({
                   </span>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => onToggleGroup(ids, !allSelected)}
-                className="text-[11px] font-semibold text-[color:var(--vl-purple-2)] transition-colors duration-[var(--vl-motion,180ms)] hover:text-white"
-                aria-label={
-                  allSelected ? "Deselect all in group" : "Select all in group"
-                }
-              >
-                {allSelected
-                  ? "Deselect all"
-                  : anySelected
-                    ? `Select all (+${ids.length - ids.filter((id) => selected.has(id)).length})`
-                    : "Select all"}
-              </button>
+              <div className="flex items-center gap-2">
+                {/* "Pick N" — additive shortcut. Type a count, press Enter
+                    or the button, and the first N currently-unselected
+                    items in this group flip to selected. Useful when the
+                    operator wants to burn a fixed batch ("just 50 from
+                    this collection") without click-spamming individual
+                    cards. Selection in OTHER groups is preserved. */}
+                <PickNInGroup
+                  ids={ids}
+                  selected={selected}
+                  onPick={(toAdd) => onToggleGroup(toAdd, true)}
+                />
+                <button
+                  type="button"
+                  onClick={() => onToggleGroup(ids, !allSelected)}
+                  className="text-[11px] font-semibold text-[color:var(--vl-purple-2)] transition-colors duration-[var(--vl-motion,180ms)] hover:text-white"
+                  aria-label={
+                    allSelected ? "Deselect all in group" : "Select all in group"
+                  }
+                >
+                  {allSelected
+                    ? "Deselect all"
+                    : anySelected
+                      ? `Select all (+${ids.length - ids.filter((id) => selected.has(id)).length})`
+                      : "Select all"}
+                </button>
+              </div>
             </div>
             {/* Card-grid: darker than the panel so cards visibly LIFT.
                 Selected card flips to PURPLE accent (red is reserved
-                for the actual burn-button, per polish-pass spec). */}
-            <div className="vl-card-grid grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                for the actual burn-button, per polish-pass spec).
+                Compact mode runs a denser column count + tighter
+                padding because images are off — cards are tiny labels
+                and we want them packed, not floating. */}
+            <div
+              className={
+                isCompact
+                  ? "vl-card-grid grid grid-cols-3 gap-1 p-1.5 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-10 xl:grid-cols-12"
+                  : "vl-card-grid grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
+              }
+            >
               {groupItems.map((item) => (
                 <BurnCandidateCard
                   key={item.id}
@@ -5010,13 +5083,16 @@ function BurnCandidateGroupGrid({
                   estimatedGrossReclaimSol={item.estimatedGrossReclaimSol}
                   isChecked={selected.has(item.id)}
                   onToggle={onToggle}
+                  compact={isCompact}
                 />
               ))}
             </div>
           </div>
         );
       })}
-      {visibleCount < totalCount && (
+      {/* "Show more" pager only renders in non-compact view (full
+          /groups/[id]?tab=cleaner). The burner shows everything up-front. */}
+      {!isCompact && visibleCount < totalCount && (
         <div className="vl-card flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[11px]">
           <span className="text-[color:var(--vl-fg-2)]">
             Showing{" "}
@@ -5047,6 +5123,75 @@ function BurnCandidateGroupGrid({
         </div>
       )}
     </div>
+  );
+}
+
+// Per-group "Pick N" widget. Internal state so each group's input is
+// independent. Picks the first N currently-unselected ids from the
+// group (additive — never deselects, never touches other groups).
+function PickNInGroup({
+  ids,
+  selected,
+  onPick,
+}: {
+  ids: string[];
+  selected: Set<string>;
+  onPick: (toAdd: string[]) => void;
+}) {
+  const [raw, setRaw] = useState("");
+  const remaining = ids.filter((id) => !selected.has(id)).length;
+  const parsed = (() => {
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(n, remaining);
+  })();
+  const apply = () => {
+    if (parsed <= 0) return;
+    const out: string[] = [];
+    for (const id of ids) {
+      if (out.length >= parsed) break;
+      if (!selected.has(id)) out.push(id);
+    }
+    if (out.length > 0) onPick(out);
+    setRaw("");
+  };
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input
+        type="number"
+        inputMode="numeric"
+        min={1}
+        max={remaining || undefined}
+        placeholder="N"
+        value={raw}
+        onChange={(e) => setRaw(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            apply();
+          }
+        }}
+        aria-label="Pick first N items in this group"
+        disabled={remaining === 0}
+        className="w-12 rounded border border-[color:var(--vl-border)] bg-transparent px-1.5 py-0.5 text-right text-[11px] font-mono text-[color:var(--vl-fg)] outline-none transition-colors duration-[var(--vl-motion,180ms)] focus:border-[var(--vl-purple)] disabled:opacity-50"
+      />
+      <button
+        type="button"
+        onClick={apply}
+        disabled={parsed <= 0}
+        className="rounded border border-[color:var(--vl-border)] bg-transparent px-1.5 py-0.5 text-[11px] font-semibold text-[color:var(--vl-fg-2)] transition-colors duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-purple)] hover:text-[color:var(--vl-purple-2)] disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label={
+          parsed > 0 ? `Select first ${parsed} in group` : "Enter a count to pick"
+        }
+        title={
+          remaining === 0
+            ? "All items in this group already selected"
+            : `Select the first ${parsed || "N"} unselected items in this group`
+        }
+      >
+        Pick
+      </button>
+    </span>
   );
 }
 
