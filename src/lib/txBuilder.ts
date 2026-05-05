@@ -1643,10 +1643,11 @@ async function buildLegacyNftBurnTxImpl(
   // ============================================================================
   let simulationOk = false;
   let simulationError: string | undefined;
-  // Only simulate if size-trim produced a buildable tx. When `built` is
-  // null the size-trim has already isolated the offending NFT into
-  // `isolated`; skipping straight to the tx-less envelope keeps simulation
-  // from blowing up on null.tx access.
+  // Tracks the previous attempt's friendly error string. When two consecutive
+  // shrinks fail with the SAME error, further trimming is futile — the bad
+  // item isn't at the tail. Bail with the head isolated so the UI can move
+  // on instead of burning ~30-60s of RPC time on guaranteed-failure sims.
+  let prevSimErr: string | undefined;
   while (built !== null && included.length > 0) {
     let simErr: string | undefined;
     try {
@@ -1666,6 +1667,25 @@ async function buildLegacyNftBurnTxImpl(
         `[legacyNftBurn] preflight call failed for ${ownerStr} at batch=${included.length}: ${(err as Error)?.message ?? err}`,
       );
     }
+    // Fast-fail when the same friendly error repeats — trimming clearly
+    // isn't fixing it (bad item at head, or a deterministic per-batch
+    // issue like "Missing collection metadata account"). Isolating the
+    // head lets the user retry the rest immediately.
+    if (prevSimErr !== undefined && prevSimErr === simErr && included.length > 1) {
+      console.warn(
+        `[legacyNftBurn] fast-fail for ${ownerStr}: same error twice ("${simErr}"), isolating head ${included[0].mint}`,
+      );
+      isolated = {
+        mint: included[0].mint,
+        tokenAccount: included[0].tokenAccount,
+        reason: `Preflight rejected: ${simErr}`,
+      };
+      simulationError = simErr;
+      included = [];
+      built = null;
+      break;
+    }
+    prevSimErr = simErr;
     if (included.length === 1) {
       isolated = {
         mint: included[0].mint,
