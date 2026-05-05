@@ -21,6 +21,10 @@ export interface PhantomLikeProvider {
   signAndSendTransaction: (
     tx: Transaction,
   ) => Promise<{ signature: string; publicKey?: { toBase58(): string } }>;
+  // Sign-only — returns the signed Transaction without broadcasting.
+  // We use this for burn flows so we can broadcast through OUR RPC
+  // instead of Phantom's (which has been returning 403 on rate-limit).
+  signTransaction: (tx: Transaction) => Promise<Transaction>;
   on?: (event: string, handler: (...args: unknown[]) => void) => void;
   off?: (event: string, handler: (...args: unknown[]) => void) => void;
 }

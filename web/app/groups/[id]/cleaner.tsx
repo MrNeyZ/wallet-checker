@@ -3685,9 +3685,18 @@ function BurnSignAndSendBlock({
         );
       }
 
-      // Step 2: hand to the wallet for signing + initial broadcast.
-      const res = await provider.signAndSendTransaction(tx);
-      signature = res.signature;
+      // Step 2: sign in the wallet, then broadcast through OUR RPC.
+      // We deliberately avoid `signAndSendTransaction` because Phantom's
+      // built-in RPC has been returning intermittent 403s (Helius shared
+      // tier rate-limit). Sending the raw signed bytes through our own
+      // Connection sidesteps that entirely.
+      const connection = getConnection();
+      const signed = await provider.signTransaction(tx);
+      signature = await connection.sendRawTransaction(signed.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+        maxRetries: 5,
+      });
       setSend({ status: "submitted", signature });
       console.log("[burnSend] submitted", {
         kind: kindLabel,
@@ -3702,7 +3711,6 @@ function BurnSignAndSendBlock({
       // (and many gated providers) drop — leaving the UI hung at
       // "submitted" forever even though the tx already landed.
       // Polls every 2s up to ~90s; bails when the blockhash expires.
-      const connection = getConnection();
       let confirmedSeen = false;
       const pollStart = Date.now();
       const POLL_TIMEOUT_MS = 90_000;
