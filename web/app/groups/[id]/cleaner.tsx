@@ -3586,20 +3586,16 @@ function BurnSignAndSendBlock({
   // even if React re-renders the block between "finalized" and unmount.
   const burnedFiredRef = useRef(false);
 
-  // On finalize: fire the parent's `onBurned` callback so the section
+  // On confirmed: fire the parent's `onBurned` callback so the section
   // can strip the just-burned ids from its discovery list + selection
-  // set. Single-shot via `burnedFiredRef`. We do this in an effect
-  // (rather than inline at the setSend site) because finalization runs
-  // through several setSend calls (signing → submitted → confirmed →
-  // finalized) and an effect keyed on `send.status === "finalized"` is
-  // the cleanest single edge.
-  //
-  // We deliberately do NOT auto-advance into the next batch here — the
-  // session burn filter already strips finalized items from the
-  // candidate grid, so leftover counts are no longer reliable. The user
-  // clicks "Build next batch" manually if they want to continue.
+  // set, AND reset build state so the user can immediately queue more.
+  // We fire on "confirmed" (not "finalized") because finalized takes
+  // 20-30s on mainnet (32 slots) and the user can't continue burning
+  // until then. At "confirmed" the tx is already in a confirmed block —
+  // a rollback is theoretically possible but vanishingly rare.
+  // Single-shot via `burnedFiredRef`.
   useEffect(() => {
-    if (send.status !== "finalized") return;
+    if (send.status !== "confirmed" && send.status !== "finalized") return;
     if (burnedFiredRef.current) return;
     burnedFiredRef.current = true;
     onBurnedRef.current?.();
