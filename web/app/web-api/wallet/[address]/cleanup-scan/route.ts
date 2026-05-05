@@ -7,7 +7,13 @@
 // upstream fetches; aborting the browser fetch closes both upstream
 // connections, which fires `req.on("close")` on the Express side.
 //
-// Auth: middleware.ts only matches page routes, not /api/*, so this
+// Mounted under /web-api (NOT /api) because nginx in production proxies
+// /api/* directly to the Express backend, bypassing Next entirely. The
+// /web-api prefix keeps this same-origin proxy reachable through the
+// Next.js app while leaving the existing /api → backend mapping
+// untouched.
+//
+// Auth: middleware.ts only matches page routes, not /web-api/*, so this
 // handler enforces the same WEB_PASSWORD cookie gate inline.
 
 import { NextResponse, type NextRequest } from "next/server";

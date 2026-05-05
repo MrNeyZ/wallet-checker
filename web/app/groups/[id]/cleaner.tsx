@@ -1307,7 +1307,7 @@ export function CleanerRow({
 
   // AbortController + scanRunId for the wallet's cleanup scan.
   // - controller.abort() actually tears down the upstream HTTP fetch via
-  //   the same-origin /api/wallet/[address]/cleanup-scan proxy, which
+  //   the same-origin /web-api/wallet/[address]/cleanup-scan proxy, which
   //   forwards request.signal into the Express backend. Without this the
   //   Cancel button stopped only the UI; the backend kept walking the
   //   wallet on RPC.
@@ -1331,7 +1331,7 @@ export function CleanerRow({
     startTransition(async () => {
       try {
         const httpRes = await fetch(
-          `/api/wallet/${encodeURIComponent(wallet.address)}/cleanup-scan`,
+          `/web-api/wallet/${encodeURIComponent(wallet.address)}/cleanup-scan`,
           { method: "GET", cache: "no-store", signal: controller.signal },
         );
         // 499 = client-closed (we aborted). Any other non-2xx is a real
@@ -1379,7 +1379,7 @@ export function CleanerRow({
 
   // Cancel the current cleanup scan. Bumps scanRunId so any late-landing
   // response is dropped, aborts the in-flight fetch (which propagates to
-  // the backend via /api/wallet/[address]/cleanup-scan), and snaps the UI
+  // the backend via /web-api/wallet/[address]/cleanup-scan), and snaps the UI
   // back to "idle" so the Scan button re-appears immediately.
   const cancelScan = useCallback(() => {
     if (!scanAbortRef.current) return;
