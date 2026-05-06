@@ -82,6 +82,15 @@ interface DasAsset {
   // Compressed NFTs (cNFT) — different program (Bubblegum); the Core burn
   // path can't handle them so we drop them during discovery.
   compression?: { compressed?: unknown };
+  // Helius marks burned assets with `burnt: true` but still returns them
+  // in getAssetsByOwner — they linger in the index even after BurnV1
+  // closes the account. Drop them, otherwise the burner UI shows
+  // hundreds of already-burned items.
+  burnt?: boolean;
+  // Owner check — DAS index can lag a few minutes after a transfer, so
+  // a recently-sold asset still shows up under the previous owner.
+  // Filter to assets where ownership.owner matches the queried wallet.
+  ownership?: { owner?: unknown; frozen?: unknown };
 }
 
 // ── Supported-asset allowlist ─────────────────────────────────────────────
@@ -341,6 +350,25 @@ export async function fetchCoreAssetsByOwner(
         // FungibleToken / NonFungibleToken / ProgrammableNFT, but we
         // want a firm MplCore-only result here for the Core burn flow.
         if (a.interface !== "MplCoreAsset") {
+          droppedUnsupported++;
+          continue;
+        }
+        // Step 3: drop already-burned assets. Helius keeps them in the
+        // index for a while after BurnV1 closes the account, so without
+        // this check the burner UI showed hundreds of stale items and
+        // any selection of them would fail at preflight.
+        if (a.burnt === true) {
+          droppedUnsupported++;
+          continue;
+        }
+        // Step 4: ownership check — DAS index lag means a recently
+        // sold/transferred asset can still appear under the old owner.
+        // Compare against the queried wallet to drop those.
+        const indexedOwner =
+          a.ownership && typeof a.ownership.owner === "string"
+            ? a.ownership.owner
+            : null;
+        if (indexedOwner !== null && indexedOwner !== owner) {
           droppedUnsupported++;
           continue;
         }
