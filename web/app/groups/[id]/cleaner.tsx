@@ -4999,7 +4999,12 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
     })();
     return (
       <label
-        className={`vl-card is-interactive flex cursor-pointer items-center gap-1.5 px-1.5 py-1 text-left ${
+        // Bumped vertical padding (py-1 → py-1.5) and added a min-height
+        // so cards have a slightly bigger click target when 200+ render
+        // densely. Width / grid columns unchanged — this only adds ~4px
+        // of vertical breathing room and a slightly bigger checkbox.
+        // Same DOM cost as before (no extra elements).
+        className={`vl-card is-interactive flex min-h-[28px] cursor-pointer items-center gap-1.5 px-2 py-1.5 text-left ${
           isChecked ? "is-selected" : ""
         }`}
         title={name ?? id}
@@ -5009,7 +5014,7 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
           checked={isChecked}
           onChange={() => onToggle(id)}
           aria-label={`Select ${name ?? itemKindLabel} for burn`}
-          className="vl-checkbox h-3.5 w-3.5 shrink-0 cursor-pointer"
+          className="vl-checkbox h-4 w-4 shrink-0 cursor-pointer"
         />
         <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white">
           {split.prefix || (name ?? shortAddr(id, 4, 4))}
@@ -5078,6 +5083,143 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
 // every burnable item; the backend slices into per-tx batches.
 const GRID_PAGE_SIZE = 60;
 
+// Window-scroll virtualizer for compact (`/burner`) card grids.
+// Mounts only the rows currently in the viewport (plus a small
+// overscan), but reserves the full grid height up front so scrolling
+// feels continuous and the surrounding layout doesn't reflow as the
+// user scrolls. No `position: sticky` / no internal scroll container
+// — we use the page's natural window scroll so multiple groups stack
+// the way the user expects.
+//
+// Cards have a known fixed height in compact mode (28 px min-h + 1.5
+// padding × 2 + 1 gap ≈ 36 px); the grid itself uses CSS Grid with a
+// responsive column count that mirrors the Tailwind breakpoints used
+// elsewhere in the file. Selection toggling re-renders the parent's
+// `selected` set, but `BurnCandidateCard` is React.memo'd on primitive
+// props so only the toggled card actually re-renders.
+const COMPACT_ROW_HEIGHT_PX = 36;
+const COMPACT_ROW_GAP_PX = 4;
+const COMPACT_OVERSCAN_ROWS = 3;
+
+function compactColsForWidth(w: number): number {
+  if (w >= 1280) return 7;
+  if (w >= 1024) return 6;
+  if (w >= 768) return 4;
+  if (w >= 640) return 3;
+  return 2;
+}
+
+function VirtualizedCompactCardGrid({
+  items,
+  selected,
+  onToggle,
+  itemKindLabel,
+}: {
+  items: BurnCandidateItem[];
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+  itemKindLabel: string;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // SSR-safe defaults; the layout effect below corrects on mount.
+  const [viewportW, setViewportW] = useState<number>(() =>
+    typeof window === "undefined" ? 1280 : window.innerWidth,
+  );
+  const [viewportH, setViewportH] = useState<number>(() =>
+    typeof window === "undefined" ? 800 : window.innerHeight,
+  );
+  // Container's offsetTop relative to the viewport top, recomputed on
+  // window scroll/resize. Used to derive which rows fall inside the
+  // viewport without giving up window-level scrolling.
+  const [containerTop, setContainerTop] = useState<number>(0);
+
+  const cols = compactColsForWidth(viewportW);
+  const rowStride = COMPACT_ROW_HEIGHT_PX + COMPACT_ROW_GAP_PX;
+  const totalRows = Math.ceil(items.length / cols);
+  const totalHeight =
+    totalRows === 0 ? 0 : totalRows * rowStride - COMPACT_ROW_GAP_PX;
+
+  useEffect(() => {
+    function measure() {
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      setContainerTop(rect.top);
+      setViewportH(window.innerHeight);
+      setViewportW(window.innerWidth);
+    }
+    measure();
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    return () => {
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [totalHeight]);
+
+  // Visible row range. `containerTop` is the container's top in
+  // viewport coords; negative when the user has scrolled past it.
+  const scrolledIntoContainer = Math.max(0, -containerTop);
+  const visibleTopPx = scrolledIntoContainer;
+  const visibleBottomPx = Math.min(
+    totalHeight,
+    scrolledIntoContainer + viewportH,
+  );
+  const startRow =
+    totalRows === 0
+      ? 0
+      : Math.max(
+          0,
+          Math.floor(visibleTopPx / rowStride) - COMPACT_OVERSCAN_ROWS,
+        );
+  const endRow =
+    totalRows === 0
+      ? 0
+      : Math.min(
+          totalRows,
+          Math.ceil(visibleBottomPx / rowStride) + COMPACT_OVERSCAN_ROWS,
+        );
+  const startIdx = startRow * cols;
+  const endIdx = Math.min(items.length, endRow * cols);
+  const slice = items.slice(startIdx, endIdx);
+
+  return (
+    <div
+      ref={containerRef}
+      className="p-1.5"
+      style={{ height: totalHeight, position: "relative" }}
+    >
+      {slice.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: startRow * rowStride,
+            left: "6px", // matches container's p-1.5 horizontal padding
+            right: "6px",
+            display: "grid",
+            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+            gap: `${COMPACT_ROW_GAP_PX}px`,
+          }}
+        >
+          {slice.map((item) => (
+            <BurnCandidateCard
+              key={item.id}
+              id={item.id}
+              name={item.name}
+              image={item.image}
+              itemKindLabel={itemKindLabel}
+              estimatedGrossReclaimSol={item.estimatedGrossReclaimSol}
+              isChecked={selected.has(item.id)}
+              onToggle={onToggle}
+              compact
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Tiny stand-in for BurnCandidateGroupGrid when the section's tab is
 // not currently visible. Discovery state is preserved by keeping the
 // section mounted, but the heavy thumbnail grid (60+ <img> tags +
@@ -5111,11 +5253,14 @@ function BurnCandidateGroupGrid({
   onToggleGroup: (ids: string[], selectAll: boolean) => void;
   itemKindLabel: string; // "NFT" / "pNFT" / "asset"
 }) {
-  // Compact (`/burner`) renders every candidate up-front — images are
-  // already disabled in NftThumbnail for compact mode, so a 1000-card
-  // grid is just memoized DOM, not 1000 image decodes. The full
-  // `/groups/[id]?tab=cleaner` view keeps the 60-per-page guard
-  // because it still loads thumbnails.
+  // Compact (`/burner`) virtualizes the per-group card grid against the
+  // window scroll. The visual UX is "one continuous grid" but only the
+  // rows in the viewport (plus a small overscan) are mounted. On a
+  // 1000-NFT wallet this drops the mounted card count from ~1000 to
+  // ~30-50 and keeps idle CPU low after a scan.
+  // Selection bookkeeping (`Select all`, `Pick N`) still operates on
+  // the FULL group via `fullGroupIds`, so hidden items respond to
+  // group actions and stay counted in totals.
   const isCompact = useCompactMode();
   const [visibleCount, setVisibleCount] = useState(GRID_PAGE_SIZE);
   const totalCount = items.length;
@@ -5124,13 +5269,56 @@ function BurnCandidateGroupGrid({
     [items, visibleCount, isCompact],
   );
 
-  // Group by collection mint. Items with no verified collection fall into
-  // an "Uncollected" bucket shown last. Within each group, items keep
-  // their input order (already collection-locality-sorted in practice).
+  // Group key derivation. Priority:
+  //   1. Verified collection mint (`coll:<mint>`) — authoritative.
+  //   2. Name-prefix fallback (`name:<prefix>`) — handles collections
+  //      whose verified-collection field is null at the wallet/Helius
+  //      level but whose names follow the standard "Foo #123" / "Foo 123"
+  //      pattern. Without this, a wallet with 22 "Poptarteds #N" items
+  //      that were minted without a collection record would all dump
+  //      into "Uncollected" and the user couldn't bulk-select.
+  //   3. `_uncollected` — only when there's nothing usable.
+  // The same key is used by `groups` (display) and `fullGroupIds`
+  // ("Select all" / "Pick N") so behavior stays consistent.
+  function deriveGroupKey(item: BurnCandidateItem): string {
+    if (item.collection) return `coll:${item.collection}`;
+    const n = item.name?.trim();
+    if (n) {
+      // Strip trailing " #123" or " 123" so siblings collapse together.
+      const hash = n.lastIndexOf("#");
+      if (hash > 0) {
+        const prefix = n.slice(0, hash).trim();
+        if (prefix.length >= 2) return `name:${prefix.toLowerCase()}`;
+      }
+      const m = n.match(/^(.*\S)\s+\d+\s*$/);
+      if (m && m[1].length >= 2) return `name:${m[1].toLowerCase()}`;
+    }
+    return "_uncollected";
+  }
+
+  // Display label per group. Uses the actual case-preserving name from
+  // the first item in the bucket (lowercased keys above are for grouping
+  // only; we don't want "POPTARTEDS" if all items are "Poptarteds").
+  function groupLabel(key: string, items: BurnCandidateItem[]): string {
+    if (key === "_uncollected") return "Uncollected";
+    if (key.startsWith("name:")) {
+      const sample = items.find((i) => i.name)?.name ?? "";
+      const hash = sample.lastIndexOf("#");
+      if (hash > 0) return sample.slice(0, hash).trim();
+      const m = sample.match(/^(.*\S)\s+\d+\s*$/);
+      if (m) return m[1];
+      return sample || "Group";
+    }
+    // coll:<mint> — caller renders the symbol/name prefix already.
+    return "";
+  }
+
+  // Group by derived key. Items in the same name-prefix bucket get
+  // collapsed into one card-list; "Uncollected" stays last.
   const groups = useMemo(() => {
     const map = new Map<string, BurnCandidateItem[]>();
     for (const item of visibleItems) {
-      const key = item.collection ?? "_uncollected";
+      const key = deriveGroupKey(item);
       const list = map.get(key) ?? [];
       list.push(item);
       map.set(key, list);
@@ -5140,19 +5328,20 @@ function BurnCandidateGroupGrid({
       // Uncollected always last.
       if (a[0] === "_uncollected") return 1;
       if (b[0] === "_uncollected") return -1;
-      // Otherwise: bigger collections first.
+      // Otherwise: bigger groups first.
       return b[1].length - a[1].length;
     });
     return entries;
   }, [visibleItems]);
 
   // Full per-group ids — used by "Select all in group" + "Pick N" so
-  // both operate on every item in the collection, not just the
-  // currently-visible page. Built from the raw `items` list.
+  // both operate on every item in the bucket, not just the currently-
+  // visible page. Built from the raw `items` list using the same
+  // derivation as `groups`.
   const fullGroupIds = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const item of items) {
-      const key = item.collection ?? "_uncollected";
+      const key = deriveGroupKey(item);
       const list = map.get(key) ?? [];
       list.push(item.id);
       map.set(key, list);
@@ -5174,9 +5363,17 @@ function BurnCandidateGroupGrid({
           const cut = n.indexOf("#");
           return (cut > 0 ? n.slice(0, cut) : n).trim();
         })();
+        // Name-derived buckets surface the prefix directly via groupLabel
+        // (case-preserving). Verified-collection buckets fall through to
+        // the existing symbol → name-prefix → short-mint chain.
+        const isNameDerived = groupKey.startsWith("name:");
+        const isCollDerived = groupKey.startsWith("coll:");
+        const collMint = isCollDerived ? groupKey.slice("coll:".length) : groupKey;
         const label = isUncollected
           ? "Uncollected"
-          : sym ?? namePrefix ?? `Collection ${shortAddr(groupKey, 4, 4)}`;
+          : isNameDerived
+          ? groupLabel(groupKey, groupItems)
+          : sym ?? namePrefix ?? `Collection ${shortAddr(collMint, 4, 4)}`;
         // Toggle "Select all" against the FULL group, not just the rendered
         // (paged) subset, so it stays useful when items spill past the page.
         const allIds = fullGroupIds.get(groupKey) ?? groupItems.map((i) => i.id);
@@ -5200,9 +5397,14 @@ function BurnCandidateGroupGrid({
                     ? `${visibleGroupCount} / ${fullGroupCount}`
                     : fullGroupCount}
                 </span>
-                {!isUncollected && (
+                {isCollDerived && (
                   <span className="font-mono text-[10px] text-[color:var(--vl-fg-3)]">
-                    {shortAddr(groupKey, 4, 4)}
+                    {shortAddr(collMint, 4, 4)}
+                  </span>
+                )}
+                {isNameDerived && (
+                  <span className="rounded-full border border-[color:var(--vl-border)] px-1.5 py-0 text-[9px] font-bold uppercase tracking-wider text-[color:var(--vl-fg-3)]">
+                    by name
                   </span>
                 )}
               </div>
@@ -5240,31 +5442,35 @@ function BurnCandidateGroupGrid({
                 Compact mode runs a denser column count + tighter
                 padding because images are off — cards are tiny labels
                 and we want them packed, not floating. */}
-            <div
-              className={
-                isCompact
-                  ? // 6 columns at lg+ instead of 10–12 — at 12 cols the
-                    // prefix had ~6 chars before ellipsis, killing
-                    // readability. 6 cols leaves enough width for
-                    // "Collection Name… #420" to read on one line.
-                    "vl-card-grid grid grid-cols-2 gap-1 p-1.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7"
-                  : "vl-card-grid grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
-              }
-            >
-              {groupItems.map((item) => (
-                <BurnCandidateCard
-                  key={item.id}
-                  id={item.id}
-                  name={item.name}
-                  image={item.image}
-                  itemKindLabel={itemKindLabel}
-                  estimatedGrossReclaimSol={item.estimatedGrossReclaimSol}
-                  isChecked={selected.has(item.id)}
-                  onToggle={onToggle}
-                  compact={isCompact}
-                />
-              ))}
-            </div>
+            {isCompact ? (
+              // Compact (`/burner`) virtualizes against window scroll.
+              // The grid LOOKS like all cards are mounted (full height
+              // reserved, scrolling through is smooth), but only rows in
+              // the viewport ± overscan are actually in the DOM. Drops
+              // mounted card count from ~1000 to ~30-50 on big wallets.
+              <VirtualizedCompactCardGrid
+                items={groupItems}
+                selected={selected}
+                onToggle={onToggle}
+                itemKindLabel={itemKindLabel}
+              />
+            ) : (
+              <div className="vl-card-grid grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                {groupItems.map((item) => (
+                  <BurnCandidateCard
+                    key={item.id}
+                    id={item.id}
+                    name={item.name}
+                    image={item.image}
+                    itemKindLabel={itemKindLabel}
+                    estimatedGrossReclaimSol={item.estimatedGrossReclaimSol}
+                    isChecked={selected.has(item.id)}
+                    onToggle={onToggle}
+                    compact={isCompact}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         );
       })}
