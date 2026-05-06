@@ -10,7 +10,11 @@ import {
   createCloseAccountInstruction,
 } from "@solana/spl-token";
 import { connection } from "./solana.js";
-import { scanWalletForCleanup, type ScannedTokenAccount } from "./scanner.js";
+import {
+  isDebugMint,
+  scanWalletForCleanup,
+  type ScannedTokenAccount,
+} from "./scanner.js";
 import {
   fetchAssetMetadataBatch,
   fetchCoreAssetsByOwner,
@@ -1066,6 +1070,11 @@ async function confirmLegacyNfts(
       collection: null as string | null,
     };
     if (!metaInfo) {
+      if (isDebugMint(acc.mint)) {
+        console.log(
+          `[debugMint] legacy.confirm mint=${acc.mint} stage=metaInfoMissing metadataPda=${pdas[i].metadata.toBase58()} reason="Metadata account not found"`,
+        );
+      }
       out.push({
         ...base,
         isLegacy: false,
@@ -1122,7 +1131,22 @@ async function confirmLegacyNfts(
     // "Metadata has no tokenStandard" skip.
     const hasMasterEdition = (editionInfo?.lamports ?? 0) > 0;
     const isPreMetaplexNft = tokenStandard === null && hasMasterEdition;
-    const isLegacy = isStandard || isEdition || isPreMetaplexNft;
+    // Brief's preferred condition: "masterEdition PDA exists OR
+    // tokenStandard === NonFungible". Items with a non-NFT tokenStandard
+    // tag (Fungible / FungibleAsset / unrecognized) but a real master
+    // edition account are structurally Legacy NFTs — the master edition
+    // is the strongest on-chain signal of NFT-ness. Bounded:
+    // programmable / edition cases still route to their dedicated
+    // sections via the checks above. Preflight sim catches any case
+    // where BurnV1 still rejects.
+    const isMasterEditionFallback =
+      hasMasterEdition &&
+      !isProgrammable &&
+      !isEdition &&
+      !isStandard &&
+      !isPreMetaplexNft;
+    const isLegacy =
+      isStandard || isEdition || isPreMetaplexNft || isMasterEditionFallback;
 
     let isBurnable = false;
     let unburnableReason: string | undefined;
@@ -1146,6 +1170,12 @@ async function confirmLegacyNfts(
 
     if (verifiedCollectionMint && isBurnable) {
       collectionMintByCandidateIdx.set(i, verifiedCollectionMint);
+    }
+
+    if (isDebugMint(acc.mint)) {
+      console.log(
+        `[debugMint] legacy.confirm mint=${acc.mint} stage=classify metadataPda=${base.metadataPda} masterEditionPda=${base.masterEditionPda} hasMetaInfo=true hasMasterEdition=${hasMasterEdition} tokenStandard=${tokenStandard ?? "null"} isStandard=${isStandard} isProgrammable=${isProgrammable} isEdition=${isEdition} isPreMetaplexNft=${isPreMetaplexNft} isMasterEditionFallback=${isMasterEditionFallback} isLegacy=${isLegacy} isBurnable=${isBurnable} unburnableReason=${unburnableReason ? JSON.stringify(unburnableReason) : "none"} collection=${verifiedCollectionMint?.toBase58() ?? "null"} name=${name ?? "null"}`,
+      );
     }
 
     out.push({
@@ -1399,12 +1429,18 @@ async function buildLegacyNftBurnTxImpl(
   const seen = new Set<string>();
   const coarse: ScannedTokenAccount[] = [];
   for (const acc of scan.nftTokenAccounts) {
+    const isDebug = isDebugMint(acc.mint);
     if (acc.owner !== ownerStr) {
       skippedNfts.push({
         mint: acc.mint,
         tokenAccount: acc.tokenAccount,
         reason: "Owner mismatch",
       });
+      if (isDebug) {
+        console.log(
+          `[debugMint] legacy.coarse mint=${acc.mint} skipped reason="Owner mismatch" actualOwner=${acc.owner} expectedOwner=${ownerStr}`,
+        );
+      }
       continue;
     }
     if (acc.amount !== "1" || acc.decimals !== 0) {
@@ -1413,6 +1449,11 @@ async function buildLegacyNftBurnTxImpl(
         tokenAccount: acc.tokenAccount,
         reason: "Not a 1-supply 0-decimal token",
       });
+      if (isDebug) {
+        console.log(
+          `[debugMint] legacy.coarse mint=${acc.mint} skipped reason="amount/decimals" amount=${acc.amount} decimals=${acc.decimals}`,
+        );
+      }
       continue;
     }
     if (acc.programId === token2022ProgramStr) {
@@ -1421,6 +1462,11 @@ async function buildLegacyNftBurnTxImpl(
         tokenAccount: acc.tokenAccount,
         reason: "Token-2022 — outside legacy NFT scope",
       });
+      if (isDebug) {
+        console.log(
+          `[debugMint] legacy.coarse mint=${acc.mint} skipped reason="Token-2022" programId=${acc.programId}`,
+        );
+      }
       continue;
     }
     if (acc.programId !== splTokenProgramStr) {
@@ -1429,14 +1475,31 @@ async function buildLegacyNftBurnTxImpl(
         tokenAccount: acc.tokenAccount,
         reason: `Unsupported token program ${acc.programId.slice(0, 8)}…`,
       });
+      if (isDebug) {
+        console.log(
+          `[debugMint] legacy.coarse mint=${acc.mint} skipped reason="UnsupportedProgram" programId=${acc.programId}`,
+        );
+      }
       continue;
     }
     // mintsAllowed is intentionally NOT applied here — we walk every NFT
     // so burnableCandidates reflects the full wallet. The user-selected
     // subset is filtered post-confirmation when picking included items.
-    if (seen.has(acc.tokenAccount)) continue;
+    if (seen.has(acc.tokenAccount)) {
+      if (isDebug) {
+        console.log(
+          `[debugMint] legacy.coarse mint=${acc.mint} skipped reason="duplicateTokenAccount"`,
+        );
+      }
+      continue;
+    }
     seen.add(acc.tokenAccount);
     coarse.push(acc);
+    if (isDebug) {
+      console.log(
+        `[debugMint] legacy.coarse mint=${acc.mint} kept tokenAccount=${acc.tokenAccount} amount=${acc.amount} decimals=${acc.decimals} programId=${acc.programId}`,
+      );
+    }
   }
 
   const confirmations = await confirmLegacyNfts(coarse);
@@ -1450,13 +1513,25 @@ async function buildLegacyNftBurnTxImpl(
 
   const burnable: LegacyNftConfirmation[] = [];
   for (const c of confirmations) {
-    if (c.isBurnable) burnable.push(c);
-    else {
+    if (c.isBurnable) {
+      burnable.push(c);
+      if (isDebugMint(c.mint)) {
+        console.log(
+          `[debugMint] legacy.final mint=${c.mint} decision=BURNABLE collection=${c.collection ?? "null"}`,
+        );
+      }
+    } else {
+      const reason = c.unburnableReason ?? "Not burnable";
       skippedNfts.push({
         mint: c.mint,
         tokenAccount: c.tokenAccount,
-        reason: c.unburnableReason ?? "Not burnable in this milestone",
+        reason,
       });
+      if (isDebugMint(c.mint)) {
+        console.log(
+          `[debugMint] legacy.final mint=${c.mint} decision=SKIPPED reason=${JSON.stringify(reason)}`,
+        );
+      }
     }
   }
 

@@ -54,6 +54,20 @@ type CacheEntry = {
 // scanning many unique wallets. TTL is still enforced at the call site.
 const scanCache = new CappedLruMap<string, CacheEntry>(SCAN_CACHE_MAX);
 
+// Mints flagged for verbose tracing through the full scan/classify
+// pipeline. Set via DEBUG_MINTS env (comma-separated) so we can
+// ship the trace harness without cluttering steady-state logs. Read
+// once at module load — restart pm2 to change targets.
+const DEBUG_MINTS: ReadonlySet<string> = new Set(
+  (process.env.DEBUG_MINTS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+export function isDebugMint(mint: string): boolean {
+  return DEBUG_MINTS.has(mint);
+}
+
 async function fetchTokenAccountsForProgram(owner: PublicKey, programId: PublicKey) {
   const res = await getParsedTokenAccountsByOwnerThrottled(connection, owner, programId);
   return res.value.map((entry) => ({ entry, programId: programId.toBase58() }));
@@ -153,6 +167,20 @@ async function performScan(address: string): Promise<CleanupScanResult> {
     } else {
       result.unknownTokenAccounts.push(account);
     }
+
+    if (DEBUG_MINTS.has(account.mint)) {
+      console.log(
+        `[debugMint] scanner mint=${account.mint} bucket=${
+          isEmpty
+            ? "empty"
+            : amountBig === 1n && decimals === 0
+              ? "nftCandidate"
+              : amountBig > 0n && decimals > 0
+                ? "fungible"
+                : "unknown"
+        } amount=${amountRaw} decimals=${decimals} programId=${programId} owner=${account.owner} tokenAccount=${account.tokenAccount}`,
+      );
+    }
   }
 
   // Second pass: classify NFT-shape candidates by what DAS reports for
@@ -173,6 +201,7 @@ async function performScan(address: string): Promise<CleanupScanResult> {
     for (const acc of nftCandidates) {
       const meta = dasMap.get(acc.mint);
       const cls = classifyNftCandidate(meta);
+      const isDebug = DEBUG_MINTS.has(acc.mint);
       // Permissive fallback: if DAS didn't resolve at all (no API key,
       // outage), or this specific mint wasn't returned, accept it as
       // an NFT candidate. The per-section discovery (Legacy / pNFT)
@@ -180,6 +209,11 @@ async function performScan(address: string): Promise<CleanupScanResult> {
       // mismatched mints with a clear reason.
       if (cls === null || !dasResolved) {
         result.nftTokenAccounts.push(acc);
+        if (isDebug) {
+          console.log(
+            `[debugMint] scanner.routing mint=${acc.mint} dasMetaPresent=${!!meta} dasResolved=${dasResolved} classification=${cls ?? "null"} routedTo=nftTokenAccounts(permissiveFallback) iface=${meta?.iface ?? "null"} tokenStandard=${meta?.tokenStandard ?? "null"}`,
+          );
+        }
         continue;
       }
       if (cls === "legacy") {
@@ -191,6 +225,11 @@ async function performScan(address: string): Promise<CleanupScanResult> {
       } else {
         result.unknownTokenAccounts.push(acc);
         unknownDropped++;
+      }
+      if (isDebug) {
+        console.log(
+          `[debugMint] scanner.routing mint=${acc.mint} dasMetaPresent=${!!meta} dasResolved=${dasResolved} classification=${cls} routedTo=${cls === "unknown" ? "unknownTokenAccounts" : "nftTokenAccounts"} iface=${meta?.iface ?? "null"} tokenStandard=${meta?.tokenStandard ?? "null"}`,
+        );
       }
     }
     console.log(

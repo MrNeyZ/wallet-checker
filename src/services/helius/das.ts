@@ -15,6 +15,20 @@ import { env } from "../../config/env.js";
 import { runWithConcurrency } from "../../lib/concurrency.js";
 import { CappedLruMap } from "../../lib/lruCache.js";
 
+// Local copy of the DEBUG_MINTS env-driven set so this module doesn't
+// import scanner.ts (avoids a circular dep risk — scanner imports
+// fetchAssetMetadataBatch from here). Both modules read the same env
+// var at startup, so the set is identical in practice.
+const DEBUG_MINTS_LOCAL: ReadonlySet<string> = new Set(
+  (process.env.DEBUG_MINTS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+function isDebugMintRef(mint: string): boolean {
+  return DEBUG_MINTS_LOCAL.has(mint);
+}
+
 export interface AssetMetadata {
   name: string | null;
   symbol: string | null;
@@ -507,6 +521,7 @@ export async function fetchAssetMetadataBatch(
       const id = strOrNull(a.id);
       if (!id) continue;
       metaTotal++;
+      const isDebug = id ? isDebugMintRef(id) : false;
       // Defensive supported-asset filter — we don't enrich metadata for
       // assets the burn flow can't act on. Compressed cNFTs and any
       // future / unknown asset interface are dropped here so a stale
@@ -515,15 +530,30 @@ export async function fetchAssetMetadataBatch(
       // diagnostic log below.
       if (a.compression && a.compression.compressed === true) {
         metaSkippedCompressed++;
+        if (isDebug) {
+          console.log(
+            `[debugMint] das.metadata mint=${id} dropped=compressed iface=${a.interface ?? "null"} burnt=${a.burnt === true}`,
+          );
+        }
         continue;
       }
       if (!isSupportedAsset(a)) {
         metaSkippedUnsupported++;
+        if (isDebug) {
+          console.log(
+            `[debugMint] das.metadata mint=${id} dropped=unsupportedInterface iface=${a.interface ?? "null"} burnt=${a.burnt === true}`,
+          );
+        }
         continue;
       }
       const meta = parse(a);
       out.set(id, meta);
       cache.set(id, { meta, expiresAt: Date.now() + CACHE_TTL_MS });
+      if (isDebug) {
+        console.log(
+          `[debugMint] das.metadata mint=${id} kept iface=${a.interface ?? "null"} tokenStandard=${meta.tokenStandard ?? "null"} name=${meta.name ?? "null"} burnt=${a.burnt === true}`,
+        );
+      }
     }
   }
 
