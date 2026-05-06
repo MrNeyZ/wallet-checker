@@ -39,7 +39,17 @@ export interface CleanupScanResult {
 // The full-clean loop bypasses with `refresh: true` after each close-tx.
 const SCAN_TTL_MS = 10 * 60 * 1000;
 const SCAN_CACHE_MAX = 1000;
-type CacheEntry = { ts: number; promise: Promise<CleanupScanResult> };
+// `rejected` is set synchronously in the same microtask tick as the
+// underlying scan's rejection. Concurrent readers that arrive between
+// the rejection and the cache `.delete()` then treat the entry as a
+// miss and start a fresh scan instead of inheriting the poisoned
+// promise. Without this flag, a transient RPC failure could be served
+// to N parallel callers as a cached error for the brief drain window.
+type CacheEntry = {
+  ts: number;
+  promise: Promise<CleanupScanResult>;
+  rejected: boolean;
+};
 // Capped LRU keeps memory bounded under a long-running pm2 process
 // scanning many unique wallets. TTL is still enforced at the call site.
 const scanCache = new CappedLruMap<string, CacheEntry>(SCAN_CACHE_MAX);
@@ -202,7 +212,7 @@ export interface ScanOptions {
   // The fresh result then OVERWRITES the cache so subsequent normal callers
   // also see the up-to-date data. Used by the cleaner full-clean loop right
   // after a close-account tx so the next iteration sees post-close state
-  // without waiting for the 30 s TTL to expire.
+  // without waiting for the 10-minute TTL to expire.
   refresh?: boolean;
 }
 
@@ -212,15 +222,24 @@ export async function scanWalletForCleanup(
 ): Promise<CleanupScanResult> {
   const now = Date.now();
   const cached = scanCache.get(address);
-  if (!opts.refresh && cached && now - cached.ts < SCAN_TTL_MS) {
+  if (
+    !opts.refresh &&
+    cached &&
+    !cached.rejected &&
+    now - cached.ts < SCAN_TTL_MS
+  ) {
     return cached.promise;
   }
   const promise = performScan(address);
-  scanCache.set(address, { ts: now, promise });
-  // If the underlying scan rejects, drop the entry so the next call retries
-  // instead of returning the cached failure forever.
+  const entry: CacheEntry = { ts: now, promise, rejected: false };
+  scanCache.set(address, entry);
+  // If the underlying scan rejects, mark the entry as rejected
+  // synchronously (so concurrent readers in the same microtask drain
+  // fall through to a fresh scan), then drop it from the cache so the
+  // next call retries instead of returning the cached failure forever.
   promise.catch(() => {
-    if (scanCache.get(address)?.promise === promise) {
+    entry.rejected = true;
+    if (scanCache.get(address) === entry) {
       scanCache.delete(address);
     }
   });

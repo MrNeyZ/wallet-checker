@@ -51,11 +51,25 @@ Frontend env (`web/.env`):
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `BACKEND_URL` | no | `http://localhost:3002` | base URL for server-side API calls |
-| `BACKEND_APP_API_KEY` | only if backend has `APP_API_KEY` set | — | sent as `x-app-key` on every backend call from the Next server |
+| `BACKEND_URL` | yes (in production) | `http://localhost:3002` | base URL for server-side API calls. Must be reachable from the Next.js process; in production with a separate API host, set this to the public API URL (or to the same host as the frontend if Nginx proxies `/api/*` to the backend on the same machine). The `localhost:3002` default only works when both processes share a host |
+| `BACKEND_APP_API_KEY` | only if backend has `APP_API_KEY` set | — | sent as `x-app-key` on every backend call from the Next server. **Must equal the backend's `APP_API_KEY`** — drift = silent 401s on every server action |
+| `NEXT_PUBLIC_SOLANA_RPC_URL` | yes for the burner | — | RPC endpoint the browser uses to broadcast signed burn / clean transactions (`sendRawTransaction`) and poll `getSignatureStatuses`. Inlined into the client bundle at build time, so changes require `npm run build`. Public `api.mainnet-beta.solana.com` is rate-limited under load — use Helius / Triton / QuickNode in production. Unset = falls back to the public mainnet endpoint |
 | `WEB_PASSWORD` | no | — | when set, all UI routes require login at `/login`. The submitted password is hashed (SHA-256) and stored in an `httpOnly`, `sameSite=lax`, secure-in-production cookie `wallet_checker_session` (1-week expiry). Unset = auth disabled (local dev). Logout button appears in the header only when this is set |
 
 When a key is unset, the affected route returns `503` cleanly with a self-explanatory message and the rest of the app keeps working.
+
+### Route prefix conventions
+
+Two distinct prefixes — keeping them straight matters for nginx config and for reasoning about what runs where:
+
+- **`/api/*` → Express backend (port 3002).** All long-lived business endpoints (groups, wallets, PnL, trades, alerts, scan, burn-tx builders). Nginx forwards this prefix directly to the backend.
+- **`/web-api/*` → Next.js routes (port 3003).** Reserved for cancellable proxies that need to forward a browser-side `AbortController.abort()` through to the backend's `req.on("close")`. Currently:
+  - `/web-api/wallet/:address/cleanup-scan`
+  - `/web-api/groups/:groupId/cleanup-scan-all`
+
+  Nginx sends this prefix to Next.js (it falls under the catch-all `location /` block). The route handlers re-fetch the corresponding `/api/*` Express endpoint with `signal: req.signal`.
+
+Server-side calls from `web/lib/api.ts` use `${BACKEND_URL}/api/...` directly — they bypass nginx entirely and go straight to the backend over the internal network.
 
 ## Persistence
 

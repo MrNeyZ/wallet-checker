@@ -8,7 +8,13 @@
 // in turn fires `req.on("close")` on the Express side and aborts the
 // in-flight scanWalletQueued.
 //
-// Auth: middleware.ts only matches page routes, not /api/*, so this
+// Mounted under /web-api (NOT /api) because nginx in production proxies
+// /api/* directly to the Express backend, bypassing Next entirely. Mirrors
+// the /web-api/wallet/[address]/cleanup-scan layout so all cancellable
+// proxy routes share one prefix and the README's nginx config keeps a
+// single /api → backend rule.
+//
+// Auth: middleware.ts only matches page routes, not /web-api/*, so this
 // handler enforces the same WEB_PASSWORD cookie gate inline. Without that
 // an unauthenticated client could trigger arbitrary group scans and burn
 // Helius / RPC quota.

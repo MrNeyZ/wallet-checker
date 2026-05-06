@@ -92,7 +92,7 @@ router.get("/:address/cleanup-scan", async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.issues[0].message });
   }
-  // ?refresh=true bypasses the 30 s scan cache. Used by the full-clean loop
+  // ?refresh=true bypasses the 10-minute scan cache. Used by the full-clean loop
   // immediately after a close-tx is confirmed, so the next iteration sees
   // fresh on-chain state without waiting for the TTL to expire. Any other
   // truthy string ("1", "yes") is also accepted; anything else falls through
@@ -351,7 +351,7 @@ router.post("/:address/legacy-nft-burn-tx", async (req, res) => {
   }
 });
 
-// Milestone 2 — Programmable NFT (pNFT) burn preview. Same body shape as
+// Programmable NFT (pNFT) burn preview. Same body shape as
 // legacy-nft-burn-tx; only the underlying builder differs (uses Token
 // Record PDA + skips ruleset-governed pNFTs).
 const pnftBurnBodySchema = z.object({

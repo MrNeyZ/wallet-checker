@@ -430,6 +430,11 @@ export interface BuildBurnAndCloseTxResult {
   blockhash: string | null;
   lastValidBlockHeight: number | null;
   warning: string;
+  // Preflight simulation outcome — same shape as the NFT/pNFT/Core
+  // builders. UI refuses to sign when false (frozen mint, Token-2022
+  // hook, etc.). Backend strips transactionBase64 when sim rejects.
+  simulationOk: boolean;
+  simulationError?: string;
 }
 
 export interface BuildCloseEmptyTxResult {

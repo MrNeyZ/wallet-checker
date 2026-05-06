@@ -29,7 +29,16 @@ import { toWeb3JsInstruction } from "@metaplex-foundation/umi-web3js-adapters";
 // mpl-core program ID and emit the correct account metas. The RPC URL
 // passed to `createUmi` is ignored at instruction build time. The
 // `mplCore()` plugin registers the Core program so `burnV1` works.
-const coreUmi = createUmi("http://localhost").use(mplCore());
+//
+// NOTE FOR FUTURE READERS: this URL is a parser-satisfying placeholder
+// — Umi requires a syntactically valid http(s) URL at construction
+// time, so we hand it the loopback. Nothing in this module ever
+// dispatches a network call through `coreUmi`. If you find yourself
+// reaching for `coreUmi.rpc.*`, STOP — point it at a real RPC first
+// (use the `connection` from `./solana.js`), or your call will hit
+// localhost:80 in production and silently fail.
+const CORE_UMI_PLACEHOLDER_RPC = "http://localhost";
+const coreUmi = createUmi(CORE_UMI_PLACEHOLDER_RPC).use(mplCore());
 
 export const MAX_CLOSE_IX_PER_TX = 10;
 
@@ -293,6 +302,13 @@ export interface BuildBurnAndCloseTxResult {
   blockhash: string | null;
   lastValidBlockHeight: number | null;
   warning: string;
+  // Preflight simulation outcome — same shape as the NFT/pNFT/Core
+  // builders. `true` when the unsigned tx simulated successfully or
+  // there is no tx to simulate (empty branch). `false` when the chain
+  // would have rejected (frozen mint, Token-2022 transfer hook, freeze
+  // delegate, etc.). UI must refuse to sign when false.
+  simulationOk: boolean;
+  simulationError?: string;
 }
 
 export async function buildBurnAndCloseTx(
@@ -353,6 +369,9 @@ export async function buildBurnAndCloseTx(
       blockhash: null,
       lastValidBlockHeight: null,
       warning: BURN_AND_CLOSE_WARNING,
+      // No tx → nothing to fail. UI gates on transactionBase64 !== null
+      // before allowing sign anyway.
+      simulationOk: true,
     };
   }
 
@@ -425,6 +444,43 @@ export async function buildBurnAndCloseTx(
     );
   }
 
+  // Preflight simulation — frozen mints, Token-2022 transfer hooks, and
+  // freeze delegates can revert at chain time after the user signs.
+  // Surface the failure here so the UI can refuse to sign instead of
+  // burning a fee on a guaranteed-reject tx. Fail-open on RPC errors
+  // (e.g. timeout): we leave `simulationOk = true` so the existing UI
+  // gates (audit, ack, wallet match) still apply, mirroring how the
+  // legacy/pNFT/Core paths treat sim outages. Hard 20s timeout matches
+  // the legacy builder's pattern.
+  let simulationOk = true;
+  let simulationError: string | undefined;
+  try {
+    const sim = await Promise.race([
+      connection.simulateTransaction(built.tx),
+      new Promise<never>((_, rej) =>
+        setTimeout(
+          () => rej(new Error("simulateTransaction timed out after 20s — RPC unresponsive")),
+          20_000,
+        ),
+      ),
+    ]);
+    if (sim.value.err) {
+      simulationOk = false;
+      simulationError = parseSimulationError(sim.value.err, sim.value.logs ?? []);
+      console.warn(
+        `[burnAndClose] preflight rejected for ${ownerStr} count=${included.length}: friendly="${simulationError}" rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
+      );
+    }
+  } catch (err) {
+    // RPC outage / timeout — don't block the flow, but surface a
+    // descriptive error string for the UI's diagnostic block.
+    simulationError =
+      err instanceof Error ? err.message : "Simulation request failed";
+    console.warn(
+      `[burnAndClose] preflight call failed for ${ownerStr}: ${simulationError}`,
+    );
+  }
+
   const skippedAccounts = candidates.length - included.length;
   const baseFeeLamports = BASE_FEE_LAMPORTS_PER_SIGNATURE; // 1 signer
   const priorityFeeLamports =
@@ -459,10 +515,18 @@ export async function buildBurnAndCloseTx(
     estimatedNetReclaimSol,
     computeUnitLimit,
     priorityFeeMicrolamports,
-    transactionBase64: Buffer.from(built.serialized).toString("base64"),
-    blockhash,
-    lastValidBlockHeight,
+    // Strip the tx when sim rejected — the UI's noTx/canSend gate then
+    // refuses to sign, matching the legacy/pNFT/Core "all-or-nothing"
+    // pattern. Without this, a truthy transactionBase64 + simulationOk
+    // false would still let determined frontends sign.
+    transactionBase64: simulationOk
+      ? Buffer.from(built.serialized).toString("base64")
+      : null,
+    blockhash: simulationOk ? blockhash : null,
+    lastValidBlockHeight: simulationOk ? lastValidBlockHeight : null,
     warning: BURN_AND_CLOSE_WARNING,
+    simulationOk,
+    simulationError,
   };
 }
 

@@ -1,6 +1,12 @@
 interface PollerEntry {
   intervalMs: number;
   handle: NodeJS.Timeout;
+  // True while a tick is in flight. The setInterval callback short-
+  // circuits on a true value so a slow tick (e.g., upstream PnL
+  // provider hanging at the request timeout) can't stack overlapping
+  // ticks that all hit the same RPC quotas at once. The next interval
+  // tick after the slow run completes will resume normal cadence.
+  inFlight: boolean;
 }
 
 const pollers = new Map<string, PollerEntry>();
@@ -33,17 +39,34 @@ export function startPoller(
     return { started: false, intervalMs: pollers.get(groupId)!.intervalMs };
   }
   const safeInterval = Math.max(MIN_INTERVAL_MS, Math.min(MAX_INTERVAL_MS, intervalMs));
+  // Pre-create the entry so the wrapper closure can read/write its
+  // `inFlight` flag without a separate Map lookup per tick.
+  const entry: PollerEntry = {
+    intervalMs: safeInterval,
+    handle: null as unknown as NodeJS.Timeout,
+    inFlight: false,
+  };
   const wrapped = () => {
+    if (entry.inFlight) {
+      // Skip — previous tick still running. Drops the missed beat
+      // instead of stacking; the next setInterval fire after `tick`
+      // resolves will resume normal cadence.
+      return;
+    }
+    entry.inFlight = true;
     Promise.resolve()
       .then(tick)
       .catch((err) => {
         console.error(`[alertPoller] tick failed for ${groupId}: ${(err as Error).message}`);
+      })
+      .finally(() => {
+        entry.inFlight = false;
       });
   };
   // run immediately, then on interval
   wrapped();
-  const handle = setInterval(wrapped, safeInterval);
-  pollers.set(groupId, { intervalMs: safeInterval, handle });
+  entry.handle = setInterval(wrapped, safeInterval);
+  pollers.set(groupId, entry);
   return { started: true, intervalMs: safeInterval };
 }
 

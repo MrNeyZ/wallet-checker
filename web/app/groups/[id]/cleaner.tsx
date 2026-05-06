@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
+import { api } from "@/lib/api";
 import type {
   BuildBurnAndCloseTxResult,
   BuildCloseEmptyTxResult,
@@ -265,15 +266,34 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Try silent reconnect for previously-trusted sessions.
+  //
+  // React strict-mode (next.config.mjs has `reactStrictMode: true`) runs
+  // effects twice in dev. Without a guard, two parallel silent
+  // `connect({ onlyIfTrusted: true })` calls race against Phantom's
+  // single-flight connect handler, producing noisy logs and the
+  // occasional dropped `connect` event. The `didRunRef` short-circuits
+  // the second strict-mode invocation; the `cancelled` flag guards
+  // against a late `.then` resolving after unmount and writing into a
+  // stale state setter.
+  const silentConnectDidRunRef = useRef(false);
   useEffect(() => {
+    if (silentConnectDidRunRef.current) return;
+    silentConnectDidRunRef.current = true;
     const provider = getProvider();
     if (!provider) return;
+    let cancelled = false;
     provider
       .connect({ onlyIfTrusted: true })
-      .then((res) => setConnected(res.publicKey.toBase58()))
+      .then((res) => {
+        if (cancelled) return;
+        setConnected(res.publicKey.toBase58());
+      })
       .catch(() => {
         /* not previously authorized — leave disconnected */
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const connect = useCallback(async () => {
@@ -462,8 +482,12 @@ type CleanAllState =
 
 const DELAY_BETWEEN_WALLETS_MS = 200;
 
-// Scan-all is now a single backend batch call (POST /api/groups/:id/cleanup-scan-all).
-// All retry / queue / per-wallet timeout policy lives server-side.
+// Scan-all is now a single backend batch call. The browser fires it
+// through the cancellable Next.js proxy at
+// `POST /web-api/groups/:id/cleanup-scan-all`, which forwards
+// `request.signal` into the upstream Express endpoint at
+// `POST /api/groups/:id/cleanup-scan-all`. All retry / queue /
+// per-wallet timeout policy lives server-side.
 
 function GroupAllActions({
   groupId,
@@ -538,7 +562,11 @@ function GroupAllActions({
       | { ok: false; error: string };
     try {
       const httpRes = await fetch(
-        `/api/groups/${encodeURIComponent(groupId)}/cleanup-scan-all`,
+        // /web-api (not /api) — see web/app/web-api/.../route.ts header
+        // comment for the nginx routing rationale. /api/* in production
+        // forwards directly to Express, which would skip the
+        // AbortSignal-forwarding proxy entirely.
+        `/web-api/groups/${encodeURIComponent(groupId)}/cleanup-scan-all`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1237,13 +1265,14 @@ type FullCleanState =
   | { status: "error"; batches: number; error: string; signatures: string[] }
   | { status: "cancelled"; batches: number; signatures: string[] };
 
-// Confirmation polling for the full-clean loop. After signAndSendTransaction
-// returns, the close instruction is in flight but may not have landed at
+// Confirmation polling for the full-clean loop. After the close tx is
+// broadcast, the instruction is in flight but may not have landed at
 // 'confirmed' commitment yet. We poll the cleanup-scan endpoint with
-// ?refresh=true (which bypasses the 30 s cache) up to N times, sleeping
-// between attempts, until the scanned empty count drops. If it never drops
-// inside the budget, we proceed with the latest result anyway — the next
-// build call will return transactionBase64=null and the loop terminates
+// ?refresh=true (which bypasses the 10-minute cache) up to N times,
+// sleeping between attempts, until the scanned empty count drops. If
+// it never drops inside the budget, we proceed with the latest result
+// anyway — the next build call will return transactionBase64=null and
+// the loop terminates
 // cleanly. Hard cap keeps the loop responsive (matches Solana's typical
 // 1–2 s confirmation time with margin).
 const CONFIRM_POLL_INTERVAL_MS = 1_000;
@@ -1483,8 +1512,21 @@ export function CleanerRow({
       let signature: string;
       try {
         const decoded = decodeBase64Transaction(tx.transactionBase64);
-        const sent = await provider.signAndSendTransaction(decoded);
-        signature = sent.signature;
+        // Sign locally + broadcast through OUR RPC (same pattern as
+        // BurnSignAndSendBlock). Bypasses Phantom's bundled RPC, which
+        // intermittently returns 403 on the shared Helius tier and used
+        // to leave this loop stuck on signAndSendTransaction. The
+        // existing scan-polling below is the confirmation source of
+        // truth — no separate getSignatureStatuses loop needed here.
+        const signed = await provider.signTransaction(decoded);
+        signature = await getConnection().sendRawTransaction(
+          signed.serialize(),
+          {
+            skipPreflight: false,
+            preflightCommitment: "confirmed",
+            maxRetries: 5,
+          },
+        );
       } catch (err) {
         return fail(prettifyWalletError(err));
       }
@@ -1492,7 +1534,7 @@ export function CleanerRow({
       setLastSentSig(signature);
 
       // 5. CONFIRM + RESCAN — poll the scan endpoint with ?refresh=true to
-      //    bypass the 30 s cache. Repeat until the empty count drops below
+      //    bypass the 10-minute cache. Repeat until the empty count drops below
       //    the pre-sign value (= the close has confirmed at 'confirmed'
       //    commitment) or the attempt budget is exhausted. With Solana
       //    typically confirming in 1–2 s this usually exits on the first
@@ -2864,7 +2906,7 @@ function CleanerDetails({
       </div>
       )}
 
-      {/* SECTION 4 — Programmable NFT (pNFT) burn (Milestone 2).
+      {/* SECTION 4 — Programmable NFT (pNFT) burn.
           Adds token-record + collection-metadata + auth-rules accounts and
           a backend preflight simulation gate. Visually distinct from the
           legacy NFT card — a slightly deeper red border so the user can't
@@ -3562,6 +3604,15 @@ function BurnSignAndSendBlock({
   // Single-shot guard: ensure onBurned() fires exactly once per send,
   // even if React re-renders the block between "finalized" and unmount.
   const burnedFiredRef = useRef(false);
+  // Defence: if the parent ever feeds this same component instance a
+  // fresh `transactionBase64` (a new build for the next batch) without
+  // an unmount in between, we must re-arm the single-shot. Today the
+  // build state machine always passes through `loading` which unmounts
+  // the preview, but a future code path that swaps tx in place would
+  // otherwise silently lose the onBurned fire for batch #2.
+  useEffect(() => {
+    burnedFiredRef.current = false;
+  }, [transactionBase64]);
 
   // On confirmed: fire the parent's `onBurned` callback so the section
   // can strip the just-burned ids from its discovery list + selection
@@ -3571,12 +3622,31 @@ function BurnSignAndSendBlock({
   // until then. At "confirmed" the tx is already in a confirmed block —
   // a rollback is theoretically possible but vanishingly rare.
   // Single-shot via `burnedFiredRef`.
+  //
+  // Same effect also kicks the backend's 10-minute scan cache for this
+  // wallet (fire-and-forget): subsequent build calls will re-scan
+  // on-chain instead of trusting cached token-account data that still
+  // includes the just-burned mints. Without this, "Build next batch"
+  // would re-discover already-burned items as candidates until the
+  // 10-min TTL expires. The full-clean SPL loop already does this
+  // explicitly; doing it here covers Legacy/pNFT/Core/SPL burn flows.
   useEffect(() => {
     if (send.status !== "confirmed" && send.status !== "finalized") return;
     if (burnedFiredRef.current) return;
     burnedFiredRef.current = true;
     onBurnedRef.current?.();
-  }, [send.status]);
+    // Fire-and-forget cache invalidation. Errors are logged but
+    // never propagated — a failed refresh just means the next build
+    // gets stale data, which is the pre-fix status quo.
+    api
+      .getCleanupScan(targetWallet, { refresh: true })
+      .catch((err) =>
+        console.warn(
+          "[burnSend] post-confirm scan refresh failed",
+          err instanceof Error ? err.message : err,
+        ),
+      );
+  }, [send.status, targetWallet]);
 
   const noTx = transactionBase64 === null;
   const walletMismatch =
@@ -3684,10 +3754,19 @@ function BurnSignAndSendBlock({
       // (and many gated providers) drop — leaving the UI hung at
       // "submitted" forever even though the tx already landed.
       // Polls every 2s up to ~90s; bails when the blockhash expires.
+      //
+      // RPC budget: at 90s with a 2s interval, getSignatureStatuses fires
+      // up to 45×. getBlockHeight only fires every 5th iteration (~10s)
+      // — blockhash expiry is a slot-window event (~60-90s end-to-end),
+      // so 10s resolution is more than enough to bail before the user
+      // sits on a doomed tx. Cuts our hot-path RPC volume per send
+      // roughly in half.
       let confirmedSeen = false;
       const pollStart = Date.now();
       const POLL_TIMEOUT_MS = 90_000;
       const POLL_INTERVAL_MS = 2_000;
+      const BLOCKHEIGHT_CHECK_EVERY = 5;
+      let iter = 0;
       while (Date.now() - pollStart < POLL_TIMEOUT_MS) {
         const statuses = await connection.getSignatureStatuses([signature]);
         const st = statuses.value[0];
@@ -3717,9 +3796,10 @@ function BurnSignAndSendBlock({
             break;
           }
         }
-        // Bail early if the blockhash has expired and we still haven't
-        // seen the tx — at that point it can't land.
-        if (!confirmedSeen) {
+        // Blockhash-expiry bail. Cheaper to cap this RPC than to fire it
+        // every 2s — see budget comment above. Skips entirely once we've
+        // seen the tx confirm (expiry no longer matters at that point).
+        if (!confirmedSeen && iter % BLOCKHEIGHT_CHECK_EVERY === 0) {
           const currentHeight = await connection.getBlockHeight("confirmed");
           if (currentHeight > lastValidBlockHeight) {
             throw new Error(
@@ -3727,6 +3807,7 @@ function BurnSignAndSendBlock({
             );
           }
         }
+        iter++;
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       }
       if (!confirmedSeen) {
@@ -4239,7 +4320,8 @@ function BurnTxPreview({
       targetWallet={walletAddress}
       auditPassed={audit?.ok === true}
       auditReason={audit?.reason ?? null}
-      simulationOk={null}
+      simulationOk={result.simulationOk}
+      simulationError={result.simulationError}
       ackDestructive={ackDestructive}
       onToggleAck={() => setAckDestructive((v) => !v)}
       showAckCheckbox={false}
@@ -4828,9 +4910,21 @@ const NftThumbnail = React.memo(function NftThumbnail({
       alt={alt}
       loading="lazy"
       decoding="async"
+      // Deprioritize the network + decode queue for small (28px)
+      // thumbnails — they're decorative, off-the-critical-path, and a
+      // grid of 200+ at once was previously fighting the rest of the
+      // page for bandwidth/CPU. `lg` thumbnails sit in the burn
+      // preview where the user is actively reviewing — keep those at
+      // default priority.
+      fetchPriority={size === "lg" ? "auto" : "low"}
       referrerPolicy="no-referrer"
       width={size === "lg" ? 64 : 28}
       height={size === "lg" ? 64 : 28}
+      // `content-visibility: auto` lets the browser skip rendering work
+      // for off-screen items in long scrollable grids — complements
+      // loading="lazy" by also short-circuiting layout/paint, not just
+      // network. Safe because we always supply explicit width/height.
+      style={{ contentVisibility: "auto" }}
       className={`${cls} shrink-0 rounded bg-neutral-800 object-cover`}
       onError={() => setErrored(true)}
     />
@@ -5745,7 +5839,7 @@ function LegacyNftBurnPreview({
 }
 
 // =============================================================================
-// pNFT burn — Milestone 2 preview UI.
+// pNFT burn — preview UI.
 // Same two-phase pattern as LegacyNftBurnSection. Differs in:
 //   - Backend response shape (includedPnfts / skippedPnfts / simulationOk).
 //   - Adds a preflight simulation badge (Ok / Failed with reason).
