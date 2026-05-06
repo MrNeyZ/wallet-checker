@@ -2816,37 +2816,14 @@ function CleanerDetails({
                   selected={selectedMints}
                   onToggle={toggleSelected}
                 />
-                <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-1.5">
-                  <button
-                    type="button"
-                    onClick={handleBuildBurnTx}
-                    disabled={!canBuild}
-                    title={
-                      selectedMints.size === 0
-                        ? "Select at least one candidate above"
-                        : undefined
-                    }
-                    aria-label="Burn selected SPL tokens"
-                    data-vl-burn-trigger="splBurn"
-                    hidden={isCompact}
-                    className={
-                      canBuild
-                        ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
-                        : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
-                    }
-                  >
-                    {burnBuild.status === "loading" || burnPending
-                      ? "Preparing…"
-                      : burnBuild.status === "ready"
-                      ? "Re-prepare burn"
-                      : "Burn selected"}
-                  </button>
-                  <span className="text-[11px] text-red-200/70">
-                    {selectedMints.size === 0
-                      ? "Select at least one candidate to build"
-                      : `${selectedMints.size} selected`}
-                  </span>
-                </div>
+                <button
+                  type="button"
+                  onClick={handleBuildBurnTx}
+                  disabled={!canBuild}
+                  aria-label="Burn selected SPL tokens"
+                  data-vl-burn-trigger="splBurn"
+                  hidden
+                />
                 {burnBuild.status === "error" && (
                   <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
                     Build failed: {burnBuild.error}
@@ -4669,37 +4646,14 @@ function LegacyNftBurnSection({
                       kind="NFT"
                     />
                   )}
-                  <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-1.5">
-                    <button
-                      type="button"
-                      onClick={handleBuild}
-                      disabled={!canBuild}
-                      title={
-                        selectedMints.size === 0
-                          ? "Select at least one NFT above"
-                          : undefined
-                      }
-                      aria-label="Burn selected legacy NFTs"
-                      data-vl-burn-trigger="legacyNft"
-                      hidden={isCompact}
-                      className={
-                        canBuild
-                          ? "inline-flex items-center rounded-lg border-2 border-red-500/60 bg-red-600 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-500/30 transition-colors duration-100 hover:bg-red-500"
-                          : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
-                      }
-                    >
-                      {build.status === "loading"
-                        ? "Preparing…"
-                        : build.status === "ready"
-                        ? "Re-prepare burn"
-                        : "Burn selected"}
-                    </button>
-                    <span className="text-[11px] text-red-200/70">
-                      {selectedMints.size === 0
-                        ? "Select at least one NFT to build"
-                        : `${selectedMints.size} selected — backend will batch automatically`}
-                    </span>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={handleBuild}
+                    disabled={!canBuild}
+                    aria-label="Burn selected legacy NFTs"
+                    data-vl-burn-trigger="legacyNft"
+                    hidden
+                  />
                   {build.status === "error" && (
                     <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
                       Build failed: {build.error}
@@ -6083,37 +6037,14 @@ function PnftBurnSection({
                       kind="pNFT"
                     />
                   )}
-                  <div className="flex flex-wrap items-center gap-2 border-t border-red-500/20 px-3 py-1.5">
-                    <button
-                      type="button"
-                      onClick={handleBuild}
-                      disabled={!canBuild}
-                      title={
-                        selectedMints.size === 0
-                          ? "Select at least one pNFT above"
-                          : undefined
-                      }
-                      aria-label="Burn selected pNFTs"
-                      data-vl-burn-trigger="pnft"
-                      hidden={isCompact}
-                      className={
-                        canBuild
-                          ? "inline-flex items-center rounded-lg border-2 border-red-600/70 bg-red-700 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-700/40 transition-colors duration-100 hover:bg-red-600"
-                          : "inline-flex items-center rounded-lg border-2 border-red-500/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
-                      }
-                    >
-                      {build.status === "loading"
-                        ? "Preparing…"
-                        : build.status === "ready"
-                        ? "Re-prepare burn"
-                        : "Burn selected"}
-                    </button>
-                    <span className="text-[11px] text-red-200/70">
-                      {selectedMints.size === 0
-                        ? "Select at least one pNFT to build"
-                        : `${selectedMints.size} selected — backend will batch automatically`}
-                    </span>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={handleBuild}
+                    disabled={!canBuild}
+                    aria-label="Burn selected pNFTs"
+                    data-vl-burn-trigger="pnft"
+                    hidden
+                  />
                   {build.status === "error" && (
                     <div className="border-t border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300">
                       Build failed: {build.error}
@@ -6771,37 +6702,14 @@ function CoreBurnSection({
                       kind="asset"
                     />
                   )}
-                  <div className="flex flex-wrap items-center gap-2 border-t border-red-600/25 px-3 py-1.5">
-                    <button
-                      type="button"
-                      onClick={handleBuild}
-                      disabled={!canBuild}
-                      title={
-                        selectedAssets.size === 0
-                          ? "Select at least one Core asset above"
-                          : undefined
-                      }
-                      aria-label="Burn selected Core assets"
-                      data-vl-burn-trigger="core"
-                      hidden={isCompact}
-                      className={
-                        canBuild
-                          ? "inline-flex items-center rounded-lg border-2 border-red-700/80 bg-red-800 px-3 py-1.5 text-sm font-bold text-white shadow shadow-red-800/40 transition-colors duration-100 hover:bg-red-700"
-                          : "inline-flex items-center rounded-lg border-2 border-red-600/30 bg-red-900/30 px-3 py-1.5 text-sm font-bold text-red-300/60 cursor-not-allowed"
-                      }
-                    >
-                      {build.status === "loading"
-                        ? "Preparing…"
-                        : build.status === "ready"
-                        ? "Re-prepare burn"
-                        : "Burn selected"}
-                    </button>
-                    <span className="text-[11px] text-red-200/70">
-                      {selectedAssets.size === 0
-                        ? "Select at least one Core asset to build"
-                        : `${selectedAssets.size} selected — backend will batch automatically`}
-                    </span>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={handleBuild}
+                    disabled={!canBuild}
+                    aria-label="Burn selected Core assets"
+                    data-vl-burn-trigger="core"
+                    hidden
+                  />
                   {build.status === "error" && (
                     <div className="border-t border-red-600/30 bg-red-600/10 px-3 py-1.5 text-xs text-red-300">
                       Build failed: {build.error}
