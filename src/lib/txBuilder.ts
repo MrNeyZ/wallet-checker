@@ -1250,6 +1250,14 @@ export interface BuildLegacyNftBurnTxResult {
   // the same all-or-nothing pattern as pNFT/Core.
   simulationOk: boolean;
   simulationError?: string;
+  // Real wallet SOL delta from preflight simulation (post-balance −
+  // pre-balance). When non-null, this is the actual amount that will
+  // land in the wallet after BurnV1 routes rent through any active
+  // plugins (royalty enforcement, freeze delegate, etc.) and after the
+  // base + priority fees are paid. Compare against
+  // `estimatedGrossReclaimSol` to detect collections that siphon rent.
+  // Null when sim never succeeded or pre-balance fetch failed.
+  netWalletReclaimSol: number | null;
   // Full list of burnable NFTs in the wallet — independent of which ones
   // fit this tx. Frontend renders the selectable candidate table from
   // this; the user picks any combination and the build call returns
@@ -1304,6 +1312,7 @@ export async function buildLegacyNftBurnTx(
       warning: LEGACY_NFT_BURN_WARNING,
       simulationOk: false,
       simulationError: "Discovery failed. Try again.",
+      netWalletReclaimSol: null,
       burnableCandidates: [],
       maxPerTx: LEGACY_INITIAL_BATCH_CAP,
       nextBatchCandidates: [],
@@ -1493,6 +1502,7 @@ async function buildLegacyNftBurnTxImpl(
       requiresSignatureFrom: ownerStr,
       warning: LEGACY_NFT_BURN_WARNING,
       simulationOk: true,
+      netWalletReclaimSol: null,
       burnableCandidates,
       maxPerTx: LEGACY_INITIAL_BATCH_CAP,
       nextBatchCandidates: computeNextBatch([], null),
@@ -1533,6 +1543,7 @@ async function buildLegacyNftBurnTxImpl(
       warning: LEGACY_NFT_BURN_WARNING,
       simulationOk: false,
       simulationError: "RPC busy fetching blockhash. Try again.",
+      netWalletReclaimSol: null,
       burnableCandidates,
       maxPerTx: LEGACY_INITIAL_BATCH_CAP,
       nextBatchCandidates: computeNextBatch([], null),
@@ -1643,6 +1654,23 @@ async function buildLegacyNftBurnTxImpl(
   // ============================================================================
   let simulationOk = false;
   let simulationError: string | undefined;
+  // Real wallet SOL delta from sim (post − pre). Captures the actual
+  // amount the wallet receives after BurnV1 routes rent through any
+  // active plugins (royalty enforcement, freeze, etc.) and after fees.
+  // Null when sim never succeeded.
+  let netWalletReclaimSol: number | null = null;
+  // Pre-balance fetch — one extra RPC per build, used to compute the
+  // wallet delta from the sim's post-balance. Fail-open: if it errors,
+  // we just skip the net-reclaim feature for this build instead of
+  // failing the whole flow.
+  let preBalanceLamports: number | null = null;
+  try {
+    preBalanceLamports = await connection.getBalance(owner);
+  } catch (err) {
+    console.warn(
+      `[legacyNftBurn] getBalance failed for ${ownerStr}: ${(err as Error)?.message ?? err}`,
+    );
+  }
   // Tracks the previous attempt's friendly error string. When two consecutive
   // shrinks fail with the SAME error, further trimming is futile — the bad
   // item isn't at the tail. Bail with the head isolated so the UI can move
@@ -1658,8 +1686,11 @@ async function buildLegacyNftBurnTxImpl(
       // 20s hard timeout — public mainnet-beta sometimes hangs indefinitely
       // on simulate, leaving the user with a forever-spinning "Preparing…".
       // Cleaner to fail fast and surface a clear error than to hang.
+      // `[owner]` as the third arg asks the RPC to return the owner's
+      // post-sim AccountInfo so we can diff against `preBalanceLamports`
+      // for a real net-reclaim figure.
       const sim = await Promise.race([
-        connection.simulateTransaction(built.tx),
+        connection.simulateTransaction(built.tx, undefined, [owner]),
         new Promise<never>((_, rej) =>
           setTimeout(
             () => rej(new Error("simulateTransaction timed out after 20s — RPC unresponsive")),
@@ -1672,6 +1703,11 @@ async function buildLegacyNftBurnTxImpl(
       );
       if (!sim.value.err) {
         simulationOk = true;
+        const postLamports = sim.value.accounts?.[0]?.lamports ?? null;
+        if (postLamports !== null && preBalanceLamports !== null) {
+          netWalletReclaimSol =
+            (postLamports - preBalanceLamports) / LAMPORTS_PER_SOL;
+        }
         break;
       }
       simErr = parseSimulationError(sim.value.err, sim.value.logs ?? []);
@@ -1760,6 +1796,7 @@ async function buildLegacyNftBurnTxImpl(
       warning: LEGACY_NFT_BURN_WARNING,
       simulationOk: false,
       simulationError,
+      netWalletReclaimSol: null,
       burnableCandidates,
       maxPerTx: LEGACY_INITIAL_BATCH_CAP,
       nextBatchCandidates: computeNextBatch([], isolated?.mint ?? null),
@@ -1819,6 +1856,7 @@ async function buildLegacyNftBurnTxImpl(
     requiresSignatureFrom: ownerStr,
     warning: LEGACY_NFT_BURN_WARNING,
     simulationOk,
+    netWalletReclaimSol,
     burnableCandidates,
     maxPerTx: LEGACY_INITIAL_BATCH_CAP,
     nextBatchCandidates: computeNextBatch(included, isolated?.mint ?? null),
@@ -2255,6 +2293,9 @@ export interface BuildPnftBurnTxResult {
   // transactionBase64 is null per spec.
   simulationOk: boolean;
   simulationError?: string;
+  // Real wallet SOL delta from preflight simulation. See
+  // BuildLegacyNftBurnTxResult.netWalletReclaimSol.
+  netWalletReclaimSol: number | null;
   // Full burnable list — see BuildLegacyNftBurnTxResult.burnableCandidates.
   burnableCandidates: BurnablePnftCandidate[];
   maxPerTx: number;
@@ -2400,6 +2441,7 @@ export async function buildPnftBurnTx(
       warning: PNFT_BURN_WARNING,
       simulationOk: false,
       simulationError: "Discovery failed. Try again.",
+      netWalletReclaimSol: null,
       burnableCandidates: [],
       maxPerTx: MAX_PNFT_BURN_PER_TX,
       nextBatchCandidates: [],
@@ -2584,6 +2626,7 @@ async function buildPnftBurnTxImpl(
       requiresSignatureFrom: ownerStr,
       warning: PNFT_BURN_WARNING,
       simulationOk: true,
+      netWalletReclaimSol: null,
       burnableCandidates,
       maxPerTx: MAX_PNFT_BURN_PER_TX,
       nextBatchCandidates: computeNextBatch([], null),
@@ -2623,6 +2666,7 @@ async function buildPnftBurnTxImpl(
       warning: PNFT_BURN_WARNING,
       simulationOk: false,
       simulationError: "RPC busy fetching blockhash. Try again.",
+      netWalletReclaimSol: null,
       burnableCandidates,
       maxPerTx: MAX_PNFT_BURN_PER_TX,
       nextBatchCandidates: computeNextBatch([], null),
@@ -2753,12 +2797,33 @@ async function buildPnftBurnTxImpl(
   // ============================================================================
   let simulationOk = false;
   let simulationError: string | undefined;
+  // Real wallet SOL delta from sim — see buildLegacyNftBurnTxImpl for
+  // rationale. Captures rent that BurnV1 routes through plugins (royalty
+  // enforcement etc.) so the UI can warn when net < gross.
+  let netWalletReclaimSol: number | null = null;
+  let preBalanceLamports: number | null = null;
+  try {
+    preBalanceLamports = await connection.getBalance(owner);
+  } catch (err) {
+    console.warn(
+      `[pnftBurn] getBalance failed for ${ownerStr}: ${(err as Error)?.message ?? err}`,
+    );
+  }
   while (built !== null && included.length > 0) {
     let simErr: string | undefined;
     try {
-      const sim = await connection.simulateTransaction(built.tx);
+      const sim = await connection.simulateTransaction(
+        built.tx,
+        undefined,
+        [owner],
+      );
       if (!sim.value.err) {
         simulationOk = true;
+        const postLamports = sim.value.accounts?.[0]?.lamports ?? null;
+        if (postLamports !== null && preBalanceLamports !== null) {
+          netWalletReclaimSol =
+            (postLamports - preBalanceLamports) / LAMPORTS_PER_SOL;
+        }
         break;
       }
       simErr = parseSimulationError(sim.value.err, sim.value.logs ?? []);
@@ -2824,6 +2889,7 @@ async function buildPnftBurnTxImpl(
       warning: PNFT_BURN_WARNING,
       simulationOk: false,
       simulationError,
+      netWalletReclaimSol: null,
       burnableCandidates,
       maxPerTx: MAX_PNFT_BURN_PER_TX,
       nextBatchCandidates: computeNextBatch([], isolated?.mint ?? null),
@@ -2889,6 +2955,7 @@ async function buildPnftBurnTxImpl(
     requiresSignatureFrom: ownerStr,
     warning: PNFT_BURN_WARNING,
     simulationOk,
+    netWalletReclaimSol,
     burnableCandidates,
     maxPerTx: MAX_PNFT_BURN_PER_TX,
     nextBatchCandidates: computeNextBatch(included, isolated?.mint ?? null),
@@ -3293,6 +3360,9 @@ export interface BuildCoreBurnTxResult {
   warning: string;
   simulationOk: boolean;
   simulationError?: string;
+  // Real wallet SOL delta from preflight simulation. See
+  // BuildLegacyNftBurnTxResult.netWalletReclaimSol.
+  netWalletReclaimSol: number | null;
   // Full burnable list — see BuildLegacyNftBurnTxResult.burnableCandidates.
   burnableCandidates: BurnableCoreCandidate[];
   maxPerTx: number;
@@ -3494,6 +3564,7 @@ export async function buildCoreBurnTx(
       requiresSignatureFrom: ownerStr,
       warning: CORE_BURN_WARNING,
       simulationOk: true,
+      netWalletReclaimSol: null,
       burnableCandidates,
       maxPerTx: MAX_CORE_BURN_PER_TX,
       nextBatchCandidates: computeNextBatch([], null),
@@ -3577,6 +3648,19 @@ export async function buildCoreBurnTx(
   let simulationOk = false;
   let simulationError: string | undefined;
   let isolated: CoreBurnSkippedEntry | null = null;
+  // Real wallet SOL delta from sim (post − pre). For Core this is the
+  // KEY field — most collections route a chunk of asset rent to royalty
+  // creators via the Royalty plugin, so the on-chain "reclaim" is
+  // typically ~30-50% lower than account rent. Captures that exactly.
+  let netWalletReclaimSol: number | null = null;
+  let preBalanceLamports: number | null = null;
+  try {
+    preBalanceLamports = await connection.getBalance(owner);
+  } catch (err) {
+    console.warn(
+      `[coreBurn] getBalance failed for ${ownerStr}: ${(err as Error)?.message ?? err}`,
+    );
+  }
   while (included.length > 0) {
     let simErr: string | undefined;
     // Hard debug — log every burn ix's account metas before the preflight
@@ -3602,9 +3686,18 @@ export async function buildCoreBurnTx(
       );
     }
     try {
-      const sim = await connection.simulateTransaction(built.tx);
+      const sim = await connection.simulateTransaction(
+        built.tx,
+        undefined,
+        [owner],
+      );
       if (!sim.value.err) {
         simulationOk = true;
+        const postLamports = sim.value.accounts?.[0]?.lamports ?? null;
+        if (postLamports !== null && preBalanceLamports !== null) {
+          netWalletReclaimSol =
+            (postLamports - preBalanceLamports) / LAMPORTS_PER_SOL;
+        }
         break;
       }
       simErr = parseSimulationError(sim.value.err, sim.value.logs ?? []);
@@ -3677,6 +3770,7 @@ export async function buildCoreBurnTx(
       warning: CORE_BURN_WARNING,
       simulationOk: false,
       simulationError,
+      netWalletReclaimSol: null,
       burnableCandidates,
       maxPerTx: MAX_CORE_BURN_PER_TX,
       nextBatchCandidates: computeNextBatch([], isolated?.asset ?? null),
@@ -3728,6 +3822,7 @@ export async function buildCoreBurnTx(
     requiresSignatureFrom: ownerStr,
     warning: CORE_BURN_WARNING,
     simulationOk,
+    netWalletReclaimSol,
     burnableCandidates,
     maxPerTx: MAX_CORE_BURN_PER_TX,
     nextBatchCandidates: computeNextBatch(included, isolated?.asset ?? null),

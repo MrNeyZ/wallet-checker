@@ -5574,6 +5574,15 @@ function LegacyNftBurnPreview({
       ),
     },
     {
+      label: "Net wallet reclaim",
+      value: (
+        <NetReclaimCell
+          netSol={result.netWalletReclaimSol}
+          grossSol={result.estimatedGrossReclaimSol}
+        />
+      ),
+    },
+    {
       label: "Tx version",
       value: <Badge variant="info">{result.transactionVersion}</Badge>,
     },
@@ -6261,6 +6270,15 @@ function PnftBurnPreview({
       ),
     },
     {
+      label: "Net wallet reclaim",
+      value: (
+        <NetReclaimCell
+          netSol={result.netWalletReclaimSol}
+          grossSol={result.estimatedGrossReclaimSol}
+        />
+      ),
+    },
+    {
       label: "Tx version",
       value: <Badge variant="info">{result.transactionVersion}</Badge>,
     },
@@ -6928,6 +6946,15 @@ function CoreBurnPreview({
       ),
     },
     {
+      label: "Net wallet reclaim",
+      value: (
+        <NetReclaimCell
+          netSol={result.netWalletReclaimSol}
+          grossSol={result.estimatedGrossReclaimSol}
+        />
+      ),
+    },
+    {
       label: "Tx version",
       value: <Badge variant="info">{result.transactionVersion}</Badge>,
     },
@@ -7093,6 +7120,46 @@ function SubHeader({ label, right }: { label: string; right?: string }) {
 function EmptyHint({ children }: { children: React.ReactNode }) {
   return (
     <div className="px-3 py-4 text-center text-xs text-neutral-500">{children}</div>
+  );
+}
+
+// Renders the simulation-based net wallet reclaim (post − pre) with a
+// soft warning when it falls short of the asset rent estimate. Used in
+// Legacy / pNFT / Core burn previews. SPL closeAccount path doesn't
+// need it — its reclaim is exact and already shown.
+function NetReclaimCell({
+  netSol,
+  grossSol,
+}: {
+  netSol: number | null;
+  grossSol: number;
+}) {
+  if (netSol === null) {
+    return (
+      <span className="text-[11px] text-[color:var(--vl-fg-3)]">
+        —{" "}
+        <span className="text-[10px] text-[color:var(--vl-fg-3)]">
+          (sim did not return wallet balance)
+        </span>
+      </span>
+    );
+  }
+  // Treat near-equal as no-warn — fee + tiny rounding can put net just
+  // below gross even on a clean burn. >0.0005 SOL gap is meaningful.
+  const shortBy = grossSol - netSol;
+  const showWarn = shortBy > 0.0005;
+  return (
+    <span className="flex flex-col items-end gap-0.5">
+      <span className="font-bold text-emerald-300">{fmtSol(netSol)} SOL</span>
+      <span className="text-[10px] text-[color:var(--vl-fg-3)]">
+        Asset rent: {fmtSol(grossSol)} SOL
+      </span>
+      {showWarn && (
+        <span className="text-[10px] text-amber-300/90">
+          Collection plugins/fees may reduce reclaim.
+        </span>
+      )}
+    </span>
   );
 }
 

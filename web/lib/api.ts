@@ -243,6 +243,12 @@ export interface BuildLegacyNftBurnTxResult {
   // the chain would reject.
   simulationOk: boolean;
   simulationError?: string;
+  // Real wallet SOL delta from preflight sim (post − pre). When set,
+  // this is the actual amount the wallet will receive — accounts for
+  // collection plugins (royalty, freeze) that route rent away from the
+  // burner. Compare with `estimatedGrossReclaimSol` to detect the diff.
+  // Null when sim didn't succeed or pre-balance fetch failed.
+  netWalletReclaimSol: number | null;
   // Full burnable list — what the frontend renders in the candidate
   // table. includedNfts is a subset of this (the chosen current-tx batch).
   burnableCandidates: BurnableLegacyCandidate[];
@@ -328,6 +334,8 @@ export interface BuildPnftBurnTxResult {
   warning: string;
   simulationOk: boolean;
   simulationError?: string;
+  // Real wallet SOL delta from preflight sim. See BuildLegacyNftBurnTxResult.
+  netWalletReclaimSol: number | null;
   burnableCandidates: BurnablePnftCandidate[];
   maxPerTx: number;
   nextBatchCandidates: BurnablePnftCandidate[];
@@ -390,6 +398,10 @@ export interface BuildCoreBurnTxResult {
   warning: string;
   simulationOk: boolean;
   simulationError?: string;
+  // Real wallet SOL delta from preflight sim. KEY field for Core —
+  // most collections use the Royalty plugin which routes ~30-50% of
+  // asset rent to creators, so this number is what actually lands.
+  netWalletReclaimSol: number | null;
   burnableCandidates: BurnableCoreCandidate[];
   maxPerTx: number;
   nextBatchCandidates: BurnableCoreCandidate[];
