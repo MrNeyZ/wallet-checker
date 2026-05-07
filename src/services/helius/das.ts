@@ -15,17 +15,22 @@ import { env } from "../../config/env.js";
 import { runWithConcurrency } from "../../lib/concurrency.js";
 import { CappedLruMap } from "../../lib/lruCache.js";
 
-// Local copy of the DEBUG_MINTS env-driven set so this module doesn't
-// import scanner.ts (avoids a circular dep risk — scanner imports
-// fetchAssetMetadataBatch from here). Both modules read the same env
-// var at startup, so the set is identical in practice.
-const DEBUG_MINTS_LOCAL: ReadonlySet<string> = new Set(
-  (process.env.DEBUG_MINTS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
-);
+// Local copy of the DEBUG_MINTS env-driven set. Avoids importing
+// scanner.ts (would create a cycle — scanner imports
+// fetchAssetMetadataBatch from here). Lazy init for the same reason
+// scanner uses lazy init: process.env may not be populated by dotenv
+// at the moment this module first evaluates, depending on import
+// order.
+let DEBUG_MINTS_LOCAL: ReadonlySet<string> | null = null;
 function isDebugMintRef(mint: string): boolean {
+  if (DEBUG_MINTS_LOCAL === null) {
+    DEBUG_MINTS_LOCAL = new Set(
+      (process.env.DEBUG_MINTS ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+  }
   return DEBUG_MINTS_LOCAL.has(mint);
 }
 

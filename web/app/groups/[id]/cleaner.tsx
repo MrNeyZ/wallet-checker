@@ -4999,12 +4999,13 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
     })();
     return (
       <label
-        // Bumped vertical padding (py-1 → py-1.5) and added a min-height
-        // so cards have a slightly bigger click target when 200+ render
-        // densely. Width / grid columns unchanged — this only adds ~4px
-        // of vertical breathing room and a slightly bigger checkbox.
-        // Same DOM cost as before (no extra elements).
-        className={`vl-card is-interactive flex min-h-[28px] cursor-pointer items-center gap-1.5 px-2 py-1.5 text-left ${
+        // Compact card sizing — TARGET min-height ~52px so the cards
+        // read as chunky rectangles (≈ 3:1 → 4:1 ratio at typical
+        // 6-col widths) instead of the previous narrow strip that
+        // was hard to hit on a touchpad. Width / grid columns
+        // unchanged; only the vertical envelope grows. Compact-only —
+        // the full /groups/[id]?tab=cleaner card branch is unchanged.
+        className={`vl-card is-interactive flex min-h-[52px] cursor-pointer items-center gap-2 px-2.5 py-3 text-left ${
           isChecked ? "is-selected" : ""
         }`}
         title={name ?? id}
@@ -5014,7 +5015,7 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
           checked={isChecked}
           onChange={() => onToggle(id)}
           aria-label={`Select ${name ?? itemKindLabel} for burn`}
-          className="vl-checkbox h-4 w-4 shrink-0 cursor-pointer"
+          className="vl-checkbox h-[18px] w-[18px] shrink-0 cursor-pointer"
         />
         <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white">
           {split.prefix || (name ?? shortAddr(id, 4, 4))}
@@ -5097,7 +5098,12 @@ const GRID_PAGE_SIZE = 60;
 // elsewhere in the file. Selection toggling re-renders the parent's
 // `selected` set, but `BurnCandidateCard` is React.memo'd on primitive
 // props so only the toggled card actually re-renders.
-const COMPACT_ROW_HEIGHT_PX = 36;
+// Card env: min-h-[52px] + py-3 + 1px borders ≈ 52-54px rendered. Keep
+// the row stride a couple px above the visual card height so the
+// virtualizer's absolutely-positioned rows never overlap (a too-tight
+// stride causes the next row to sit a hair on top of the previous,
+// chopping ~2 pixels off card text). 54 + 4 gap = 58px stride.
+const COMPACT_ROW_HEIGHT_PX = 54;
 const COMPACT_ROW_GAP_PX = 4;
 const COMPACT_OVERSCAN_ROWS = 3;
 

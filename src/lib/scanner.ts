@@ -55,17 +55,44 @@ type CacheEntry = {
 const scanCache = new CappedLruMap<string, CacheEntry>(SCAN_CACHE_MAX);
 
 // Mints flagged for verbose tracing through the full scan/classify
-// pipeline. Set via DEBUG_MINTS env (comma-separated) so we can
-// ship the trace harness without cluttering steady-state logs. Read
-// once at module load — restart pm2 to change targets.
-const DEBUG_MINTS: ReadonlySet<string> = new Set(
-  (process.env.DEBUG_MINTS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
-);
+// pipeline. Set via DEBUG_MINTS env (comma-separated) so we can ship
+// the trace harness without cluttering steady-state logs.
+//
+// Lazy init: do NOT read process.env at module-evaluation time. ESM
+// imports are eager and depending on the import graph, this module
+// can evaluate BEFORE `import "dotenv/config"` has populated
+// process.env — which would silently freeze DEBUG_MINTS to an empty
+// set forever. The lazy getter below re-checks process.env on first
+// use, by which time dotenv has run.
+let DEBUG_MINTS: ReadonlySet<string> | null = null;
+let DEBUG_MINTS_ANNOUNCED = false;
+function getDebugMints(): ReadonlySet<string> {
+  if (DEBUG_MINTS === null) {
+    const raw = process.env.DEBUG_MINTS ?? "";
+    const parsed = new Set(
+      raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+    DEBUG_MINTS = parsed;
+    if (!DEBUG_MINTS_ANNOUNCED) {
+      DEBUG_MINTS_ANNOUNCED = true;
+      // Single startup line so the operator can verify the env var
+      // actually reached Node. Useful when "the trace logs aren't
+      // firing" — if this line says count=0, the env var isn't set
+      // (or got eaten by pm2 / docker / nginx layer).
+      console.log(
+        `[debugMint] DEBUG_MINTS active: count=${parsed.size} mints=${
+          parsed.size === 0 ? "<none>" : [...parsed].join(",")
+        }`,
+      );
+    }
+  }
+  return DEBUG_MINTS;
+}
 export function isDebugMint(mint: string): boolean {
-  return DEBUG_MINTS.has(mint);
+  return getDebugMints().has(mint);
 }
 
 async function fetchTokenAccountsForProgram(owner: PublicKey, programId: PublicKey) {
@@ -168,7 +195,7 @@ async function performScan(address: string): Promise<CleanupScanResult> {
       result.unknownTokenAccounts.push(account);
     }
 
-    if (DEBUG_MINTS.has(account.mint)) {
+    if (getDebugMints().has(account.mint)) {
       console.log(
         `[debugMint] scanner mint=${account.mint} bucket=${
           isEmpty
@@ -201,7 +228,7 @@ async function performScan(address: string): Promise<CleanupScanResult> {
     for (const acc of nftCandidates) {
       const meta = dasMap.get(acc.mint);
       const cls = classifyNftCandidate(meta);
-      const isDebug = DEBUG_MINTS.has(acc.mint);
+      const isDebug = getDebugMints().has(acc.mint);
       // Permissive fallback: if DAS didn't resolve at all (no API key,
       // outage), or this specific mint wasn't returned, accept it as
       // an NFT candidate. The per-section discovery (Legacy / pNFT)
