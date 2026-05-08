@@ -1237,25 +1237,37 @@ async function confirmLegacyNfts(
         collectionMint: collectionMint.toBase58(),
         collectionMetadata: colInfo ? colPda : null,
       });
-      // Strict: BurnV1 rejects collection-verified NFTs (`0x67 / Missing
-      // collection metadata account`) when the `collectionMetadata` slot
-      // isn't supplied. The previous "best-effort" branch (leave the slot
-      // null and let the sim-trim loop catch it) was the actual cause of
-      // the preflight error the operator was seeing — we'd build a tx the
-      // program guaranteed to reject.
+      // BurnV1 needs the collection-metadata PDA *in the account slot*
+      // when `collection.verified === true` on the child NFT (otherwise
+      // the program rejects with `0x67 / Missing collection metadata
+      // account`). It does NOT require the underlying account to be
+      // initialised: when the parent collection NFT was burned (or never
+      // had a Metadata PDA), passing the derived PDA is sufficient —
+      // the program reads the empty slot, finds no Sized counter to
+      // decrement, and proceeds to burn the child anyway.
       //
-      // If we have the parent metadata account on-chain → wire it in.
-      // If the metadata's `collection` says verified but we can't fetch
-      // the parent metadata account → skip this NFT with the explicit
-      // "Missing verified collection metadata account" reason. The user
-      // sees it surfaced in the section's non-burnable summary and can
-      // burn other NFTs in the wallet without one bad collection
-      // gumming up the whole batch.
-      if (colInfo) {
-        conf.collectionMetadataPda = colPda;
-      } else {
-        conf.isBurnable = false;
-        conf.unburnableReason = "Missing verified collection metadata account";
+      // Verified empirically against mainnet fixture
+      //   mint=E5j1yUzA2bG7jo2rNNZVGY3GcY3MxHFfAjVYj32NuN59
+      //   collection mint=DsnYfYERsz9StFmhgndnnYStX2v3oEY2cah9b7jAaZSG
+      //                   (burnt=true, metadata PDA exists=false)
+      // BurnV1 simulation: omitting the collectionMetadata slot →
+      // `0x67 Missing collection metadata account`. Passing the derived
+      // PDA → `err: null` (simulation succeeds, NFT burns).
+      //
+      // The previous strict gate ("colInfo === null → skip") was wrong
+      // for this exact case — the parent was burnable, the child was
+      // burnable, but the safety check rejected children of orphaned
+      // collections (Plain Ape, Saigo Monkeys, Sea Shanties). Spam
+      // resistance is preserved by upstream gates: master-edition
+      // presence (`isLegacy = isStandard || isEdition || isPreMetaplexNft
+      // || isMasterEditionFallback`), owner match, amount/decimals
+      // shape, and the preflight simulation in `buildLegacyNftBurnTxImpl`
+      // catches anything that still rejects on-chain.
+      conf.collectionMetadataPda = colPda;
+      if (!colInfo && isDebugMint(conf.mint)) {
+        console.log(
+          `[debugMint] legacy.confirm mint=${conf.mint} stage=collectionMetaPass2 colInfo=null colPda=${colPda} note=passing derived PDA to BurnV1 (parent collection metadata not on-chain — orphaned/burnt parent; program tolerates empty slot)`,
+        );
       }
     }
   }
