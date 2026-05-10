@@ -4,41 +4,153 @@
 //
 // Source: https://github.com/MrNeyZ/nft-live-feed/blob/main/frontend/src/runtime/Gate.tsx
 //
-// Differences vs. upstream:
-//   - Wallet detection / connect / address display / change-wallet — REMOVED.
-//   - Mode-select screen — REMOVED.
-//   - Auth = single passphrase compared server-side against WEB_PASSWORD via
-//     the existing loginAction (web/app/login/actions.ts). On success the
-//     server action redirects; on failure it returns { ok: false, error }
-//     and we surface that in the .vl-error slot.
+// Auth model:
+//   - Wallet connect → invite passphrase → wallet.signMessage of a server
+//     issued canonical message → POST /web-api/auth/siws/verify which sets
+//     the same `wallet_checker_session` cookie middleware.ts already reads.
+//   - Phantom shows "Sign Message" (no SOL fee, no transaction).
+//   - The pre-existing server action `loginAction` is kept for
+//     AUTH_REQUIRE_SIWS=false deployments (operator-controlled).
 //
 // The CSS string (GATE_CSS) is verbatim from upstream — every gate-* and
-// vl-* class is preserved. Only the JSX was reshaped to drop the wallet
-// step, so layout / spacing / fonts / animations are pixel-identical.
+// vl-* class is preserved. Only the JSX was reshaped to add the wallet
+// connect step, so layout / spacing / fonts / animations stay
+// pixel-identical to the design.
 
-import { useRef, useState, useTransition } from "react";
+import { useState } from "react";
+import { getProvider } from "@/lib/wallet";
 
 interface LoginFormProps {
   next: string;
+  // The legacy server-action prop is intentionally unused by this form
+  // — it stays in the type so the parent page (page.tsx) doesn't need
+  // to change. SIWS-only deployment.
   action: (formData: FormData) => Promise<{ ok: false; error: string } | void>;
 }
 
-export default function LoginForm({ next, action }: LoginFormProps) {
-  const [pw, setPw] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
-  const formRef = useRef<HTMLFormElement | null>(null);
+type Step =
+  | { kind: "connect" }
+  | { kind: "passphrase"; wallet: string }
+  | { kind: "submitting"; wallet: string };
 
-  function onSubmit(formData: FormData) {
-    setErr(null);
-    startTransition(async () => {
-      const result = await action(formData);
-      if (result && result.ok === false) setErr(result.error);
+function shortenAddress(addr: string): string {
+  return addr.length <= 10 ? addr : `${addr.slice(0, 5)}…${addr.slice(-5)}`;
+}
+
+function bytesToB64(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.byteLength; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<{ ok: boolean; status: number; data: T | null }> {
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // Include cookies so the verify response can SET the session cookie
+      // back on the same origin. Without `credentials: "same-origin"` the
+      // Set-Cookie header is honoured anyway (same-origin fetch) but
+      // declaring it explicit makes intent clear and survives future
+      // browser default changes.
+      credentials: "same-origin",
+      body: JSON.stringify(body),
     });
+    let data: T | null = null;
+    try { data = await res.json() as T; } catch { /* non-JSON response */ }
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
+export default function LoginForm({ next }: LoginFormProps) {
+  const [step, setStep] = useState<Step>({ kind: "connect" });
+  const [pw, setPw]     = useState("");
+  const [err, setErr]   = useState<string | null>(null);
+
+  async function connect() {
+    setErr(null);
+    const sol = getProvider();
+    if (!sol) { setErr("Phantom wallet not detected"); return; }
+    try {
+      const { publicKey } = await sol.connect();
+      setStep({ kind: "passphrase", wallet: publicKey.toBase58() });
+    } catch {
+      setErr("Wallet connection rejected");
+    }
   }
 
-  const busy = pending;
-  const canSubmit = pw.length > 0 && !busy;
+  async function signIn() {
+    if (step.kind !== "passphrase") return;
+    if (!pw) return;
+    setErr(null);
+    const wallet = step.wallet;
+    setStep({ kind: "submitting", wallet });
+
+    // Step 1 — nonce
+    type NonceResp = { nonce?: string; message?: string };
+    const nonceRes = await postJson<NonceResp>("/web-api/auth/siws/nonce", { wallet });
+    if (!nonceRes.ok || !nonceRes.data || !nonceRes.data.nonce || !nonceRes.data.message) {
+      setStep({ kind: "passphrase", wallet });
+      setErr(nonceRes.status === 429 ? "Too many sign-in attempts" : "Could not start sign-in");
+      return;
+    }
+    const { nonce, message } = nonceRes.data as Required<NonceResp>;
+
+    // Step 2 — sign the canonical message
+    let signatureB64: string;
+    try {
+      const sol = getProvider();
+      if (!sol || typeof sol.signMessage !== "function") {
+        setStep({ kind: "passphrase", wallet });
+        setErr("Wallet does not support message signing");
+        return;
+      }
+      const messageBytes = new TextEncoder().encode(message);
+      const result = await sol.signMessage(messageBytes, "utf8");
+      const sig = result.signature;
+      signatureB64 = sig instanceof Uint8Array ? bytesToB64(sig) : String(sig);
+    } catch {
+      setStep({ kind: "passphrase", wallet });
+      setErr("Signature cancelled");
+      return;
+    }
+
+    // Step 3 — verify (server sets the session cookie on success)
+    type VerifyResp = { ok?: boolean; reason?: string };
+    const verifyRes = await postJson<VerifyResp>("/web-api/auth/siws/verify", {
+      wallet, nonce, signature: signatureB64, password: pw,
+    });
+    if (!verifyRes.ok || !verifyRes.data?.ok) {
+      setStep({ kind: "passphrase", wallet });
+      // Surface a friendly reason; never echo back the raw reason code.
+      const r = verifyRes.data?.reason;
+      const friendly =
+        r === "bad_passphrase"        ? "Invalid passphrase" :
+        r === "bad_signature"         ? "Signature did not verify" :
+        r === "expired_nonce"         ? "Sign-in expired — try again" :
+        r === "unknown_nonce"         ? "Sign-in expired — try again" :
+        verifyRes.status === 429      ? "Too many sign-in attempts" :
+                                        "Wallet or passphrase rejected";
+      setErr(friendly);
+      return;
+    }
+
+    // Full-page nav so the cookie just set by /verify is read by
+    // middleware.ts on the destination request.
+    const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/groups";
+    window.location.replace(safeNext);
+  }
+
+  function reset() {
+    setStep({ kind: "connect" });
+    setPw(""); setErr(null);
+  }
+
+  const busy = step.kind === "submitting";
+  const connected = step.kind !== "connect";
+  const wallet = connected ? step.wallet : null;
 
   return (
     <>
@@ -49,46 +161,65 @@ export default function LoginForm({ next, action }: LoginFormProps) {
           <div className="gate-hero-stack">
             <h1 className="gate-headline">Access Required</h1>
             <p className="gate-sub">
-              Sign in with your passphrase to enter the control plane.
+              {connected
+                ? "Sign in with your passphrase to enter the control plane."
+                : "Connect a Solana wallet to continue."}
             </p>
           </div>
 
-          <form ref={formRef} action={onSubmit} className="gate-form">
-            <input type="hidden" name="next" value={next} />
-            <div className="vl-wallet-field">
-              <span className="vl-dot" />
-              <input
-                autoFocus
-                type="password"
-                name="password"
-                className="vl-passphrase"
-                placeholder="enter passphrase"
-                value={pw}
-                onChange={(e) => setPw(e.target.value)}
-                disabled={busy}
-                autoComplete="current-password"
-              />
-              <button
-                type="submit"
-                className="vl-arrow"
-                disabled={!canSubmit}
-                aria-label="Enter"
-              >
-                {busy ? <Dots /> : "→"}
-              </button>
+          {!connected && (
+            <button type="button" className="vl-cta" onClick={connect} disabled={busy}>
+              {busy ? <Dots /> : "Connect Wallet"}
+            </button>
+          )}
+
+          {connected && wallet && (
+            <form
+              className="gate-form"
+              onSubmit={(e) => { e.preventDefault(); void signIn(); }}
+            >
+              <div className="vl-wallet-field">
+                <span className="vl-dot" />
+                <span className="vl-wallet-text" title={wallet}>{shortenAddress(wallet)}</span>
+                <input
+                  autoFocus
+                  type="password"
+                  name="password"
+                  className="vl-passphrase"
+                  placeholder="enter passphrase"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  disabled={busy}
+                  autoComplete="current-password"
+                />
+                <button
+                  type="submit"
+                  className="vl-arrow"
+                  disabled={!pw || busy}
+                  aria-label="Enter"
+                >
+                  {busy ? <Dots /> : "→"}
+                </button>
+              </div>
+              <div className="gate-field-row">
+                {err ? (
+                  <div className="vl-error">
+                    <span className="vl-err-dot" />
+                    {err.toLowerCase()}
+                  </div>
+                ) : (
+                  <span />
+                )}
+                <button type="button" className="vl-change" onClick={reset}>change wallet</button>
+              </div>
+            </form>
+          )}
+          {!connected && err && (
+            <div className="vl-error">
+              <span className="vl-err-dot" />
+              {err.toLowerCase()}
             </div>
-            <div className="gate-field-row">
-              {err ? (
-                <div className="vl-error">
-                  <span className="vl-err-dot" />
-                  {err.toLowerCase()}
-                </div>
-              ) : (
-                <span />
-              )}
-              <span />
-            </div>
-          </form>
+          )}
         </div>
       </div>
     </>

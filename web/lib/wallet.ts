@@ -25,6 +25,15 @@ export interface PhantomLikeProvider {
   // We use this for burn flows so we can broadcast through OUR RPC
   // instead of Phantom's (which has been returning 403 on rate-limit).
   signTransaction: (tx: Transaction) => Promise<Transaction>;
+  // Message signing — used by the SIWS login flow at /login. Phantom
+  // shows a "Sign Message" prompt (no SOL fee, no on-chain side effect).
+  // Optional in the type so legacy wallets that only support tx signing
+  // still satisfy the rest of the interface; the SIWS caller surfaces a
+  // clear error when this is undefined.
+  signMessage?: (message: Uint8Array, encoding?: string) => Promise<{
+    signature: Uint8Array | string;
+    publicKey?: { toBase58(): string };
+  }>;
   on?: (event: string, handler: (...args: unknown[]) => void) => void;
   off?: (event: string, handler: (...args: unknown[]) => void) => void;
 }
