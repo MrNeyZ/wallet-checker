@@ -98,8 +98,22 @@ export interface InstructionAuditResult {
 // Anything else (including SPL Token Burn) is rejected. Also requires at
 // least one CloseAccount instruction so we don't pass a tx that only sets
 // budget. Returns ok=true only if all checks pass.
-export function auditCloseEmptyTx(b64: string): InstructionAuditResult {
+//
+// SPL Token CloseAccount account layout (per spl-token spec):
+//   keys[0]  account_to_close   (writable, source token account)
+//   keys[1]  destination        (writable, where rent lamports go)
+//   keys[2]  owner OR multisig  (signer or multisig PDA)
+//   keys[3+] multisig signers   (optional)
+// We pin keys[1] to the connected wallet so a malicious / compromised
+// backend can't sneak a tx where the user's CloseAccount destinations
+// silently route the rent reclaim to an attacker pubkey. Fee-payer +
+// signer checks upstream prevent the wallet itself from being swapped,
+// but the lamport recipient slot is independent and must be pinned here.
+export function auditCloseEmptyTx(b64: string, expectedDestination: string): InstructionAuditResult {
   try {
+    if (!expectedDestination) {
+      return { ok: false, total: 0, closeAccountCount: 0, reason: "Audit missing expected destination" };
+    }
     const tx = decodeBase64Transaction(b64);
     const ixs = tx.instructions;
     if (ixs.length === 0) {
@@ -133,6 +147,26 @@ export function auditCloseEmptyTx(b64: string): InstructionAuditResult {
             total: ixs.length,
             closeAccountCount,
             reason: `Instruction #${i} opcode is ${opcode ?? "empty"}, not CloseAccount (${CLOSE_ACCOUNT_OPCODE})`,
+          };
+        }
+        // Destination pinning — keys[1] is the lamport recipient. Fail-
+        // closed if the slot is missing or mismatched, so a backend that
+        // ever produces a malformed account list can't pass audit.
+        const dest = ix.keys[1]?.pubkey?.toBase58();
+        if (!dest) {
+          return {
+            ok: false,
+            total: ixs.length,
+            closeAccountCount,
+            reason: `Instruction #${i} CloseAccount has no destination key`,
+          };
+        }
+        if (dest !== expectedDestination) {
+          return {
+            ok: false,
+            total: ixs.length,
+            closeAccountCount,
+            reason: `Instruction #${i} CloseAccount destination ${dest.slice(0, 6)}… does not match connected wallet ${expectedDestination.slice(0, 6)}…`,
           };
         }
         closeAccountCount++;
@@ -193,7 +227,7 @@ export interface BurnAuditResult {
   reason?: string;
 }
 
-export function auditBurnAndCloseTx(b64: string): BurnAuditResult {
+export function auditBurnAndCloseTx(b64: string, expectedDestination: string): BurnAuditResult {
   // Defaults — the various early returns below override the relevant fields.
   const result: BurnAuditResult = {
     ok: false,
@@ -205,6 +239,11 @@ export function auditBurnAndCloseTx(b64: string): BurnAuditResult {
     hasInvalidTokenOpcode: false,
     burnsPaired: true,
   };
+
+  if (!expectedDestination) {
+    result.reason = "Audit missing expected destination";
+    return result;
+  }
 
   let tx;
   try {
@@ -222,7 +261,12 @@ export function auditBurnAndCloseTx(b64: string): BurnAuditResult {
   }
 
   // First pass: classify each instruction. Walk only the token-program ones
-  // for the pairing check below.
+  // for the pairing check below. For CloseAccount ixs we ALSO pin keys[1]
+  // (the SPL Token lamport-recipient slot) to the connected wallet so a
+  // malicious server can't sneak the burn-and-close rent into an
+  // attacker pubkey. Burn ixs (keys[0]=source, keys[1]=mint, keys[2]=owner)
+  // have no rent-recipient slot — the rent reclaim flows through the
+  // paired CloseAccount, which we already enforce above.
   type TokenIx = { opcode: number; firstKey: string };
   const tokenIxs: TokenIx[] = [];
   for (let i = 0; i < ixs.length; i++) {
@@ -262,6 +306,19 @@ export function auditBurnAndCloseTx(b64: string): BurnAuditResult {
       if (!firstKey) {
         result.reason = `Instruction #${i} has no token account key`;
         return result;
+      }
+      // Destination pinning for CloseAccount: keys[1] is the lamport
+      // recipient. Fail-closed if missing/mismatched.
+      if (opcode === CLOSE_ACCOUNT_OPCODE) {
+        const dest = ix.keys[1]?.pubkey?.toBase58();
+        if (!dest) {
+          result.reason = `Instruction #${i} CloseAccount has no destination key`;
+          return result;
+        }
+        if (dest !== expectedDestination) {
+          result.reason = `Instruction #${i} CloseAccount destination ${dest.slice(0, 6)}… does not match connected wallet ${expectedDestination.slice(0, 6)}…`;
+          return result;
+        }
       }
       tokenIxs.push({ opcode, firstKey });
       if (opcode === BURN_OPCODE) result.burnCount++;
@@ -349,7 +406,7 @@ export interface LegacyNftAuditResult {
   reason?: string;
 }
 
-export function auditLegacyNftBurnTx(b64: string): LegacyNftAuditResult {
+export function auditLegacyNftBurnTx(b64: string, expectedAuthority: string): LegacyNftAuditResult {
   const result: LegacyNftAuditResult = {
     ok: false,
     totalInstructions: 0,
@@ -358,6 +415,11 @@ export function auditLegacyNftBurnTx(b64: string): LegacyNftAuditResult {
     hasTransfers: false,
     hasUnknownProgram: false,
   };
+
+  if (!expectedAuthority) {
+    result.reason = "Audit missing expected authority";
+    return result;
+  }
 
   let tx;
   try {
@@ -394,6 +456,30 @@ export function auditLegacyNftBurnTx(b64: string): LegacyNftAuditResult {
     if (pid === TOKEN_METADATA_PROGRAM_ID) {
       if (opcode !== BURN_V1_DISCRIMINATOR) {
         result.reason = `Instruction #${i} Metaplex opcode is ${opcode ?? "empty"}, only BurnV1 (${BURN_V1_DISCRIMINATOR}) is allowed`;
+        return result;
+      }
+      // BurnV1 rent-recipient is implicit: the authority (signer slot)
+      // receives lamports from the internal Token CloseAccount CPI.
+      // Defence-in-depth — assert that at least one signer slot in the
+      // ix's account list equals the connected wallet AND that EVERY
+      // signer slot is the connected wallet, so the backend can't sneak
+      // a second authority that might siphon rent on a future Metaplex
+      // version. The feePayer / requiresSignatureFrom check upstream
+      // already covers this in practice, but the H5 audit wants it
+      // pinned at the ix layer too.
+      let sawAuthority = false;
+      for (let k = 0; k < ix.keys.length; k++) {
+        const meta = ix.keys[k];
+        if (!meta.isSigner) continue;
+        const pk = meta.pubkey.toBase58();
+        if (pk !== expectedAuthority) {
+          result.reason = `Instruction #${i} BurnV1 signer slot ${k} is ${pk.slice(0, 6)}…, expected connected wallet ${expectedAuthority.slice(0, 6)}…`;
+          return result;
+        }
+        sawAuthority = true;
+      }
+      if (!sawAuthority) {
+        result.reason = `Instruction #${i} BurnV1 has no signer slot — cannot verify authority`;
         return result;
       }
       result.burnV1Count++;
@@ -459,13 +545,18 @@ export interface CoreBurnAuditResult {
   reason?: string;
 }
 
-export function auditCoreBurnTx(b64: string): CoreBurnAuditResult {
+export function auditCoreBurnTx(b64: string, expectedAuthority: string): CoreBurnAuditResult {
   const result: CoreBurnAuditResult = {
     ok: false,
     totalInstructions: 0,
     burnV1Count: 0,
     hasUnknownProgram: false,
   };
+
+  if (!expectedAuthority) {
+    result.reason = "Audit missing expected authority";
+    return result;
+  }
 
   let tx;
   try {
@@ -502,6 +593,25 @@ export function auditCoreBurnTx(b64: string): CoreBurnAuditResult {
     if (pid === MPL_CORE_PROGRAM_ID) {
       if (opcode !== CORE_BURN_V1_DISCRIMINATOR) {
         result.reason = `Instruction #${i} Core opcode is ${opcode ?? "empty"}, only BurnV1 (${CORE_BURN_V1_DISCRIMINATOR}) is allowed`;
+        return result;
+      }
+      // Core BurnV1 routes rent through the payer slot (signer). Same
+      // defence-in-depth as auditLegacyNftBurnTx: every signer slot in
+      // the ix's account list must be the connected wallet, and at
+      // least one signer must be present.
+      let sawAuthority = false;
+      for (let k = 0; k < ix.keys.length; k++) {
+        const meta = ix.keys[k];
+        if (!meta.isSigner) continue;
+        const pk = meta.pubkey.toBase58();
+        if (pk !== expectedAuthority) {
+          result.reason = `Instruction #${i} Core BurnV1 signer slot ${k} is ${pk.slice(0, 6)}…, expected connected wallet ${expectedAuthority.slice(0, 6)}…`;
+          return result;
+        }
+        sawAuthority = true;
+      }
+      if (!sawAuthority) {
+        result.reason = `Instruction #${i} Core BurnV1 has no signer slot — cannot verify authority`;
         return result;
       }
       result.burnV1Count++;

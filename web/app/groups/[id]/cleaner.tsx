@@ -742,7 +742,7 @@ function GroupAllActions({
         });
         continue;
       }
-      const audit = auditCloseEmptyTx(tx.transactionBase64);
+      const audit = auditCloseEmptyTx(tx.transactionBase64, wlt.address);
       if (!audit.ok) {
         results.push({
           wallet: wlt.address,
@@ -1485,7 +1485,7 @@ export function CleanerRow({
       }
 
       // 2. AUDIT — same whitelist the manual Sign & send button uses.
-      const audit = auditCloseEmptyTx(tx.transactionBase64);
+      const audit = auditCloseEmptyTx(tx.transactionBase64, expectedWallet);
       if (!audit.ok) return fail(`Audit failed: ${audit.reason ?? "unknown"}`);
 
       // 3. WALLET CHECK — compare live connection to the snapshot, NOT to
@@ -2065,8 +2065,8 @@ function SignAndSendBlock({
   // doesn't re-run on every render.
   const audit: InstructionAuditResult | null = useMemo(() => {
     if (result.transactionBase64 === null) return null;
-    return auditCloseEmptyTx(result.transactionBase64);
-  }, [result.transactionBase64]);
+    return auditCloseEmptyTx(result.transactionBase64, targetWallet);
+  }, [result.transactionBase64, targetWallet]);
 
   // Safety checklist gates: each must pass before the sign button is enabled.
   const checks = {
@@ -4200,8 +4200,8 @@ function BurnTxPreview({
   // re-render of the parent (which happens every checkbox toggle).
   const audit: BurnAuditResult | null = useMemo(() => {
     if (result.transactionBase64 === null) return null;
-    return auditBurnAndCloseTx(result.transactionBase64);
-  }, [result.transactionBase64]);
+    return auditBurnAndCloseTx(result.transactionBase64, walletAddress);
+  }, [result.transactionBase64, walletAddress]);
 
   // The acknowledgement checkbox is a per-preview UI gate that doesn't
   // gate any action (no sign/send is wired here yet) but is part of the
@@ -5790,8 +5790,8 @@ function LegacyNftBurnPreview({
   // ack-checkbox toggle doesn't redo the deserialize on every render.
   const audit: LegacyNftAuditResult | null = useMemo(() => {
     if (result.transactionBase64 === null) return null;
-    return auditLegacyNftBurnTx(result.transactionBase64);
-  }, [result.transactionBase64]);
+    return auditLegacyNftBurnTx(result.transactionBase64, walletAddress);
+  }, [result.transactionBase64, walletAddress]);
   const [ackDestructive, setAckDestructive] = useState(false);
 
   const tx = result.transactionBase64;
@@ -6487,8 +6487,8 @@ function PnftBurnPreview({
   // BurnV1 instruction's account list. Reuse the existing legacy audit.
   const audit: LegacyNftAuditResult | null = useMemo(() => {
     if (result.transactionBase64 === null) return null;
-    return auditLegacyNftBurnTx(result.transactionBase64);
-  }, [result.transactionBase64]);
+    return auditLegacyNftBurnTx(result.transactionBase64, walletAddress);
+  }, [result.transactionBase64, walletAddress]);
   const [ackDestructive, setAckDestructive] = useState(false);
   const tx = result.transactionBase64;
   const txShort =
@@ -7163,8 +7163,8 @@ function CoreBurnPreview({
   const isCompact = useCompactMode();
   const audit: CoreBurnAuditResult | null = useMemo(() => {
     if (result.transactionBase64 === null) return null;
-    return auditCoreBurnTx(result.transactionBase64);
-  }, [result.transactionBase64]);
+    return auditCoreBurnTx(result.transactionBase64, walletAddress);
+  }, [result.transactionBase64, walletAddress]);
   const [ackDestructive, setAckDestructive] = useState(false);
   const tx = result.transactionBase64;
   const txShort =
