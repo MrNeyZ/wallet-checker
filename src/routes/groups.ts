@@ -20,7 +20,11 @@ import { buildGroupDashboard } from "../services/groups/groupDashboard.js";
 import { buildGroupLpPositions } from "../services/groups/groupLp.js";
 import { buildGroupAirdrops } from "../services/groups/groupAirdrops.js";
 import { evaluateGroupSignals } from "../services/groups/groupSignals.js";
-import { scanWalletQueued } from "../services/cleanup/scanQueue.js";
+import {
+  scanWalletQueued,
+  getScanQueueStats,
+} from "../services/cleanup/scanQueue.js";
+import { getScanCacheStats } from "../lib/scanner.js";
 import {
   DEFAULT_INTERVAL_MS as SIGNAL_DEFAULT_INTERVAL_MS,
   MAX_INTERVAL_MS as SIGNAL_MAX_INTERVAL_MS,
@@ -586,6 +590,17 @@ router.post("/:groupId/cleanup-scan-all", async (req, res) => {
   console.log(
     `${logPrefix} cleanup-scan-all done in ${Date.now() - startedAt}ms`,
   );
+  // DEBUG_SCAN diagnostic — emits cache + inFlight pressure once per
+  // batch so an operator can spot growth trends. Off by default; the
+  // overhead is two getter calls + a single log line, so flipping the
+  // env var costs nothing in steady state.
+  if (process.env.DEBUG_SCAN === "true") {
+    const cacheStats = getScanCacheStats();
+    const queueStats = getScanQueueStats();
+    console.log(
+      `${logPrefix} cache=${cacheStats.size}/${cacheStats.max} inFlight=${queueStats.inFlight}/${queueStats.max}`,
+    );
+  }
   res.json({
     groupId: group.id,
     total: results.length,

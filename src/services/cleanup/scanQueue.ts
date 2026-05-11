@@ -22,6 +22,7 @@ import {
   scanWalletForCleanup,
   type CleanupScanResult,
 } from "../../lib/scanner.js";
+import { CappedLruMap } from "../../lib/lruCache.js";
 import { fetchAssetMetadataBatch } from "../helius/das.js";
 
 const PER_WALLET_BUDGET_MS = 45_000;
@@ -226,9 +227,23 @@ export interface ScanWalletQueuedOptions {
 // When two callers ask for the same (address, force, summary) tuple at
 // once (group scan-all + a manual rescan, etc.) they share one underlying
 // promise instead of issuing duplicate RPC + DAS work. Entries are
-// removed in `finally` so the map size is naturally bounded by the
-// number of in-flight scans.
-const inFlightScans = new Map<string, Promise<ScanWalletResult>>();
+// removed in `finally` after the underlying promise settles — that's the
+// primary cleanup path and covers fulfilled/rejected/aborted runs alike
+// since `runScanWalletQueued` swallows errors and always resolves with a
+// ScanWalletResult shape.
+//
+// The map is sized-capped with an LRU eviction policy as a SAFETY NET in
+// case `.finally` is ever skipped (host process killed mid-flight, or a
+// future refactor breaks the cleanup contract). Eviction of a still-
+// in-flight entry is harmless: the next caller misses the dedupe and
+// kicks off a second scan, which costs a little extra RPC but is
+// correctness-safe. The cap is 256 — comfortably above any realistic
+// simultaneous in-flight count (group scan-all is sequential = 1 at a
+// time; per-wallet manual scans add at most a few more).
+const INFLIGHT_MAX = 256;
+const inFlightScans = new CappedLruMap<string, Promise<ScanWalletResult>>(
+  INFLIGHT_MAX,
+);
 
 export async function scanWalletQueued(
   address: string,
@@ -246,12 +261,26 @@ export async function scanWalletQueued(
   if (existing) return existing;
   const promise = runScanWalletQueued(address, opts);
   inFlightScans.set(dedupeKey, promise);
+  // Primary cleanup path. `runScanWalletQueued` is contract-shaped to
+  // always resolve (errors become `status: "error"` entries) so this
+  // .finally fires for every code path — fulfilled, rejected, aborted.
+  // The CappedLruMap is the secondary safety net for the (currently
+  // unreachable) case where this handler doesn't run.
   promise.finally(() => {
     if (inFlightScans.get(dedupeKey) === promise) {
       inFlightScans.delete(dedupeKey);
     }
   });
   return promise;
+}
+
+// Diagnostic-only — paired with `getScanCacheStats` in the admin
+// /scan-stats endpoint and the group cleanup-scan-all log path when
+// DEBUG_SCAN=true. Exposes inFlight map pressure so a leak (cleanup
+// contract broken by a future refactor) shows up as size approaching
+// INFLIGHT_MAX over time.
+export function getScanQueueStats(): { inFlight: number; max: number } {
+  return { inFlight: inFlightScans.size, max: INFLIGHT_MAX };
 }
 
 async function runScanWalletQueued(

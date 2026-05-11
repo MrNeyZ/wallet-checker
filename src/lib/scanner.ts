@@ -54,6 +54,14 @@ type CacheEntry = {
 // scanning many unique wallets. TTL is still enforced at the call site.
 const scanCache = new CappedLruMap<string, CacheEntry>(SCAN_CACHE_MAX);
 
+// Per-bucket soft cap for raw token-account counts. Pure telemetry —
+// we do NOT truncate the bucket because the close-empty flow needs to
+// see every empty account or the user can't fully clean their wallet.
+// Crossing the threshold is logged once per scan so a pathological
+// wallet (post-airdrop spam, attacker dust) is visible in operator
+// logs without changing scan semantics.
+const BUCKET_BLOAT_WARN = 5000;
+
 // Mints flagged for verbose tracing through the full scan/classify
 // pipeline. Set via DEBUG_MINTS env (comma-separated) so we can ship
 // the trace harness without cluttering steady-state logs.
@@ -332,6 +340,26 @@ async function performScan(
     );
   }
 
+  // Per-bucket bloat telemetry — fires once per scan if any individual
+  // bucket exceeds the threshold. Helps spot wallets whose result
+  // arrays will dominate the scanCache memory footprint for the TTL
+  // window. Threshold + buckets logged as a single object so it's grep-
+  // and ingest-friendly.
+  const bloat: Record<string, number> = {};
+  if (result.emptyTokenAccounts.length > BUCKET_BLOAT_WARN)
+    bloat.empty = result.emptyTokenAccounts.length;
+  if (result.fungibleTokenAccounts.length > BUCKET_BLOAT_WARN)
+    bloat.fungible = result.fungibleTokenAccounts.length;
+  if (result.nftTokenAccounts.length > BUCKET_BLOAT_WARN)
+    bloat.nft = result.nftTokenAccounts.length;
+  if (result.unknownTokenAccounts.length > BUCKET_BLOAT_WARN)
+    bloat.unknown = result.unknownTokenAccounts.length;
+  if (Object.keys(bloat).length > 0) {
+    console.warn(
+      `[scanner] bucket bloat ${address}: ${JSON.stringify({ ...bloat, threshold: BUCKET_BLOAT_WARN })} — held in cache for ${SCAN_TTL_MS / 60_000}min`,
+    );
+  }
+
   return result;
 }
 
@@ -400,4 +428,12 @@ export function isCleanupScanCached(address: string): boolean {
   const cached = scanCache.get(address);
   if (!cached) return false;
   return Date.now() - cached.ts < SCAN_TTL_MS;
+}
+
+// Diagnostic-only — used by the admin /scan-stats endpoint and the
+// group cleanup-scan-all log path when DEBUG_SCAN=true to surface
+// cache pressure. Cheap (returns counters already maintained by
+// CappedLruMap), no allocations beyond the returned object.
+export function getScanCacheStats(): { size: number; max: number; ttlMs: number } {
+  return { size: scanCache.size, max: SCAN_CACHE_MAX, ttlMs: SCAN_TTL_MS };
 }
