@@ -451,12 +451,20 @@ export async function buildBurnAndCloseTx(
   // Preflight simulation — frozen mints, Token-2022 transfer hooks, and
   // freeze delegates can revert at chain time after the user signs.
   // Surface the failure here so the UI can refuse to sign instead of
-  // burning a fee on a guaranteed-reject tx. Fail-open on RPC errors
-  // (e.g. timeout): we leave `simulationOk = true` so the existing UI
-  // gates (audit, ack, wallet match) still apply, mirroring how the
-  // legacy/pNFT/Core paths treat sim outages. Hard 20s timeout matches
-  // the legacy builder's pattern.
-  let simulationOk = true;
+  // burning a fee on a guaranteed-reject tx.
+  //
+  // FAIL-CLOSED contract (M2): simulationOk starts at false and only
+  // flips to true when the RPC returns a clean simulation. Any of:
+  //   - sim.value.err set (chain-level revert)
+  //   - simulate request throws / times out
+  //   - RPC returns a malformed body
+  // leaves simulationOk at false, and the frontend's `=== true` gate
+  // refuses to sign. Previously simulationOk started at true and the
+  // catch block left it alone, so an RPC outage would silently let the
+  // user sign a tx that was never simulated — diverging from the
+  // legacy / pNFT / Core builders below, all of which already
+  // fail-closed. Hard 20s timeout matches the legacy builder's pattern.
+  let simulationOk = false;
   let simulationError: string | undefined;
   try {
     const sim = await Promise.race([
@@ -469,15 +477,17 @@ export async function buildBurnAndCloseTx(
       ),
     ]);
     if (sim.value.err) {
-      simulationOk = false;
       simulationError = parseSimulationError(sim.value.err, sim.value.logs ?? []);
       console.warn(
         `[burnAndClose] preflight rejected for ${ownerStr} count=${included.length}: friendly="${simulationError}" rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
       );
+    } else {
+      simulationOk = true;
     }
   } catch (err) {
-    // RPC outage / timeout — don't block the flow, but surface a
-    // descriptive error string for the UI's diagnostic block.
+    // RPC outage / timeout — leave simulationOk at false so the UI
+    // refuses to sign. Surface a descriptive error string for the
+    // diagnostic block.
     simulationError =
       err instanceof Error ? err.message : "Simulation request failed";
     console.warn(

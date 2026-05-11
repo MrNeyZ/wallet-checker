@@ -3387,7 +3387,7 @@ function BurnSafetyChecklist({
 //   2. connected wallet matches `requiresSignatureFrom` AND `targetWallet`
 //   3. audit passed (caller computes; we only display the boolean + reason)
 //   4. ackDestructive === true
-//   5. simulationOk !== false  (pNFT/Core only — caller passes null for SPL/Legacy)
+//   5. simulationOk === true   (every burn type — fail-closed; see M2)
 //
 // Post-send lifecycle: signing → submitted → confirmed → finalized (or
 // error at any step). Once the state leaves "idle", the same built tx
@@ -3669,11 +3669,20 @@ function BurnSignAndSendBlock({
     // ack checkbox in default mode. Either way, an unticked ack still
     // blocks send — the safety gate is preserved, just sourced differently.
     ackDestructive: effectiveAck,
-    // pNFT / Core require an explicit `simulationOk === true`; SPL / Legacy
-    // tolerate `null` (== "not simulated, assume ok").
-    simulationOk: simulationRequired
-      ? simulationOk === true
-      : simulationOk !== false,
+    // FAIL-CLOSED (M2): every burn type requires an explicit
+    // `simulationOk === true`. The previous SPL / Legacy branch
+    // (`simulationOk !== false`) accepted `null` — which the legacy
+    // builder used to emit on RPC timeouts — and let the user sign a
+    // tx the backend never simulated. After the matching backend fix
+    // (txBuilder.ts), every builder reports the same contract:
+    //   true  → RPC returned a clean simulation
+    //   false → chain reverted OR RPC errored/timed out
+    //   null  → no tx to sign in the first place (empty branch)
+    // The strict gate refuses to sign for both `false` and `null`, so
+    // the user can never sign a tx that wasn't successfully simulated.
+    // `simulationRequired` is kept on the prop type for callers that
+    // still set it (pNFT / Core) but the gate no longer branches on it.
+    simulationOk: simulationOk === true,
   };
   const checklistPassed =
     checks.walletMatches &&
