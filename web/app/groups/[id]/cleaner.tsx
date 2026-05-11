@@ -436,6 +436,18 @@ type ScanAllState =
   | { status: "idle" }
   | {
       status: "running";
+      // Wall-clock start of the active scan. Drives the elapsed-seconds
+      // ticker in ScanAllProgress so the user sees motion even though
+      // the backend doesn't stream per-wallet progress.
+      startedAt: number;
+      // True between the user clicking Cancel and the actual transition
+      // to a `done` state. The progress strip swaps copy ("Cancelling…")
+      // and the cancel button disables but stays mounted (no layout
+      // jump). The transition to `done` happens either when the aborted
+      // fetch rejects in the post-await handler or via a 1500ms
+      // watchdog that fires if the backend takes longer than expected
+      // to tear down.
+      cancelling: boolean;
       completed: number;
       total: number;
       etaSeconds: number | null;
@@ -557,6 +569,8 @@ function GroupAllActions({
     // completed wallet results") without overwriting the cancelled state.
     setScanAll({
       status: "running",
+      startedAt: Date.now(),
+      cancelling: false,
       completed: 0,
       total,
       etaSeconds: null,
@@ -617,9 +631,12 @@ function GroupAllActions({
     // result silently — the live scan owns the UI state and registry.
     if (myRunId !== scanAllRunIdRef.current) return;
     if (cancelRef.current) {
-      // User cancelled mid-flight — UI state was already set to cancelled
-      // in cancel(). Hydrate the scan registry with any successful results
-      // so completed wallets aren't lost; do NOT overwrite scanAll state.
+      // User cancelled mid-flight. The `cancel()` handler put the running
+      // state into a "cancelling" sub-state but left it visible so the
+      // user sees acknowledgement; this branch is the actual transition
+      // to the cancelled `done` state. Successful per-wallet results
+      // that landed before the backend tore down are still merged into
+      // the scan registry so completed wallets aren't lost.
       if (res.ok) {
         for (const w of res.result.wallets) {
           if (w.scan && w.burn && (w.status === "ok" || w.status === "cached")) {
@@ -632,6 +649,23 @@ function GroupAllActions({
           }
         }
       }
+      setScanAll((prev) => {
+        // Only commit the cancelled-done transition if we're still the
+        // owner — a fresh scan could have started between the cancel
+        // and the post-await; in that case prev is `running` again
+        // (new run) or `done` (already settled by the watchdog).
+        if (prev.status === "running" && prev.startedAt > 0) {
+          return {
+            status: "done",
+            total: prev.total,
+            succeeded: 0,
+            failed: [],
+            counts: { ok: 0, cached: 0, timeout: 0, rateLimited: 0, error: 0 },
+            cancelled: true,
+          };
+        }
+        return prev;
+      });
       return;
     }
     if (!res.ok) {
@@ -846,21 +880,38 @@ function GroupAllActions({
     // wallets to finish.
     scanAllAbortRef.current?.abort();
     scanAllAbortRef.current = null;
-    // Snap the UI out of "running" state immediately. The backend scan-all
-    // call may still resolve later — the post-await handler in runScanAll
-    // detects the cancelled flag and skips the state overwrite (it merges
-    // any completed wallets into the scan registry instead).
+    // Two-phase cancel: keep the progress strip visible with a
+    // "Cancelling…" copy until either (a) the aborted fetch's catch
+    // branch lands in runScanAll and commits the cancelled-done
+    // transition, or (b) the watchdog below fires. This is friendlier
+    // than the prior instant-flip — the user sees the system
+    // acknowledge their click rather than a blink-then-cancelled
+    // header, and on a slow upstream they get clear "still tearing
+    // down" feedback instead of silence.
+    const myRunId = scanAllRunIdRef.current;
     setScanAll((prev) => {
       if (prev.status !== "running") return prev;
-      return {
-        status: "done",
-        total: prev.total,
-        succeeded: 0,
-        failed: [],
-        counts: { ok: 0, cached: 0, timeout: 0, rateLimited: 0, error: 0 },
-        cancelled: true,
-      };
+      return { ...prev, cancelling: true };
     });
+    // Watchdog: if the abort doesn't surface a result within 1500ms,
+    // force the cancelled-done transition. Covers the case where the
+    // browser keeps the fetch promise pending past the abort (e.g.
+    // Service Worker, slow proxy teardown). Bounded by the runId so
+    // a fresh scan started during the watchdog window isn't stomped.
+    window.setTimeout(() => {
+      if (scanAllRunIdRef.current !== myRunId) return;
+      setScanAll((prev) => {
+        if (prev.status !== "running") return prev;
+        return {
+          status: "done",
+          total: prev.total,
+          succeeded: 0,
+          failed: [],
+          counts: { ok: 0, cached: 0, timeout: 0, rateLimited: 0, error: 0 },
+          cancelled: true,
+        };
+      });
+    }, 1500);
     // Clean-all is a per-wallet frontend loop that polls cancelRef on each
     // iteration, so it self-terminates — but still flush the running state
     // here so the UI doesn't have to wait for the in-flight wallet's tx
@@ -940,9 +991,22 @@ function GroupAllActions({
           <button
             type="button"
             onClick={cancel}
-            className={signSendButtonClass("secondary")}
+            disabled={
+              scanAll.status === "running" && scanAll.cancelling
+            }
+            className={signSendButtonClass(
+              scanAll.status === "running" && scanAll.cancelling
+                ? "blocked"
+                : "secondary",
+            )}
           >
-            Cancel
+            {scanAll.status === "running" && scanAll.cancelling ? (
+              <>
+                <Spinner /> Cancelling…
+              </>
+            ) : (
+              "Cancel"
+            )}
           </button>
         )}
         {!busy && allScanned && candidates.length > 0 && w.connected && matchable.length < candidates.length && (
@@ -2362,28 +2426,53 @@ function signSendButtonClass(state: SignButtonState): string {
 
 // Progress strip while the backend batch scan is in flight. The endpoint
 // is a single blocking call (no per-wallet streaming), so we can't show
-// real per-wallet progress mid-flight — we show total + an indeterminate
-// indicator. The per-wallet status table appears in the "done" summary.
+// real per-wallet progress mid-flight — we show total wallets + an
+// elapsed-seconds counter so the user sees motion. While cancelling we
+// swap copy + dim the bar so the strip clearly reads as "tearing down"
+// instead of "still scanning hard". The per-wallet status table
+// appears in the "done" summary.
 function ScanAllProgress({
   state,
 }: {
   state: Extract<ScanAllState, { status: "running" }>;
 }) {
+  // Ticks every second so the elapsed counter visibly advances. Kept
+  // inside the progress component so the parent (GroupAllActions)
+  // doesn't re-render on the tick.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  const elapsedSec = Math.max(0, Math.floor((now - state.startedAt) / 1000));
+  const cancelling = state.cancelling;
   return (
     <div className="border-t border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.05)]">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3 py-1.5 text-[11px] text-[color:var(--vl-fg-2)]">
         <span>
           <span className="font-semibold text-white">
-            Scanning wallets…
+            {cancelling
+              ? "Cancelling scan…"
+              : `Scanning ${state.total} wallet${state.total === 1 ? "" : "s"}…`}
           </span>
           <span className="ml-1 text-[color:var(--vl-fg-3)]">
-            Fast summary scan. NFT discovery loads when you open a wallet
-            section.
+            {cancelling
+              ? "Tearing down in-flight work. Already-scanned wallets are kept."
+              : "Fast summary scan. NFT discovery loads when you open a wallet section."}
           </span>
+        </span>
+        <span className="font-mono tabular-nums text-[color:var(--vl-fg-3)]">
+          {elapsedSec}s
         </span>
       </div>
       <div className="h-0.5 w-full overflow-hidden bg-[color:var(--vl-surface-2)]">
-        <div className="ui-indeterminate-bar h-full bg-[color:var(--vl-purple)]/70" />
+        <div
+          className={`ui-indeterminate-bar h-full ${
+            cancelling
+              ? "bg-amber-300/40"
+              : "bg-[color:var(--vl-purple)]/70"
+          }`}
+        />
       </div>
     </div>
   );
