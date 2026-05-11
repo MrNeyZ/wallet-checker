@@ -102,26 +102,35 @@ router.get("/:address/cleanup-scan", async (req, res) => {
     /^(true|1|yes)$/i.test(req.query.refresh);
 
   // Track client-side abort so we don't try to write the response after the
-  // browser has hung up. The cache is shared with other concurrent callers
-  // so we never tear it down — we just skip writing back to the closed
-  // connection.
+  // browser has hung up. The AbortSignal is propagated INTO scanWalletForCleanup
+  // so the in-flight DAS fetches + retry sleeps + per-call throttle waits all
+  // tear down at the moment the browser hangs up — previously we only set a
+  // flag and discarded the work after it ran to completion in the background.
   let clientClosed = false;
-  req.on("close", () => {
+  const ctl = new AbortController();
+  const onClose = () => {
     if (!res.writableEnded) {
       clientClosed = true;
+      ctl.abort();
       console.log(
         `[burner] scan aborted server cleanup-scan ${parsed.data}`,
       );
     }
-  });
+  };
+  req.on("close", onClose);
 
   try {
-    const result = await scanWalletForCleanup(parsed.data, { refresh });
+    const result = await scanWalletForCleanup(parsed.data, {
+      refresh,
+      signal: ctl.signal,
+    });
     if (clientClosed) return;
     res.json(result);
   } catch (err) {
     if (clientClosed) return;
     sendCleanerError(res, err);
+  } finally {
+    req.removeListener("close", onClose);
   }
 });
 
@@ -132,17 +141,20 @@ router.get("/:address/burn-candidates", async (req, res) => {
   }
 
   let clientClosed = false;
-  req.on("close", () => {
+  const ctl = new AbortController();
+  const onClose = () => {
     if (!res.writableEnded) {
       clientClosed = true;
+      ctl.abort();
       console.log(
         `[burner] scan aborted server burn-candidates ${parsed.data}`,
       );
     }
-  });
+  };
+  req.on("close", onClose);
 
   try {
-    const scan = await scanWalletForCleanup(parsed.data);
+    const scan = await scanWalletForCleanup(parsed.data, { signal: ctl.signal });
     if (clientClosed) return;
     const baseCandidates = scan.fungibleTokenAccounts
       .filter((acc) => acc.mint !== WSOL_MINT)
@@ -173,6 +185,7 @@ router.get("/:address/burn-candidates", async (req, res) => {
     // shortAddr-only display the frontend now uses as fallback.
     const dasMap = await fetchAssetMetadataBatch(
       baseCandidates.map((c) => c.mint),
+      ctl.signal,
     );
     const candidates = baseCandidates.map((c) => {
       const m = dasMap.get(c.mint);
@@ -199,6 +212,8 @@ router.get("/:address/burn-candidates", async (req, res) => {
   } catch (err) {
     if (clientClosed) return;
     sendCleanerError(res, err);
+  } finally {
+    req.removeListener("close", onClose);
   }
 });
 

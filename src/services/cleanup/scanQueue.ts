@@ -279,7 +279,10 @@ async function runScanWalletQueued(
     if (opts.signal?.aborted) return aborted();
     try {
       const scan = await withDeadline(
-        scanWalletForCleanup(address, { refresh: opts.force }),
+        scanWalletForCleanup(address, {
+          refresh: opts.force,
+          signal: opts.signal,
+        }),
         deadline,
         opts.signal,
       );

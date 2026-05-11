@@ -95,9 +95,34 @@ export function isDebugMint(mint: string): boolean {
   return getDebugMints().has(mint);
 }
 
-async function fetchTokenAccountsForProgram(owner: PublicKey, programId: PublicKey) {
-  const res = await getParsedTokenAccountsByOwnerThrottled(connection, owner, programId);
+async function fetchTokenAccountsForProgram(
+  owner: PublicKey,
+  programId: PublicKey,
+  signal?: AbortSignal,
+) {
+  const res = await getParsedTokenAccountsByOwnerThrottled(
+    connection,
+    owner,
+    programId,
+    signal,
+  );
   return res.value.map((entry) => ({ entry, programId: programId.toBase58() }));
+}
+
+// Hard cap on NFT-shape candidates we'll forward to the DAS metadata
+// pass. A wallet with thousands of 1-supply / 0-decimal token accounts
+// is almost certainly junk (post-burn dust or attacker spam) — beyond
+// this point we keep them in `unknownTokenAccounts` so close-empty
+// still works but the burn UI doesn't choke on a 5k-entry list. The
+// per-call DAS chunking (1000/batch, 3 parallel waves) means uncapped
+// we'd issue up to 5 sequential batches per pathological wallet,
+// which both spikes memory and burns Helius quota.
+const MAX_NFT_CANDIDATES_FOR_DAS = 2000;
+
+function abortedError(): Error {
+  const err = new Error("aborted");
+  err.name = "AbortError";
+  return err;
 }
 
 // Classify a 1-supply / 0-decimal token account by what Helius DAS says
@@ -136,13 +161,30 @@ function classifyNftCandidate(
   return "unknown";
 }
 
-async function performScan(address: string): Promise<CleanupScanResult> {
+async function performScan(
+  address: string,
+  signal?: AbortSignal,
+): Promise<CleanupScanResult> {
   const owner = new PublicKey(address);
 
+  if (signal?.aborted) throw abortedError();
   const [classic, token2022] = await Promise.all([
-    fetchTokenAccountsForProgram(owner, TOKEN_PROGRAM_ID),
-    fetchTokenAccountsForProgram(owner, TOKEN_2022_PROGRAM_ID),
+    fetchTokenAccountsForProgram(owner, TOKEN_PROGRAM_ID, signal),
+    fetchTokenAccountsForProgram(owner, TOKEN_2022_PROGRAM_ID, signal),
   ]);
+  if (signal?.aborted) throw abortedError();
+  // Soft-warning telemetry only — getParsedTokenAccountsByOwner has no
+  // upstream limit knob, so the raw response is already materialised in
+  // memory by the time we see it here. The MAX_NFT_CANDIDATES_FOR_DAS
+  // cap below is what actually bounds the DAS metadata map. Logging the
+  // count lets us spot pathological wallets in production logs without
+  // changing scan semantics.
+  const rawTotal = classic.length + token2022.length;
+  if (rawTotal > 5000) {
+    console.warn(
+      `[scanner] large wallet ${address}: ${rawTotal} token accounts (classic=${classic.length}, t22=${token2022.length})`,
+    );
+  }
 
   const result: CleanupScanResult = {
     wallet: owner.toBase58(),
@@ -221,11 +263,29 @@ async function performScan(address: string): Promise<CleanupScanResult> {
   let pnftKept = 0;
   let unknownDropped = 0;
   if (nftCandidates.length > 0) {
+    if (signal?.aborted) throw abortedError();
+    // Memory/quota guard: a wallet with absurd numbers of 1-supply
+    // candidates would force an oversized DAS batch (and a giant
+    // dasMap held in memory). Past the cap we route the excess to
+    // unknownTokenAccounts so they're still cleanable via close-empty
+    // but never reach the burn UI.
+    let dasInput = nftCandidates;
+    let overflow: ScannedTokenAccount[] = [];
+    if (nftCandidates.length > MAX_NFT_CANDIDATES_FOR_DAS) {
+      console.warn(
+        `[scanner] nft candidate cap hit for ${address}: ${nftCandidates.length} > ${MAX_NFT_CANDIDATES_FOR_DAS} — routing overflow to unknownTokenAccounts`,
+      );
+      dasInput = nftCandidates.slice(0, MAX_NFT_CANDIDATES_FOR_DAS);
+      overflow = nftCandidates.slice(MAX_NFT_CANDIDATES_FOR_DAS);
+      for (const acc of overflow) result.unknownTokenAccounts.push(acc);
+    }
     const dasMap = await fetchAssetMetadataBatch(
-      nftCandidates.map((c) => c.mint),
+      dasInput.map((c) => c.mint),
+      signal,
     );
+    if (signal?.aborted) throw abortedError();
     const dasResolved = dasMap.size > 0;
-    for (const acc of nftCandidates) {
+    for (const acc of dasInput) {
       const meta = dasMap.get(acc.mint);
       const cls = classifyNftCandidate(meta);
       const isDebug = getDebugMints().has(acc.mint);
@@ -262,6 +322,8 @@ async function performScan(address: string): Promise<CleanupScanResult> {
     console.log(
       `[scanner] nft routing ${JSON.stringify({
         candidates: nftCandidates.length,
+        examined: dasInput.length,
+        overflowDropped: overflow.length,
         legacy: legacyKept,
         pnft: pnftKept,
         unknown: unknownDropped,
@@ -280,12 +342,21 @@ export interface ScanOptions {
   // after a close-account tx so the next iteration sees post-close state
   // without waiting for the 10-minute TTL to expire.
   refresh?: boolean;
+  // Cooperative cancellation. Propagated down into the throttled RPC
+  // wrapper (which bails between calls + aborts retry sleeps) and into
+  // the DAS metadata batch (which aborts in-flight fetches at the
+  // network layer). The cache entry is NOT signal-scoped: a second
+  // concurrent caller for the same wallet without a signal will still
+  // see the in-flight promise as a hit, which is correct — only the
+  // aborted caller stops waiting.
+  signal?: AbortSignal;
 }
 
 export async function scanWalletForCleanup(
   address: string,
   opts: ScanOptions = {},
 ): Promise<CleanupScanResult> {
+  if (opts.signal?.aborted) throw abortedError();
   const now = Date.now();
   const cached = scanCache.get(address);
   if (
@@ -296,13 +367,15 @@ export async function scanWalletForCleanup(
   ) {
     return cached.promise;
   }
-  const promise = performScan(address);
+  const promise = performScan(address, opts.signal);
   const entry: CacheEntry = { ts: now, promise, rejected: false };
   scanCache.set(address, entry);
   // If the underlying scan rejects, mark the entry as rejected
   // synchronously (so concurrent readers in the same microtask drain
   // fall through to a fresh scan), then drop it from the cache so the
   // next call retries instead of returning the cached failure forever.
+  // Aborted runs are also dropped from the cache so the next non-aborted
+  // caller can populate a fresh entry.
   promise.catch(() => {
     entry.rejected = true;
     if (scanCache.get(address) === entry) {

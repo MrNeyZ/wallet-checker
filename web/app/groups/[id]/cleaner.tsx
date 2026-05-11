@@ -509,6 +509,15 @@ function GroupAllActions({
   // to abort the in-progress wallet scan instead of running every
   // remaining wallet to completion).
   const scanAllAbortRef = useRef<AbortController | null>(null);
+  // Run-id guard. Each runScanAll bumps this ref and captures its own
+  // snapshot; the post-await response handler bails if the live ref has
+  // moved on (cancel, or a fresh scan was kicked off). Protects against
+  // a late-arriving response from a cancelled/superseded request
+  // overwriting the scan registry or stomping the UI state — the abort
+  // also tears down the fetch, but the resolution can still race the
+  // abort on Node + Edge runtimes, so a runId guard is the deterministic
+  // backstop.
+  const scanAllRunIdRef = useRef(0);
 
   const isScanning = scanAll.status === "running";
   const isCleaning = cleanAll.status === "running";
@@ -534,6 +543,9 @@ function GroupAllActions({
     // the background.
     scanAllAbortRef.current?.abort();
     scanAllAbortRef.current = new AbortController();
+    // Snapshot a fresh runId for this scan. Any prior in-flight scan's
+    // post-await branches will compare against this ref and bail.
+    const myRunId = ++scanAllRunIdRef.current;
     const total = wallets.length;
     // Single backend call. The scan-all action is a Next.js server action
     // (no client-side AbortController hook) so cancelling can't actually
@@ -600,6 +612,10 @@ function GroupAllActions({
         error: err instanceof Error ? err.message : "Group scan failed",
       };
     }
+    // Stale-result guard: if a newer scan has been started (or this scan
+    // was cancelled and a fresh one took over the runId), drop the
+    // result silently — the live scan owns the UI state and registry.
+    if (myRunId !== scanAllRunIdRef.current) return;
     if (cancelRef.current) {
       // User cancelled mid-flight — UI state was already set to cancelled
       // in cancel(). Hydrate the scan registry with any successful results

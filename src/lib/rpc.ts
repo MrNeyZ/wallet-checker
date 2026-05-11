@@ -11,12 +11,31 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 
-const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        resolve();
+      },
+      { once: true },
+    );
+  });
 
 export class RpcRateLimitError extends Error {
   constructor() {
     super("RPC rate limit hit. Please wait a few seconds and try again.");
     this.name = "RpcRateLimitError";
+  }
+}
+
+export class RpcAbortedError extends Error {
+  constructor() {
+    super("aborted");
+    this.name = "RpcAbortedError";
   }
 }
 
@@ -40,8 +59,13 @@ class RpcThrottle {
     private readonly minSpacingMs: number,
   ) {}
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire();
+  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) throw new RpcAbortedError();
+    await this.acquire(signal);
+    if (signal?.aborted) {
+      this.release();
+      throw new RpcAbortedError();
+    }
     try {
       return await fn();
     } finally {
@@ -49,14 +73,19 @@ class RpcThrottle {
     }
   }
 
-  private async acquire(): Promise<void> {
+  private async acquire(signal?: AbortSignal): Promise<void> {
     while (this.active >= this.maxConcurrent) {
-      await new Promise<void>((resolve) => this.queue.push(resolve));
+      if (signal?.aborted) throw new RpcAbortedError();
+      await new Promise<void>((resolve) => {
+        this.queue.push(resolve);
+        signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      if (signal?.aborted) throw new RpcAbortedError();
     }
     this.active++;
     const elapsed = Date.now() - this.lastStartTs;
     if (elapsed < this.minSpacingMs) {
-      await sleep(this.minSpacingMs - elapsed);
+      await sleep(this.minSpacingMs - elapsed, signal);
     }
     this.lastStartTs = Date.now();
   }
@@ -74,17 +103,22 @@ const tokenAccountsThrottle = new RpcThrottle(2, 150);
 
 const RETRY_DELAYS_MS = [250, 750, 1500];
 
-async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
+async function withRateLimitRetry<T>(
+  fn: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
   let lastErr: unknown;
   // 1 initial attempt + up to RETRY_DELAYS_MS.length retries.
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    if (signal?.aborted) throw new RpcAbortedError();
     try {
       return await fn();
     } catch (err) {
       if (!isRateLimitError(err)) throw err;
       lastErr = err;
       if (attempt < RETRY_DELAYS_MS.length) {
-        await sleep(RETRY_DELAYS_MS[attempt]);
+        await sleep(RETRY_DELAYS_MS[attempt], signal);
+        if (signal?.aborted) throw new RpcAbortedError();
       }
     }
   }
@@ -98,15 +132,23 @@ async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 // Throttled, retrying wrapper for connection.getParsedTokenAccountsByOwner.
-// Used by the cleanup scanner.
+// Used by the cleanup scanner. Accepts an optional AbortSignal so a
+// cancelled scan stops queueing more calls and aborts retry sleeps —
+// web3.js's RPC method itself isn't signal-aware so the currently
+// in-flight HTTP request still runs to completion, but the cooperative
+// checkpoints around it cut the remaining wall-clock to near zero.
 export function getParsedTokenAccountsByOwnerThrottled(
   connection: Connection,
   owner: PublicKey,
   programId: PublicKey,
+  signal?: AbortSignal,
 ) {
-  return tokenAccountsThrottle.run(() =>
-    withRateLimitRetry(() =>
-      connection.getParsedTokenAccountsByOwner(owner, { programId }),
-    ),
+  return tokenAccountsThrottle.run(
+    () =>
+      withRateLimitRetry(
+        () => connection.getParsedTokenAccountsByOwner(owner, { programId }),
+        signal,
+      ),
+    signal,
   );
 }
