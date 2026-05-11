@@ -3863,9 +3863,17 @@ export async function buildCoreBurnTx(
       }
       simErr = parseSimulationError(sim.value.err, sim.value.logs ?? []);
       const hardStop = isIncorrectAccount(simErr, sim.value.logs ?? []);
-      console.warn(
-        `[coreBurn] preflight rejected for ${ownerStr} at batch=${included.length}: friendly="${simErr}" hardStop=${hardStop} rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`,
-      );
+      const rejectLine = `[coreBurn] preflight rejected for ${ownerStr} at batch=${included.length}: friendly="${simErr}" hardStop=${hardStop} rawErr=${JSON.stringify(sim.value.err)} logs=${JSON.stringify(sim.value.logs ?? [])}`;
+      // Soft rejects (hardStop=false — Permanent Freeze Delegate plugin,
+      // frozen asset, royalty / lifecycle-hook rejections, etc.) are
+      // EXPECTED user-facing outcomes: the asset simply can't be burned
+      // by this owner. The friendly `simErr` is still surfaced to the
+      // client; the line is logged at info level (stdout) so it doesn't
+      // pile up in backend-error.log as if it were a server fault.
+      // The hardStop case (IncorrectAccount) is a genuine actionable
+      // diagnostic and stays on stderr via console.warn.
+      if (hardStop) console.warn(rejectLine);
+      else console.log(rejectLine);
       if (hardStop) {
         // Per spec: do NOT silently trim/retry batch for IncorrectAccount.
         // Stop immediately at any batch size and surface a compact error
