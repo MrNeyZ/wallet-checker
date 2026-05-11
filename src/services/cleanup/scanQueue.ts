@@ -125,27 +125,53 @@ async function withDeadline<T>(
 async function buildBurnCandidates(
   address: string,
   scan: CleanupScanResult,
-  opts: { summary?: boolean; signal?: AbortSignal; logPrefix?: string } = {},
+  opts: {
+    summary?: boolean;
+    summaryOnly?: boolean;
+    signal?: AbortSignal;
+    logPrefix?: string;
+  } = {},
 ): Promise<BurnCandidatesResult> {
-  const baseCandidates: BurnCandidate[] = scan.fungibleTokenAccounts
-    .filter((acc) => acc.mint !== WSOL_MINT)
-    .map((acc) => ({
-      tokenAccount: acc.tokenAccount,
-      mint: acc.mint,
-      owner: acc.owner,
-      amount: acc.amount,
-      uiAmount: Number(acc.amount) / 10 ** acc.decimals,
-      decimals: acc.decimals,
-      lamports: acc.lamports,
-      programId: acc.programId,
-      estimatedReclaimSolAfterBurnAndClose: acc.lamports / LAMPORTS_PER_SOL,
-      symbol: null,
-      name: null,
-      image: null,
-      riskLevel: "unknown" as const,
-      burnRecommended: false,
-      reason: "Manual review required before destructive burn.",
-    }));
+  const burnable = scan.fungibleTokenAccounts.filter(
+    (acc) => acc.mint !== WSOL_MINT,
+  );
+  // summaryOnly fast path: the group scan-all consumer reads `count` and
+  // `totalEstimatedReclaimSol` only, never the candidate objects. Skip
+  // both the per-account object materialisation AND any DAS metadata
+  // hydration to keep memory + Helius quota bounded across large groups.
+  if (opts.summaryOnly) {
+    const totalLamports = burnable.reduce((s, a) => s + a.lamports, 0);
+    if (process.env.DEBUG_SCAN === "true") {
+      const prefix = opts.logPrefix ? `${opts.logPrefix} ` : "";
+      console.log(
+        `${prefix}[cleanupScan] summaryOnly: skipped candidate build for ${address} (${burnable.length} fungibles)`,
+      );
+    }
+    return {
+      wallet: address,
+      count: burnable.length,
+      totalEstimatedReclaimSol: totalLamports / LAMPORTS_PER_SOL,
+      candidates: [],
+      warning: BURN_WARNING,
+    };
+  }
+  const baseCandidates: BurnCandidate[] = burnable.map((acc) => ({
+    tokenAccount: acc.tokenAccount,
+    mint: acc.mint,
+    owner: acc.owner,
+    amount: acc.amount,
+    uiAmount: Number(acc.amount) / 10 ** acc.decimals,
+    decimals: acc.decimals,
+    lamports: acc.lamports,
+    programId: acc.programId,
+    estimatedReclaimSolAfterBurnAndClose: acc.lamports / LAMPORTS_PER_SOL,
+    symbol: null,
+    name: null,
+    image: null,
+    riskLevel: "unknown" as const,
+    burnRecommended: false,
+    reason: "Manual review required before destructive burn.",
+  }));
 
   // Summary mode (group scan-all) skips ALL heavy discovery paths — DAS
   // metadata enrichment, Helius getAssetsByOwner (Core), legacy/pNFT/Core
@@ -212,6 +238,24 @@ export interface ScanWalletQueuedOptions {
   // needs counts + reclaim totals. Per-wallet detailed scans
   // (/api/wallet/:address/burn-candidates) keep DAS on.
   summary?: boolean;
+  // summaryOnly is the aggressive variant of `summary` used only by the
+  // group cleanup-scan-all batch endpoint. On top of `summary` it also:
+  //   - Skips the scanner's NFT-classification DAS pass (`getAssetBatch`
+  //     on 1-supply / 0-decimal mints); all NFT-shape candidates land
+  //     directly in `nftTokenAccounts`. The frontend group table reads
+  //     `nftTokenAccounts.length` only, so the count is preserved at
+  //     the cost of cNFT/FungibleAsset-misshape mints not being demoted
+  //     to `unknownTokenAccounts`.
+  //   - Skips materialising the full BurnCandidate object array;
+  //     `burn.candidates` returns `[]` while `burn.count` and
+  //     `burn.totalEstimatedReclaimSol` stay correct.
+  //   - Stores the result under a separate scanner cache key so a
+  //     follow-up single-wallet scan doesn't inherit the trimmed
+  //     classification.
+  // Setting summaryOnly implies summary semantics for the burn-candidate
+  // enrichment skip; setting summary alone leaves the scanner's
+  // classification pass intact.
+  summaryOnly?: boolean;
   // Cooperative cancellation. Aborts any pending DAS / RPC await and
   // breaks out of the retry loop so a client disconnect (group scan-all
   // batched endpoint) frees the queue immediately. The signal is also
@@ -256,7 +300,7 @@ export async function scanWalletQueued(
   if (opts.signal?.aborted) {
     return { address, status: "error", error: "aborted", durationMs: 0 };
   }
-  const dedupeKey = `${address}:${opts.force ? "force" : "cached"}:${opts.summary ? "summary" : "full"}`;
+  const dedupeKey = `${address}:${opts.force ? "force" : "cached"}:${opts.summaryOnly ? "summaryOnly" : opts.summary ? "summary" : "full"}`;
   const existing = inFlightScans.get(dedupeKey);
   if (existing) return existing;
   const promise = runScanWalletQueued(address, opts);
@@ -274,11 +318,10 @@ export async function scanWalletQueued(
   return promise;
 }
 
-// Diagnostic-only — paired with `getScanCacheStats` in the admin
-// /scan-stats endpoint and the group cleanup-scan-all log path when
-// DEBUG_SCAN=true. Exposes inFlight map pressure so a leak (cleanup
-// contract broken by a future refactor) shows up as size approaching
-// INFLIGHT_MAX over time.
+// Diagnostic-only — paired with `getScanCacheStats` in the group
+// cleanup-scan-all log path when DEBUG_SCAN=true. Exposes inFlight
+// map pressure so a leak (cleanup contract broken by a future
+// refactor) shows up as size approaching INFLIGHT_MAX over time.
 export function getScanQueueStats(): { inFlight: number; max: number } {
   return { inFlight: inFlightScans.size, max: INFLIGHT_MAX };
 }
@@ -290,9 +333,12 @@ async function runScanWalletQueued(
   const start = Date.now();
   const budgetMs =
     opts.budgetMs ??
-    (opts.summary ? PER_WALLET_BUDGET_MS_SUMMARY : PER_WALLET_BUDGET_MS);
+    (opts.summary || opts.summaryOnly
+      ? PER_WALLET_BUDGET_MS_SUMMARY
+      : PER_WALLET_BUDGET_MS);
   const deadline = start + budgetMs;
-  const wasCached = !opts.force && isCleanupScanCached(address);
+  const wasCached =
+    !opts.force && isCleanupScanCached(address, opts.summaryOnly === true);
   const logPrefix = opts.logPrefix ? `${opts.logPrefix} ` : "";
 
   const aborted = (): ScanWalletResult => ({
@@ -311,6 +357,7 @@ async function runScanWalletQueued(
         scanWalletForCleanup(address, {
           refresh: opts.force,
           signal: opts.signal,
+          summaryOnly: opts.summaryOnly,
         }),
         deadline,
         opts.signal,
@@ -319,6 +366,7 @@ async function runScanWalletQueued(
       const burn = await withDeadline(
         buildBurnCandidates(address, scan, {
           summary: opts.summary,
+          summaryOnly: opts.summaryOnly,
           signal: opts.signal,
           logPrefix: opts.logPrefix,
         }),

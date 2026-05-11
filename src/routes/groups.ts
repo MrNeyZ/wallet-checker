@@ -561,6 +561,15 @@ router.post("/:groupId/cleanup-scan-all", async (req, res) => {
         const r = await scanWalletQueued(wlt.address, {
           force,
           summary: true,
+          // summaryOnly: aggressive savings mode — skips the scanner's
+          // NFT-classification DAS pass AND the burn-candidate object
+          // materialisation. The group cleaner table reads only counts
+          // + totals, so the trimmed result is byte-equivalent at the
+          // consumer. Per-wallet detailed scans
+          // (/api/wallet/:address/cleanup-scan and /burn-candidates)
+          // still run with summaryOnly off and rebuild the full
+          // classification + candidate metadata on demand.
+          summaryOnly: true,
           signal: ctl.signal,
           logPrefix,
         });

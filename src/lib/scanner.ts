@@ -37,8 +37,24 @@ export interface CleanupScanResult {
 // promise so a single user action that fans out (e.g. cleanup-scan +
 // burn-candidates fired together) only triggers one underlying scan.
 // The full-clean loop bypasses with `refresh: true` after each close-tx.
+//
+// The cap is a GLOBAL entry count, not per-address. With the
+// summary/full key split each address can occupy up to 2 slots, so the
+// effective unique-address capacity is roughly SCAN_CACHE_MAX/2 worst
+// case. SCAN_CACHE_MAX was chosen with that headroom in mind — a
+// pm2 process scanning ~500 unique addresses across both modes is well
+// within bounds; a less common multi-thousand-address workload will
+// see LRU eviction of the coldest entries, which is the intended
+// behavior (eviction = "next call refetches", never a correctness bug).
 const SCAN_TTL_MS = 10 * 60 * 1000;
 const SCAN_CACHE_MAX = 1000;
+// Per-bucket soft cap for raw token-account counts. Pure telemetry —
+// we do NOT truncate the bucket because the close-empty flow needs to
+// see every empty account or the user can't fully clean their wallet.
+// Crossing the threshold is logged once per scan so a pathological
+// wallet (post-airdrop spam, attacker dust) is visible in operator
+// logs without changing scan semantics.
+const BUCKET_BLOAT_WARN = 5000;
 // `rejected` is set synchronously in the same microtask tick as the
 // underlying scan's rejection. Concurrent readers that arrive between
 // the rejection and the cache `.delete()` then treat the entry as a
@@ -53,14 +69,6 @@ type CacheEntry = {
 // Capped LRU keeps memory bounded under a long-running pm2 process
 // scanning many unique wallets. TTL is still enforced at the call site.
 const scanCache = new CappedLruMap<string, CacheEntry>(SCAN_CACHE_MAX);
-
-// Per-bucket soft cap for raw token-account counts. Pure telemetry —
-// we do NOT truncate the bucket because the close-empty flow needs to
-// see every empty account or the user can't fully clean their wallet.
-// Crossing the threshold is logged once per scan so a pathological
-// wallet (post-airdrop spam, attacker dust) is visible in operator
-// logs without changing scan semantics.
-const BUCKET_BLOAT_WARN = 5000;
 
 // Mints flagged for verbose tracing through the full scan/classify
 // pipeline. Set via DEBUG_MINTS env (comma-separated) so we can ship
@@ -172,6 +180,7 @@ function classifyNftCandidate(
 async function performScan(
   address: string,
   signal?: AbortSignal,
+  summaryOnly: boolean = false,
 ): Promise<CleanupScanResult> {
   const owner = new PublicKey(address);
 
@@ -270,7 +279,26 @@ async function performScan(
   let legacyKept = 0;
   let pnftKept = 0;
   let unknownDropped = 0;
-  if (nftCandidates.length > 0) {
+  // summaryOnly fast path: skip the DAS classification pass entirely and
+  // route every NFT-shape candidate straight into nftTokenAccounts. This
+  // matches the existing permissive-fallback behavior (DAS unresolved),
+  // so the downstream count is at worst slightly inflated by cNFT /
+  // FungibleAsset-misshape mints that would otherwise have been demoted
+  // to unknownTokenAccounts. The group scan-all consumer reads
+  // `nftTokenAccounts.length` only, so the small accuracy hit is
+  // acceptable; the saving is one DAS `getAssetBatch` call (up to
+  // 1000 mints per chunk, 3 parallel chunks) per wallet.
+  if (summaryOnly && nftCandidates.length > 0) {
+    for (const acc of nftCandidates) result.nftTokenAccounts.push(acc);
+    console.log(
+      `[scanner] nft routing ${JSON.stringify({
+        mode: "summaryOnly",
+        candidates: nftCandidates.length,
+        examined: 0,
+        skippedDas: nftCandidates.length,
+      })}`,
+    );
+  } else if (nftCandidates.length > 0) {
     if (signal?.aborted) throw abortedError();
     // Memory/quota guard: a wallet with absurd numbers of 1-supply
     // candidates would force an oversized DAS batch (and a giant
@@ -378,6 +406,21 @@ export interface ScanOptions {
   // see the in-flight promise as a hit, which is correct — only the
   // aborted caller stops waiting.
   signal?: AbortSignal;
+  // Aggressive savings mode for group scan-all. Skips the NFT-shape
+  // classification DAS pass — all 1-supply / 0-decimal candidates land
+  // directly in `nftTokenAccounts` without metadata lookup. The result
+  // is cached under a separate key (`address|summary`) so a follow-up
+  // single-wallet scan does NOT inherit the trimmed classification.
+  summaryOnly?: boolean;
+}
+
+// Cache key folds in the summaryOnly flag so a summary scan and a full
+// scan for the same wallet live in independent slots. Without this a
+// fast group scan-all would write a trimmed classification to the
+// shared cache and a subsequent per-wallet scan would inherit it
+// (and miss the legacy/pnft routing).
+function cacheKey(address: string, summaryOnly: boolean): string {
+  return `${address}|${summaryOnly ? "s" : "f"}`;
 }
 
 export async function scanWalletForCleanup(
@@ -385,8 +428,10 @@ export async function scanWalletForCleanup(
   opts: ScanOptions = {},
 ): Promise<CleanupScanResult> {
   if (opts.signal?.aborted) throw abortedError();
+  const summaryOnly = opts.summaryOnly === true;
+  const key = cacheKey(address, summaryOnly);
   const now = Date.now();
-  const cached = scanCache.get(address);
+  const cached = scanCache.get(key);
   if (
     !opts.refresh &&
     cached &&
@@ -395,9 +440,9 @@ export async function scanWalletForCleanup(
   ) {
     return cached.promise;
   }
-  const promise = performScan(address, opts.signal);
+  const promise = performScan(address, opts.signal, summaryOnly);
   const entry: CacheEntry = { ts: now, promise, rejected: false };
-  scanCache.set(address, entry);
+  scanCache.set(key, entry);
   // If the underlying scan rejects, mark the entry as rejected
   // synchronously (so concurrent readers in the same microtask drain
   // fall through to a fresh scan), then drop it from the cache so the
@@ -406,34 +451,43 @@ export async function scanWalletForCleanup(
   // caller can populate a fresh entry.
   promise.catch(() => {
     entry.rejected = true;
-    if (scanCache.get(address) === entry) {
-      scanCache.delete(address);
+    if (scanCache.get(key) === entry) {
+      scanCache.delete(key);
     }
   });
   return promise;
 }
 
 // Test helper / admin escape hatch — currently unused but exported so a
-// future endpoint or test can clear stale cache without restarting.
+// future endpoint or test can clear stale cache without restarting. With
+// the summaryOnly split each address has up to two cache slots; clear
+// both when an address-targeted clear is requested.
 export function clearScanCache(address?: string): void {
-  if (address) scanCache.delete(address);
-  else scanCache.clear();
+  if (address) {
+    scanCache.delete(cacheKey(address, true));
+    scanCache.delete(cacheKey(address, false));
+  } else {
+    scanCache.clear();
+  }
+}
+
+// Diagnostic-only — used by the group cleanup-scan-all log path when
+// DEBUG_SCAN=true to surface cache pressure. Cheap (returns counters
+// already maintained by CappedLruMap), no allocations beyond the
+// returned object.
+export function getScanCacheStats(): { size: number; max: number; ttlMs: number } {
+  return { size: scanCache.size, max: SCAN_CACHE_MAX, ttlMs: SCAN_TTL_MS };
 }
 
 // Lets the batch scan endpoint distinguish a "cached" outcome (fast,
 // served from this in-process map) from a "ok" outcome (fresh on-chain
 // scan) when reporting progress to the UI. Returns true if a non-expired
-// entry exists for `address`.
-export function isCleanupScanCached(address: string): boolean {
-  const cached = scanCache.get(address);
+// entry exists for `address` under the requested mode.
+export function isCleanupScanCached(
+  address: string,
+  summaryOnly: boolean = false,
+): boolean {
+  const cached = scanCache.get(cacheKey(address, summaryOnly));
   if (!cached) return false;
   return Date.now() - cached.ts < SCAN_TTL_MS;
-}
-
-// Diagnostic-only — used by the admin /scan-stats endpoint and the
-// group cleanup-scan-all log path when DEBUG_SCAN=true to surface
-// cache pressure. Cheap (returns counters already maintained by
-// CappedLruMap), no allocations beyond the returned object.
-export function getScanCacheStats(): { size: number; max: number; ttlMs: number } {
-  return { size: scanCache.size, max: SCAN_CACHE_MAX, ttlMs: SCAN_TTL_MS };
 }
