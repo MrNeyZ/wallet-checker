@@ -47,14 +47,16 @@ export async function GET(
   // `x-app-key`). Hand-rolling the header here was the cause of the
   // earlier 401: drift between the proxy and the helper.
   const auth = authHeaders();
-  // Temporary diagnostic — confirms BACKEND_APP_API_KEY is actually
-  // loaded into the route's process.env at request time. Remove once
-  // the 401 is gone.
-  console.log("[cleanup-scan proxy]", {
-    backendUrl: BACKEND_URL,
-    hasKey: Boolean(auth["x-app-key"]),
-    keyPrefix: auth["x-app-key"]?.slice(0, 6),
-  });
+  // Diagnostic — confirms the upstream auth header is populated at
+  // request time. Gated behind DEBUG_SCAN so it stays silent in
+  // steady state; never logs the key (or any prefix of it), only the
+  // boolean presence + the backend base URL.
+  if (process.env.DEBUG_SCAN === "true") {
+    console.log("[cleanup-scan proxy]", {
+      backendUrl: BACKEND_URL,
+      hasKey: Boolean(auth["x-app-key"]),
+    });
+  }
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...auth,
