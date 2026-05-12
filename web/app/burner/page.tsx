@@ -13,7 +13,7 @@
 //     BurnSelectionProvider registry that each burn section publishes
 //     into via useBurnSelectionPublisher
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BurnAckProvider,
   BurnSelectionProvider,
@@ -59,6 +59,31 @@ function BurnerBody() {
   // scan-progress strip. Real state: "loading" only while a scan request
   // is actually in flight. Not cosmetic.
   const [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
+  // Real wall-clock scan duration: stamped when status → loading, computed
+  // when status → scanned. Honest measurement, not a faked figure.
+  const [scanDurationMs, setScanDurationMs] = useState<number | null>(null);
+  const scanStartedAtRef = useRef<number | null>(null);
+  // Holds CleanerRow's existing `handleScan` (the same trigger its toolbar
+  // Scan/Rescan button uses), exposed up via `registerScanTrigger`. Lets the
+  // page offer a "Rescan" without owning or duplicating any scan logic.
+  const scanTriggerRef = useRef<(() => void) | null>(null);
+
+  const handleScanStateChange = useCallback((status: ScanStatus) => {
+    setScanStatus(status);
+    if (status === "loading") {
+      scanStartedAtRef.current = Date.now();
+      setScanDurationMs(null);
+    } else if (status === "scanned" && scanStartedAtRef.current != null) {
+      setScanDurationMs(Date.now() - scanStartedAtRef.current);
+      scanStartedAtRef.current = null;
+    }
+  }, []);
+  const registerScanTrigger = useCallback((fn: () => void) => {
+    scanTriggerRef.current = fn;
+  }, []);
+  const handleRescan = useCallback(() => {
+    scanTriggerRef.current?.();
+  }, []);
 
   // BurnAckProvider is hard-coded `true` (the page-level ack checkbox was
   // removed by operator request); the real safety boundary is the per-section
@@ -83,7 +108,12 @@ function BurnerBody() {
       {connected ? (
         <>
           {/* 1 — scan strip / scan-complete line (prototype: <ScanStrip>). */}
-          <BurnerScanStrip status={scanStatus} summary={summary} />
+          <BurnerScanStrip
+            status={scanStatus}
+            summary={summary}
+            durationMs={scanDurationMs}
+            onRescan={handleRescan}
+          />
 
           {/* 2 — stat tiles (prototype: .vl-stat-strip of <StatTile>). */}
           <BurnerStatTiles summary={summary} scanning={scanStatus === "loading"} />
@@ -123,7 +153,8 @@ function BurnerBody() {
               visibleSection={tab}
               compact
               onSummaryChange={setSummary}
-              onScanStateChange={setScanStatus}
+              onScanStateChange={handleScanStateChange}
+              registerScanTrigger={registerScanTrigger}
             />
           </div>
 
@@ -159,9 +190,13 @@ const SCAN_STEPS = [
 function BurnerScanStrip({
   status,
   summary,
+  durationMs,
+  onRescan,
 }: {
   status: ScanStatus;
   summary: CleanerRowSummary | null;
+  durationMs: number | null;
+  onRescan: () => void;
 }) {
   if (status === "loading") {
     return (
@@ -174,9 +209,14 @@ function BurnerScanStrip({
             on-chain · DAS
           </span>
         </div>
+        {/* Honest indeterminate bar — the production scan is a single call,
+            it does not stream per-phase progress, so no faked %. */}
         <div className="vl-progress">
           <div className="bar is-indeterminate" />
         </div>
+        {/* Step pills are the pipeline phases as labels only — none is
+            marked `is-done` (we don't observe real phase completion). The
+            first carries `is-active` purely as a "working" cue. */}
         <div className="vl-scan-steps">
           {SCAN_STEPS.map((s, i) => (
             <span key={s} className={`vl-scan-step ${i === 0 ? "is-active" : ""}`}>
@@ -191,24 +231,44 @@ function BurnerScanStrip({
     return (
       <div className="vl-warn-strip">
         <span className="dot" />
-        <span>Scan failed — retry from the wallet toolbar below.</span>
+        <span>Scan failed.</span>
+        <button
+          type="button"
+          onClick={onRescan}
+          className="vl-btn vl-btn-ghost is-sm ml-auto"
+        >
+          Rescan
+        </button>
       </div>
     );
   }
   if (status === "scanned" || summary) {
     const total =
       summary != null ? summary.nft + summary.fungible + summary.empty : null;
+    const dur =
+      durationMs != null ? `${(durationMs / 1000).toFixed(1)}s` : null;
     return (
-      <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
-        <span className="inline-flex items-center gap-1.5 text-[color:var(--vl-green)]">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-[color:var(--vl-green)]">
           <span
             className="inline-block h-[7px] w-[7px] shrink-0 rounded-full bg-[color:var(--vl-green)]"
             style={{ boxShadow: "0 0 8px rgba(79,182,125,0.6)" }}
           />
-          Scan complete{total != null ? ` · ${total.toLocaleString("en-US")} items` : ""}
+          Scan complete
+          {total != null ? ` · ${total.toLocaleString("en-US")} items` : ""}
+          {dur ? ` · ${dur}` : ""}
         </span>
-        <span className="text-[color:var(--vl-fg-4)]">·</span>
-        <span className="text-[color:var(--vl-fg-3)]">pick a category tab to review burnable assets</span>
+        <span className="font-mono text-[11px] text-[color:var(--vl-fg-4)]">·</span>
+        <span className="font-mono text-[11px] text-[color:var(--vl-fg-3)]">
+          pick a category tab to review burnable assets
+        </span>
+        <button
+          type="button"
+          onClick={onRescan}
+          className="vl-btn vl-btn-ghost is-sm ml-auto"
+        >
+          Rescan
+        </button>
       </div>
     );
   }

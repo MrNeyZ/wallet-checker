@@ -1388,6 +1388,7 @@ export function CleanerRow({
   compact = false,
   onSummaryChange,
   onScanStateChange,
+  registerScanTrigger,
 }: {
   wallet: WalletEntry;
   visibleSection?: CleanerVisibleSection;
@@ -1399,6 +1400,12 @@ export function CleanerRow({
   onScanStateChange?: (
     status: "idle" | "loading" | "scanned" | "error",
   ) => void;
+  // Hands the existing `handleScan` (the same trigger the compact
+  // wallet-toolbar Scan/Rescan button calls) up to a parent so the
+  // /burner page can offer a page-level "Rescan". Pure exposure — no
+  // new scan behavior, no duplicate calls (handleScan already aborts any
+  // in-flight scan + bumps the run-id). No-op when not passed.
+  registerScanTrigger?: (fn: () => void) => void;
 }) {
   const [state, setState] = useState<ScanState>({ status: "idle" });
   const [showDetails, setShowDetails] = useState(false);
@@ -1702,6 +1709,14 @@ export function CleanerRow({
   useEffect(() => {
     if (onScanStateChange) onScanStateChange(state.status);
   }, [state.status, onScanStateChange]);
+
+  // Expose the scan/rescan trigger upward (same `handleScan` the compact
+  // toolbar button uses). `handleScan` is stable per wallet, so this
+  // fires once on mount (and again only on wallet change). No-op when
+  // `registerScanTrigger` isn't passed.
+  useEffect(() => {
+    if (registerScanTrigger) registerScanTrigger(handleScan);
+  }, [registerScanTrigger, handleScan]);
 
   return (
     <div className="vl-card overflow-hidden">
