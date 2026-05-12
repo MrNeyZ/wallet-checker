@@ -243,6 +243,67 @@ function parseSafeUrl(raw: string): URL | null {
   return u;
 }
 
+// Translate known-dead / deprecated gateway hosts to a live equivalent at
+// fetch time so stale on-chain / DAS image URLs still resolve to real bytes.
+// Returns a new URL when a rewrite applies, else null. The rewritten URL is
+// re-validated by parseSafeUrl and still flows through safeFetch's per-hop
+// assertPublicHost — SSRF protections are unchanged. The cache key stays the
+// ORIGINAL url, so a repeat request for the dead URL still hits cache.
+//
+// Currently handles only the one gateway that's actually dead in practice:
+// nft.storage retired its subdomain-style IPFS gateway
+// (`<cidv1>.ipfs.nftstorage.link/...`) — those requests just hang until the
+// 10s fetch timeout. The path-style gateway (`nftstorage.link/ipfs/<cid>/...`)
+// still serves the same content, so we reshape to that. (The path-style host
+// is left untouched — it works; w3s.link / dweb.link subdomain gateways are
+// left untouched too — those are alive.)
+const NFTSTORAGE_SUBDOMAIN_SUFFIX = ".ipfs.nftstorage.link";
+function rewriteDeadGateway(u: URL): URL | null {
+  const host = u.hostname.toLowerCase();
+  if (host.endsWith(NFTSTORAGE_SUBDOMAIN_SUFFIX) && host.length > NFTSTORAGE_SUBDOMAIN_SUFFIX.length) {
+    const cid = host.slice(0, host.length - NFTSTORAGE_SUBDOMAIN_SUFFIX.length);
+    // The CID must be a single DNS label — no dots. Anything else isn't a
+    // real subdomain-gateway URL; bail rather than guess.
+    if (!cid || cid.includes(".")) return null;
+    const path = u.pathname === "/" ? "" : u.pathname;
+    try {
+      return new URL(`https://nftstorage.link/ipfs/${cid}${path}${u.search}`);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Magic-byte sniff for the raster image formats the proxy serves. Used only
+// when the upstream's declared Content-Type is missing / unrecognised (e.g.
+// gateway.irys.xyz serves real images as application/octet-stream). Returns
+// the canonical image content-type or null. SVG is deliberately NOT sniffed —
+// it's XML/text and the bytes are ambiguous with HTML; an SVG that wants
+// through the proxy must declare `image/svg+xml`. Note: the bytes are served
+// back via <img>, never executed, and we always set an `image/*` Content-Type
+// on the response, so a polyglot is harmless here.
+function sniffImageType(buf: Buffer): string | null {
+  if (buf.length < 12) return null;
+  // PNG  — 89 50 4E 47 0D 0A 1A 0A
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+      buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) return "image/png";
+  // JPEG — FF D8 FF
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  // GIF  — "GIF87a" / "GIF89a"
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38 &&
+      (buf[4] === 0x37 || buf[4] === 0x39) && buf[5] === 0x61) return "image/gif";
+  // WebP — "RIFF" .... "WEBP"
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
+  // AVIF — ISO-BMFF `ftyp` box at bytes 4..7, brand "avif"/"avis" at 8..11
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) {
+    const brand = buf.toString("ascii", 8, 12);
+    if (brand === "avif" || brand === "avis") return "image/avif";
+  }
+  return null;
+}
+
 function checkRate(ip: string): boolean {
   const now = Date.now();
   let b = buckets.get(ip);
@@ -410,7 +471,23 @@ export async function GET(req: NextRequest): Promise<Response> {
     });
   }
 
-  const fetched = await safeFetch(parsed);
+  // Known-dead-gateway rewrite (e.g. `*.ipfs.nftstorage.link` → path-style).
+  // The rewritten URL is re-validated by parseSafeUrl and still gets the full
+  // per-hop assertPublicHost treatment inside safeFetch; the cache key above
+  // stays the original so a repeat request for the dead URL hits cache.
+  let fetchUrl = parsed;
+  const rewritten = rewriteDeadGateway(parsed);
+  if (rewritten) {
+    const safe = parseSafeUrl(rewritten.toString());
+    if (safe) {
+      fetchUrl = safe;
+      console.log(
+        `[image-proxy] gateway rewrite ${hostLog} -> ${logHost(safe.toString())}`,
+      );
+    }
+  }
+
+  const fetched = await safeFetch(fetchUrl);
   if (fetched.kind === "err") {
     console.warn(
       `[image-proxy] cache=miss reason=${fetched.reason} host=${hostLog} ms=${Date.now() - startedAt}`,
@@ -448,24 +525,17 @@ export async function GET(req: NextRequest): Promise<Response> {
     );
   }
 
-  // Type sniff: only proxy bona-fide image responses. Untyped or HTML
-  // responses (common with broken IPFS gateways) get 415'd so the browser
-  // falls back to the placeholder.
-  const ct = (upstream.headers.get("content-type") ?? "").split(";")[0].trim();
-  if (ct && !ALLOWED_CONTENT_TYPES.has(ct)) {
-    try { await upstream.body?.cancel(); } catch { /* best-effort */ }
-    console.warn(
-      `[image-proxy] cache=miss reason=bad-ct ct=${ct} host=${hostLog} ms=${Date.now() - startedAt}`,
-    );
-    return NextResponse.json(
-      { error: `Unsupported content-type ${ct}` },
-      { status: 415 },
-    );
-  }
+  const declaredCt = (upstream.headers.get("content-type") ?? "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
 
   // Streamed read with hard byte cap. Avoids buffering attacker-supplied
   // multi-GB chunked responses (the old `await arrayBuffer()` first / cap
-  // after pattern was an OOM lever).
+  // after pattern was an OOM lever). We read BEFORE finalising the
+  // content-type so we can magic-byte-sniff responses that arrive without a
+  // usable Content-Type (gateway.irys.xyz and other raw-bytes gateways serve
+  // real images as application/octet-stream / no type).
   const bytes = await readBodyCapped(upstream, MAX_BYTES);
   if (bytes === null) {
     console.warn(
@@ -477,15 +547,37 @@ export async function GET(req: NextRequest): Promise<Response> {
     );
   }
 
-  const contentType = ct || "application/octet-stream";
+  // Content-type resolution: trust an explicit allowlisted type; otherwise
+  // fall back to magic-byte sniffing and accept ONLY real raster image bytes
+  // (PNG/JPEG/GIF/WebP/AVIF). HTML error pages, JSON, plain text — anything
+  // that isn't a recognised image — is still rejected with 415, so a broken
+  // gateway can't smuggle markup through the proxy.
+  let contentType: string | null = ALLOWED_CONTENT_TYPES.has(declaredCt)
+    ? declaredCt
+    : null;
+  let sniffed = false;
+  if (!contentType) {
+    const guess = sniffImageType(bytes);
+    if (!guess) {
+      console.warn(
+        `[image-proxy] cache=miss reason=bad-ct ct=${declaredCt || "<none>"} sniff=none bytes=${bytes.byteLength} host=${hostLog} ms=${Date.now() - startedAt}`,
+      );
+      return NextResponse.json(
+        { error: `Unsupported content-type ${declaredCt || "(none)"}` },
+        { status: 415 },
+      );
+    }
+    contentType = guess;
+    sniffed = true;
+  }
 
-  // Only persist successful, type-validated, size-bounded bodies. Failure
-  // paths above never reach this line, so the cache cannot retain a
-  // poisoned or oversized record.
+  // Only persist successful, type-validated (declared OR sniffed), size-
+  // bounded bodies. Failure paths above never reach this line, so the cache
+  // cannot retain a poisoned or oversized record.
   void writeCached(cacheKey, bytes, contentType);
 
   console.log(
-    `[image-proxy] cache=miss reason=ok status=${upstream.status} ct=${contentType} bytes=${bytes.byteLength} host=${hostLog} ms=${Date.now() - startedAt}`,
+    `[image-proxy] cache=miss reason=ok status=${upstream.status} ct=${contentType}${sniffed ? "(sniffed)" : ""} bytes=${bytes.byteLength} host=${hostLog} ms=${Date.now() - startedAt}`,
   );
 
   return new Response(new Uint8Array(bytes), {
