@@ -149,9 +149,19 @@ export function isSupportedAsset(asset: DasAsset | null | undefined): boolean {
 function parse(asset: DasAsset): AssetMetadata {
   const name = strOrNull(asset.content?.metadata?.name);
   const symbol = strOrNull(asset.content?.metadata?.symbol);
+  // Image URL priority: the Helius CDN copy first. `files[0].cdn_uri` is
+  // always an https://cdn.helius-rpc.com/… URL — Helius has already
+  // resolved any ipfs:// / ar:// gateway server-side AND down-scaled the
+  // image, so it's both directly fetchable by our /api/image-proxy and
+  // ideal for the 64×64 burner thumbnails. The off-chain `links.image`
+  // and the raw file `uri` stay as fallbacks; when those are ipfs:// /
+  // ar:// (common for pre-2023 collections) the frontend image-proxy
+  // rejects them and the card falls back to the neutral placeholder —
+  // promoting cdn_uri ahead of links.image is what makes those
+  // collections render real art instead of a blank thumbnail slot.
   const image =
-    strOrNull(asset.content?.links?.image) ??
     strOrNull(asset.content?.files?.[0]?.cdn_uri) ??
+    strOrNull(asset.content?.links?.image) ??
     strOrNull(asset.content?.files?.[0]?.uri);
   const uri = strOrNull(asset.content?.json_uri);
   const iface =
