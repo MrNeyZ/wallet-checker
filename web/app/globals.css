@@ -1317,6 +1317,10 @@ html[data-layout="phone"]  .vl-nft-rows { grid-template-columns: repeat(2, minma
     repeating-linear-gradient(45deg, rgba(168, 144, 232, 0.06) 0 3px, transparent 3px 6px),
     linear-gradient(135deg, var(--vl-surface-2), var(--vl-surface));
   overflow: hidden; position: relative; flex-shrink: 0;
+  /* grid-center any direct child (our <img>/placeholder fills 64×64
+     without the inline baseline gap that would clip its bottom edge);
+     `.ph` is position:absolute so it's unaffected. */
+  display: grid; place-items: center;
 }
 .vl-nft-row .thumb .ph {
   position: absolute; inset: 0;

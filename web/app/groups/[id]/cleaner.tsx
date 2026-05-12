@@ -5167,16 +5167,15 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
     })();
     return (
       <label
-        // Compact card — WC v2 NFT/Core cell: 16px checkbox · 64×64 thumb ·
-        // name (prefix over unique suffix) · short mint. Border-box height
-        // ≈ 82px (64 thumb + py-2 + 1px borders); the virtualizer's
-        // COMPACT_ROW_HEIGHT_PX is tuned to that. Width / column count
-        // unchanged (PC 6 / Laptop 4 / Phone 2 via compactColsForLayout).
-        // Compact-only — the full /groups/[id]?tab=cleaner card branch
-        // below is unchanged.
-        className={`vl-card is-interactive flex min-h-[80px] cursor-pointer items-center gap-2.5 px-2.5 py-2 text-left ${
-          isChecked ? "is-selected" : ""
-        }`}
+        // Compact card — WC v2 `.vl-nft-row` cell: 14px checkbox · 64×64
+        // thumb · collection-name prefix (CSS-truncated) · unique id
+        // (`#1234`, or the short mint when the name has no `#N` suffix).
+        // Border-box height ≈ 82px (64 thumb + 8px×2 pad + 1px×2 border);
+        // the virtualizer's COMPACT_ROW_HEIGHT_PX (84) is tuned to that.
+        // Columns are PC 6 / Laptop 4 / Phone 2 — the grid's
+        // `data-layout`-driven `repeat()` handles that. Compact-only — the
+        // full /groups/[id]?tab=cleaner card branch below is unchanged.
+        className={`vl-nft-row ${isChecked ? "is-selected" : ""}`}
         title={name ?? id}
       >
         <input
@@ -5184,27 +5183,25 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
           checked={isChecked}
           onChange={() => onToggle(id)}
           aria-label={`Select ${name ?? itemKindLabel} for burn`}
-          className="vl-checkbox h-4 w-4 shrink-0 cursor-pointer"
+          className="vl-check"
         />
-        <NftThumbnail
-          src={image}
-          alt={name ?? itemKindLabel}
-          size="lg"
-          kindLabel={itemKindLabel}
-          forceImage
-        />
-        <div className="flex min-w-0 flex-1 flex-col gap-px">
-          <span className="truncate text-[11px] font-semibold text-white">
-            {split.prefix || (name ?? shortAddr(id, 4, 4))}
-          </span>
-          {split.suffix && (
-            <span className="font-mono text-[10px] text-[color:var(--vl-fg-3)]">
-              {split.suffix}
-            </span>
+        <div className="thumb">
+          {image ? (
+            <NftThumbnail
+              src={image}
+              alt={name ?? itemKindLabel}
+              size="lg"
+              forceImage
+            />
+          ) : (
+            <div className="ph">{itemKindLabel.slice(0, 3).toUpperCase()}</div>
           )}
-          <span className="truncate font-mono text-[9px] text-[color:var(--vl-fg-4)]">
-            {shortAddr(id, 4, 4)}
-          </span>
+        </div>
+        <div className="name">
+          {split.prefix || (name ?? shortAddr(id, 4, 4))}
+        </div>
+        <div className="id">
+          {split.suffix ?? (name ? shortAddr(id, 4, 4) : null)}
         </div>
       </label>
     );
@@ -5273,17 +5270,16 @@ const GRID_PAGE_SIZE = 60;
 // — we use the page's natural window scroll so multiple groups stack
 // the way the user expects.
 //
-// Cards have a known fixed height in compact mode (28 px min-h + 1.5
-// padding × 2 + 1 gap ≈ 36 px); the grid itself uses CSS Grid with a
-// responsive column count that mirrors the Tailwind breakpoints used
-// elsewhere in the file. Selection toggling re-renders the parent's
-// `selected` set, but `BurnCandidateCard` is React.memo'd on primitive
-// props so only the toggled card actually re-renders.
-// Card env (WC v2 cell): 64px thumb + py-2 (8+8) + 1px×2 borders ≈ 82px
-// rendered border-box. Keep the row stride a couple px above the visual
-// card height so the virtualizer's absolutely-positioned rows never
-// overlap (a too-tight stride causes the next row to sit a hair on top
-// of the previous, chopping pixels off card text). 84 + 4 gap = 88px stride.
+// Cards have a known fixed height in compact mode — a WC v2 `.vl-nft-row`
+// cell: 64px thumb + 8px×2 padding + 1px×2 border ≈ 82px rendered
+// border-box. The grid itself uses CSS Grid with a `data-layout`-driven
+// column count (PC 6 / Laptop 4 / Phone 2). Selection toggling re-renders
+// the parent's `selected` set, but `BurnCandidateCard` is React.memo'd on
+// primitive props so only the toggled card actually re-renders.
+// Keep the row stride a couple px above the visual card height so the
+// virtualizer's absolutely-positioned rows never overlap (a too-tight
+// stride causes the next row to sit a hair on top of the previous,
+// chopping pixels off card text). 84 + 4 gap = 88px stride.
 const COMPACT_ROW_HEIGHT_PX = 84;
 const COMPACT_ROW_GAP_PX = 4;
 const COMPACT_OVERSCAN_ROWS = 3;
@@ -5400,7 +5396,7 @@ function VirtualizedCompactCardGrid({
   return (
     <div
       ref={containerRef}
-      className="p-1.5"
+      className="px-3"
       style={{ height: totalHeight, position: "relative" }}
     >
       {slice.length > 0 && (
@@ -5408,8 +5404,8 @@ function VirtualizedCompactCardGrid({
           style={{
             position: "absolute",
             top: startRow * rowStride,
-            left: "6px", // matches container's p-1.5 horizontal padding
-            right: "6px",
+            left: "12px", // matches container px-3 + .vl-nft-rows horizontal padding
+            right: "12px",
             display: "grid",
             gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
             gap: `${COMPACT_ROW_GAP_PX}px`,
@@ -5564,7 +5560,7 @@ function BurnCandidateGroupGrid({
   }, [items]);
 
   return (
-    <div className="space-y-3 px-3 py-3">
+    <div className={isCompact ? "vl-coll-groups" : "space-y-3 px-3 py-3"}>
       {groups.map(([groupKey, groupItems]) => {
         const isUncollected = groupKey === "_uncollected";
         // Try to derive a friendly group label: prefer the most common
@@ -5596,6 +5592,64 @@ function BurnCandidateGroupGrid({
         const anySelected = ids.some((id) => selected.has(id));
         const fullGroupCount = ids.length;
         const visibleGroupCount = groupItems.length;
+        const selectedInGroup = ids.filter((id) => selected.has(id)).length;
+        if (isCompact) {
+          // Compact (`/burner`) — WC v2 `.vl-coll-section` / `.vl-coll-head`
+          // layout: flat sections separated by a hairline, a gallery-style
+          // header (name · count · short addr · "N sel") and the
+          // virtualized `.vl-nft-row` grid below. The non-compact
+          // /groups/[id]?tab=cleaner branch (the `.vl-card` block below) is
+          // unchanged. Grouping + Select-all/Deselect/Pick-N behavior is
+          // identical — only the wrapper markup differs.
+          return (
+            <section key={groupKey} className="vl-coll-section">
+              <header className="vl-coll-head">
+                <div className="vl-coll-title">
+                  <span className="vl-coll-name">{label}</span>
+                  <span className="vl-coll-count">{fullGroupCount}</span>
+                  {isCollDerived && (
+                    <span className="vl-coll-addr font-mono">
+                      {shortAddr(collMint, 4, 4)}
+                    </span>
+                  )}
+                  {isNameDerived && (
+                    <span className="vl-coll-addr">by name</span>
+                  )}
+                  {selectedInGroup > 0 && (
+                    <span className="vl-coll-sel font-mono">
+                      {selectedInGroup} sel
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <PickNInGroup
+                    ids={ids}
+                    selected={selected}
+                    onPick={(toAdd) => onToggleGroup(toAdd, true)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => onToggleGroup(ids, !allSelected)}
+                    className="vl-btn vl-btn-ghost is-xs"
+                    aria-label={
+                      allSelected
+                        ? "Deselect all in group"
+                        : "Select all in group"
+                    }
+                  >
+                    {allSelected ? "Deselect" : "Select all"}
+                  </button>
+                </div>
+              </header>
+              <VirtualizedCompactCardGrid
+                items={groupItems}
+                selected={selected}
+                onToggle={onToggle}
+                itemKindLabel={itemKindLabel}
+              />
+            </section>
+          );
+        }
         return (
           <div
             key={groupKey}
@@ -5653,38 +5707,23 @@ function BurnCandidateGroupGrid({
             {/* Card-grid: darker than the panel so cards visibly LIFT.
                 Selected card flips to PURPLE accent (red is reserved
                 for the actual burn-button, per polish-pass spec).
-                Compact mode runs a denser column count + tighter
-                padding because images are off — cards are tiny labels
-                and we want them packed, not floating. */}
-            {isCompact ? (
-              // Compact (`/burner`) virtualizes against window scroll.
-              // The grid LOOKS like all cards are mounted (full height
-              // reserved, scrolling through is smooth), but only rows in
-              // the viewport ± overscan are actually in the DOM. Drops
-              // mounted card count from ~1000 to ~30-50 on big wallets.
-              <VirtualizedCompactCardGrid
-                items={groupItems}
-                selected={selected}
-                onToggle={onToggle}
-                itemKindLabel={itemKindLabel}
-              />
-            ) : (
-              <div className="vl-card-grid grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-                {groupItems.map((item) => (
-                  <BurnCandidateCard
-                    key={item.id}
-                    id={item.id}
-                    name={item.name}
-                    image={item.image}
-                    itemKindLabel={itemKindLabel}
-                    estimatedGrossReclaimSol={item.estimatedGrossReclaimSol}
-                    isChecked={selected.has(item.id)}
-                    onToggle={onToggle}
-                    compact={isCompact}
-                  />
-                ))}
-              </div>
-            )}
+                Compact (`/burner`) has its own `.vl-coll-section` branch
+                above — this is the full /groups/[id]?tab=cleaner grid. */}
+            <div className="vl-card-grid grid grid-cols-2 gap-2 p-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+              {groupItems.map((item) => (
+                <BurnCandidateCard
+                  key={item.id}
+                  id={item.id}
+                  name={item.name}
+                  image={item.image}
+                  itemKindLabel={itemKindLabel}
+                  estimatedGrossReclaimSol={item.estimatedGrossReclaimSol}
+                  isChecked={selected.has(item.id)}
+                  onToggle={onToggle}
+                  compact={isCompact}
+                />
+              ))}
+            </div>
           </div>
         );
       })}
