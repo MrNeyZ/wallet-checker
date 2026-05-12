@@ -1788,26 +1788,39 @@ export function CleanerRow({
               : "flex flex-wrap gap-2 md:col-span-2 md:justify-end"
           }
         >
+          {/* Loading source of truth is `state.status === "loading"` (set in
+              handleScan, cleared by the scan's own resolve/error/cancel +
+              backed by the AbortController + run-id) — NOT `pending` from
+              useTransition: handleScan wraps an async fetch, so its post-await
+              setState calls escape the transition scope and `pending` does not
+              reliably flip back to false (it stuck true after the auto-scan
+              path, leaving the button permanently "Scanning…"). Label: "Scan"
+              only before any scan has ever run (scanRunIdRef stays 0 — and
+              every mutation of it is immediately followed by a setState, so
+              reading it in render is consistent); "Scanning…" only while a
+              request is actually in flight; "Rescan" once a scan has
+              completed, errored, or been cancelled. */}
           <button
             type="button"
             onClick={handleScan}
-            disabled={pending || isFullCleaning}
+            disabled={state.status === "loading" || isFullCleaning}
             className={
               compact
                 ? "rounded-md border border-[color:var(--vl-border)] bg-transparent px-3 py-1 text-[11px] font-semibold text-[color:var(--vl-fg)] transition-all duration-[var(--vl-motion,180ms)] hover:border-[var(--vl-purple)] hover:bg-[rgba(168,144,232,0.08)] hover:text-[color:var(--vl-purple-2)] disabled:opacity-50"
                 : btnPrimary
             }
           >
-            {state.status === "loading" || pending
-              ? "Scanning…"
-              : state.status === "scanned" || state.status === "error"
-                ? "Rescan"
-                : "Scan"}
+            {scanRunIdRef.current === 0
+              ? "Scan"
+              : state.status === "loading"
+                ? "Scanning…"
+                : "Rescan"}
           </button>
-          {/* Cancel button — only visible while a scan is in flight. Wired to
-              cancelScan, which aborts the upstream fetch (so the backend
-              actually stops too) and snaps the UI state back to idle. */}
-          {(state.status === "loading" || pending) && (
+          {/* Cancel button — only visible while a scan request is actually in
+              flight (`state.status === "loading"`). Wired to cancelScan, which
+              aborts the upstream fetch (so the backend actually stops too) and
+              snaps the UI state back to idle. */}
+          {state.status === "loading" && (
             <button
               type="button"
               onClick={cancelScan}
