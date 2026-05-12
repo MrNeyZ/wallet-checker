@@ -5088,11 +5088,15 @@ const NftThumbnail = React.memo(function NftThumbnail({
       referrerPolicy="no-referrer"
       width={size === "lg" ? 64 : 28}
       height={size === "lg" ? 64 : 28}
-      // `content-visibility: auto` lets the browser skip rendering work
-      // for off-screen items in long scrollable grids — complements
-      // loading="lazy" by also short-circuiting layout/paint, not just
-      // network. Safe because we always supply explicit width/height.
-      style={{ contentVisibility: "auto" }}
+      // NOTE: do NOT add `content-visibility: auto` here. It was tried as a
+      // "skip rendering off-screen thumbnails" optimisation, but inside the
+      // burner's window-scroll virtualizer (rows are absolutely positioned
+      // in a tall relative container) the browser misjudges these <img>s as
+      // "not relevant to the user" and paints only the element's
+      // `bg-neutral-800` background — never the decoded bitmap — so the
+      // thumbnail shows as a dark square. The virtualizer already mounts
+      // only viewport±overscan rows, so there is nothing left for
+      // content-visibility to cull anyway.
       className={`${cls} shrink-0 rounded bg-neutral-800 object-cover`}
       onError={() => setErrored(true)}
     />
