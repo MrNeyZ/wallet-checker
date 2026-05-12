@@ -952,7 +952,10 @@ async function enrichLegacyConfirmationsWithDas(
     .filter((c) => c.isBurnable)
     .map((c) => c.mint);
   if (ids.length === 0) return;
-  const dasMap = await fetchAssetMetadataBatch(ids);
+  // allowAllInterfaces=true — legacy NFTs come back from DAS as
+  // `interface: "V1_NFT"`, which the default `isSupportedAsset` allowlist
+  // omits; without this the whole legacy list is imageless.
+  const dasMap = await fetchAssetMetadataBatch(ids, undefined, true);
   for (const c of confirmations) {
     const m = dasMap.get(c.mint);
     if (!m) continue;
@@ -971,7 +974,10 @@ async function enrichPnftConfirmationsWithDas(
     .filter((c) => c.isBurnable)
     .map((c) => c.mint);
   if (ids.length === 0) return;
-  const dasMap = await fetchAssetMetadataBatch(ids);
+  // allowAllInterfaces=true — same metadata-vs-discovery-allowlist split
+  // as the legacy path (no-op for pNFTs, whose interface is allowlisted,
+  // but keeps the enrichment calls consistent).
+  const dasMap = await fetchAssetMetadataBatch(ids, undefined, true);
   for (const c of confirmations) {
     const m = dasMap.get(c.mint);
     if (!m) continue;
@@ -3563,9 +3569,12 @@ export async function buildCoreBurnTx(
 
   // Helius DAS enrichment for Core assets — same rationale as legacy/pNFT:
   // on-chain Core layout often stores a short or empty name; the real name
-  // and image live in off-chain JSON resolved by DAS.
+  // and image live in off-chain JSON resolved by DAS. allowAllInterfaces=true
+  // for consistency with the legacy/pNFT enrichment (no-op for MplCoreAsset).
   const dasMap = await fetchAssetMetadataBatch(
     candidates.map((a) => a.asset.toBase58()),
+    undefined,
+    true,
   );
   for (const a of candidates) {
     const m = dasMap.get(a.asset.toBase58());

@@ -472,6 +472,25 @@ export async function fetchCoreAssetsByOwner(
 export async function fetchAssetMetadataBatch(
   ids: string[],
   signal?: AbortSignal,
+  // Burn-discovery enrichment passes `true` here. By default we only
+  // surface assets whose DAS `interface` is in the burn allowlist
+  // (`isSupportedAsset`) — but Helius labels ordinary legacy Metaplex
+  // NFTs `interface: "V1_NFT"`, which the allowlist (written around the
+  // Metaplex *TokenStandard* names — "NonFungibleToken", "NonFungibleEdition"
+  // — not the DAS interface strings) does NOT include, so without this
+  // flag every legacy NFT comes back with `image: null` and the burner /
+  // cleaner cards show the neutral placeholder. With the flag we return
+  // metadata for any non-compressed asset DAS resolves.
+  //
+  // Entries surfaced *only* because of this flag are intentionally NOT
+  // written to the shared in-memory cache: the scanner's classification
+  // pass also reads this cache, and `classifyNftCandidate` mishandles a
+  // bare `"V1_NFT"` interface (a null token_standard would route to
+  // "unknown" → demote out of the burn UI), so keeping the cache
+  // allowlist-only preserves scan routing. Re-fetching the handful of
+  // `"V1_NFT"` mints on each discovery call is still one batched
+  // `getAssetBatch`, never an N+1.
+  allowAllInterfaces: boolean = false,
 ): Promise<Map<string, AssetMetadata>> {
   const startedAt = Date.now();
   const out = new Map<string, AssetMetadata>();
@@ -559,7 +578,8 @@ export async function fetchAssetMetadataBatch(
         }
         continue;
       }
-      if (!isSupportedAsset(a)) {
+      const supported = isSupportedAsset(a);
+      if (!supported && !allowAllInterfaces) {
         metaSkippedUnsupported++;
         if (isDebug) {
           console.log(
@@ -570,7 +590,11 @@ export async function fetchAssetMetadataBatch(
       }
       const meta = parse(a);
       out.set(id, meta);
-      cache.set(id, { meta, expiresAt: Date.now() + CACHE_TTL_MS });
+      // Only persist allowlist-supported entries — see the
+      // `allowAllInterfaces` doc above (keeps the cache scanner-safe).
+      if (supported) {
+        cache.set(id, { meta, expiresAt: Date.now() + CACHE_TTL_MS });
+      }
       if (isDebug) {
         console.log(
           `[debugMint] das.metadata mint=${id} kept iface=${a.interface ?? "null"} tokenStandard=${meta.tokenStandard ?? "null"} name=${meta.name ?? "null"} burnt=${a.burnt === true}`,
