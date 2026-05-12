@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VictoryLabs — Wallet Checker v2</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Playfair+Display:ital,wght@1,600;1,800&display=swap">
+<link rel="stylesheet" href="tokens.css">
+</head>
+<body>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="data.js"></script>
+<script type="text/babel" src="ui.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="page-groups.jsx"></script>
+<script type="text/babel" src="page-group.jsx"></script>
+<script type="text/babel" src="page-burner.jsx"></script>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect } = React;
+const { TopNav, FloatingLayoutModeSwitcher } = window.UI;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "density": "compact",
+  "accent": "purple",
+  "showSelectionFx": true,
+  "scanSpeed": "fast",
+  "borderStyle": "subtle"
+}/*EDITMODE-END*/;
+
+function applyTweaks(t) {
+  const root = document.documentElement;
+  // density
+  if (t.density === "compact") {
+    root.style.setProperty('--vl-r', '8px');
+    root.style.setProperty('--vl-r-sm', '5px');
+  } else if (t.density === "comfy") {
+    root.style.setProperty('--vl-r', '12px');
+    root.style.setProperty('--vl-r-sm', '7px');
+  } else {
+    root.style.removeProperty('--vl-r');
+    root.style.removeProperty('--vl-r-sm');
+  }
+  // accent
+  const accents = {
+    purple: { c: '#a890e8', c2: '#cfc4f3', soft: 'rgba(168,144,232,0.12)', bdr: 'rgba(168,144,232,0.42)' },
+    pink:   { c: '#e96aae', c2: '#ffa5d4', soft: 'rgba(233,106,174,0.12)', bdr: 'rgba(233,106,174,0.42)' },
+    cyan:   { c: '#5cd3f0', c2: '#9ee8f8', soft: 'rgba(92,211,240,0.10)',  bdr: 'rgba(92,211,240,0.40)' },
+    green:  { c: '#5ec998', c2: '#9be3bd', soft: 'rgba(94,201,152,0.10)',  bdr: 'rgba(94,201,152,0.40)' },
+  };
+  const a = accents[t.accent] || accents.purple;
+  root.style.setProperty('--vl-purple', a.c);
+  root.style.setProperty('--vl-purple-2', a.c2);
+  root.style.setProperty('--vl-purple-soft', a.soft);
+  root.style.setProperty('--vl-purple-border', a.bdr);
+  // borders
+  if (t.borderStyle === "strong") {
+    root.style.setProperty('--vl-border', 'rgba(168,144,232,0.30)');
+    root.style.setProperty('--vl-border-h', 'rgba(168,144,232,0.50)');
+  } else {
+    root.style.removeProperty('--vl-border');
+    root.style.removeProperty('--vl-border-h');
+  }
+}
+
+function App() {
+  const [t, setTweak] = window.useTweaks ? window.useTweaks(TWEAK_DEFAULTS) : [TWEAK_DEFAULTS, () => {}];
+  const [tab, setTab] = useState("groups");
+  const [groupId, setGroupId] = useState(null);
+  const [wallet, setWallet] = useState("8u7nL3wM2qK4xVbT9pYsRdF6gHj1cAaeZxN5oW2vQrLk");
+
+  useEffect(() => { applyTweaks(t); }, [t]);
+
+  const onTab = (k) => { setTab(k); setGroupId(null); };
+  const onOpenGroup = (id) => { setGroupId(id); setTab("groups"); };
+
+  return (
+    <div className="vl-shell" data-screen-label={
+      tab === "burner" ? "01 Burner" :
+      groupId ? "03 Group Detail" :
+      tab === "groups" ? "02 Groups" :
+      tab === "alerts" ? "04 Alerts" :
+      "05 Activity"
+    }>
+      <TopNav tab={tab} onTab={onTab} wallet={wallet}
+        onConnect={() => setWallet("8u7nL3wM2qK4xVbT9pYsRdF6gHj1cAaeZxN5oW2vQrLk")}
+        onDisconnect={() => setWallet(null)}/>
+      <div className="vl-layout">
+        <main style={{ minWidth: 0 }}>
+        {tab === "groups" && !groupId && <window.GroupsPage onOpenGroup={onOpenGroup}/>}
+        {tab === "groups" && groupId && <window.GroupDetailPage groupId={groupId} onBack={() => setGroupId(null)}/>}
+        {tab === "burner" && <window.BurnerPage wallet={wallet} onConnect={() => setWallet("8u7nL3wM2qK4xVbT9pYsRdF6gHj1cAaeZxN5oW2vQrLk")}/>}
+        {tab === "alerts" && (
+          <div className="vl-page">
+            <div className="vl-card vl-empty">
+              <div className="icon"><window.UI.Icon name="alert" size={20}/></div>
+              <div className="title">Alerts (preview)</div>
+              <div className="sub">Server-side alert rules with Telegram delivery.</div>
+            </div>
+          </div>
+        )}
+        {tab === "activity" && (
+          <div className="vl-page">
+            <div className="vl-card vl-empty">
+              <div className="icon"><window.UI.Icon name="refresh" size={20}/></div>
+              <div className="title">Activity feed (preview)</div>
+              <div className="sub">Global live trade stream across watched wallets.</div>
+            </div>
+          </div>
+        )}
+        </main>
+        <aside className="vl-rail">
+          <div className="vl-card">
+            <div className="vl-card-head">
+              <span className="vl-label">Session telemetry</span>
+              <span className="mono" style={{ fontSize: 9, color: 'var(--vl-fg-4)' }}>14m</span>
+            </div>
+            <div className="telemetry">
+              <div className="cell"><span className="k">scans</span><span className="v">37</span></div>
+              <div className="cell"><span className="k">burns</span><span className="v" style={{ color: 'var(--vl-purple-2)' }}>148</span></div>
+              <div className="cell"><span className="k">reclaim</span><span className="v" style={{ color: 'var(--vl-green)' }}>+1.83◎</span></div>
+              <div className="cell"><span className="k">failed</span><span className="v" style={{ color: 'var(--vl-red)' }}>2</span></div>
+              <div className="cell"><span className="k">cu used</span><span className="v">412k</span></div>
+              <div className="cell"><span className="k">rpc lag</span><span className="v">38ms</span></div>
+            </div>
+          </div>
+          <div className="vl-card">
+            <div className="vl-card-head">
+              <span className="vl-label">Recent actions</span>
+              <span className="mono" style={{ fontSize: 9, color: 'var(--vl-fg-4)' }}>auto</span>
+            </div>
+            {[
+              { t: '14s', w: 'Burn · 8 items', v: '+0.0163◎' },
+              { t: '1m',  w: 'Scan · Heater', v: '24 found', d: true },
+              { t: '3m',  w: 'Burn · 4 cNFT', v: '+0.0081◎' },
+              { t: '4m',  w: 'Burn · fail', v: 'sig 0x9f…', n: true },
+              { t: '8m',  w: 'Scan · group A', v: '7 wallets', d: true },
+              { t: '12m', w: 'Burn · 22 SPL', v: '+0.0447◎' },
+            ].map((r, i) => (
+              <div className="row-mini" key={i}>
+                <span className="when">{r.t}</span>
+                <span className="who">{r.w}</span>
+                <span className={`amt ${r.n ? 'neg' : r.d ? 'dim' : ''}`}>{r.v}</span>
+              </div>
+            ))}
+          </div>
+          <div className="vl-card">
+            <div className="vl-card-head">
+              <span className="vl-label">Scan queue</span>
+              <span className="vl-badge is-purple">2 active</span>
+            </div>
+            {[
+              { w: 'Heater · 8u7n…QrLk', s: 'scanning', p: 64 },
+              { w: 'Sniper · 4QZK…LLjC', s: 'queued', p: 0 },
+              { w: 'Vault · 9Ds4…n2bT', s: 'queued', p: 0 },
+            ].map((r, i) => (
+              <div key={i} style={{ padding: '5px 9px', borderBottom: i < 2 ? '1px solid var(--vl-border)' : 'none' }}>
+                <div className="row" style={{ justifyContent: 'space-between', fontSize: 10 }}>
+                  <span className="mono" style={{ color: 'var(--vl-fg-2)' }}>{r.w}</span>
+                  <span className="mono" style={{ color: r.s === 'scanning' ? 'var(--vl-purple-2)' : 'var(--vl-fg-4)', fontSize: 9 }}>{r.s}</span>
+                </div>
+                <div className="vl-progress" style={{ marginTop: 4, height: 2 }}>
+                  <div className="bar" style={{ width: `${r.p}%` }}/>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="vl-card">
+            <div className="vl-card-head">
+              <span className="vl-label">Network</span>
+              <span className="mono" style={{ fontSize: 9, color: 'var(--vl-green)' }}>● helius</span>
+            </div>
+            <div className="telemetry">
+              <div className="cell"><span className="k">tps</span><span className="v">2 958</span></div>
+              <div className="cell"><span className="k">slot</span><span className="v">312M</span></div>
+              <div className="cell"><span className="k">priority</span><span className="v">0.001◎</span></div>
+              <div className="cell"><span className="k">epoch</span><span className="v">718</span></div>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      <footer className="vl-statusbar">
+        <a className="item" href="#" onClick={e => e.preventDefault()}>Discord</a>
+        <a className="item" href="#" onClick={e => e.preventDefault()}>Twitter</a>
+        <span className="item"><span className="k">alerts</span><span className="v" style={{ color: 'var(--vl-purple-2)' }}>0</span></span>
+        <span className="spacer"/>
+        <span className="item"><span className="k">fees</span><span className="v">priority</span></span>
+        <span className="sep hide-mobile"/>
+        <span className="item hide-mobile"><span className="k">sound</span><span className="v" style={{ color: 'var(--vl-fg-3)' }}>off</span></span>
+        <span className="sep hide-mobile"/>
+        <span className="item hide-mobile"><span className="k">tps</span><span className="v mono">2 958</span></span>
+        <span className="sep"/>
+        <span className="item"><span className="k">sol</span><span className="v mono">$163.42</span></span>
+        <span className="sep"/>
+        <span className="item live"><span className="dot"/><span className="v" style={{ color: 'var(--vl-green)' }}>live</span></span>
+      </footer>
+
+      <FloatingLayoutModeSwitcher/>
+
+      {window.TweaksPanel && (
+        <window.TweaksPanel>
+          <window.TweakSection label="Layout"/>
+          <window.TweakRadio label="Density" value={t.density}
+            options={["compact","regular","comfy"]}
+            onChange={(v) => setTweak('density', v)}/>
+          <window.TweakRadio label="Borders" value={t.borderStyle}
+            options={["subtle","strong"]}
+            onChange={(v) => setTweak('borderStyle', v)}/>
+          <window.TweakSection label="Accent"/>
+          <window.TweakColor label="Color" value={
+            ({purple:'#a890e8', pink:'#e96aae', cyan:'#5cd3f0', green:'#5ec998'})[t.accent]
+          } options={['#a890e8','#e96aae','#5cd3f0','#5ec998']}
+            onChange={(v) => {
+              const map = {'#a890e8':'purple','#e96aae':'pink','#5cd3f0':'cyan','#5ec998':'green'};
+              setTweak('accent', map[v]);
+            }}/>
+          <window.TweakSection label="Behavior"/>
+          <window.TweakToggle label="Selection glow" value={t.showSelectionFx}
+            onChange={(v) => setTweak('showSelectionFx', v)}/>
+          <window.TweakRadio label="Scan speed" value={t.scanSpeed}
+            options={["fast","real","slow"]}
+            onChange={(v) => setTweak('scanSpeed', v)}/>
+        </window.TweaksPanel>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<App/>);
+</script>
+
+<style id="__om-edit-overrides"></style>
+</body>
+</html>

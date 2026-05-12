@@ -1,0 +1,1258 @@
+/* VictoryLabs WC v2 — design tokens
+   Sourced from current production globals.css. Modernized:
+   - Tightened type scale, denser spacing
+   - Improved hierarchy (panel > head > rows)
+   - More readable mono numerics, clearer borders
+*/
+
+:root {
+  /* Surfaces */
+  --vl-bg: #07060e;
+  --vl-bg-2: #0d0b1a;
+  --vl-page: #15122a;
+  --vl-surface: #1f1a36;
+  --vl-surface-2: #2a2447;
+  --vl-surface-3: #342d57;
+
+  /* Borders — lavender alphas */
+  --vl-border: rgba(168, 144, 232, 0.12);
+  --vl-border-h: rgba(168, 144, 232, 0.26);
+  --vl-border-strong: rgba(168, 144, 232, 0.55);
+
+  /* Text */
+  --vl-fg: #f4f0ff;
+  --vl-fg-2: #b7b0d6;
+  --vl-fg-3: #837db0;
+  --vl-fg-4: #564f78;
+
+  /* Accents */
+  --vl-purple: #a890e8;
+  --vl-purple-2: #cfc4f3;
+  --vl-purple-3: #b794f4;
+  --vl-purple-soft: rgba(168, 144, 232, 0.12);
+  --vl-purple-border: rgba(168, 144, 232, 0.42);
+
+  --vl-green: #4fb67d;
+  --vl-green-soft: rgba(79, 182, 125, 0.12);
+  --vl-red: #ef7878;
+  --vl-red-soft: rgba(239, 120, 120, 0.10);
+  --vl-amber: #fbbf24;
+  --vl-amber-soft: rgba(251, 191, 36, 0.12);
+  --vl-blue: #60a5fa;
+  --vl-cyan: #38bdf8;
+
+  /* Type */
+  --vl-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --vl-font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
+  --vl-font-serif: 'Playfair Display', Georgia, serif;
+
+  /* Shadow */
+  --vl-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 6px 22px -10px rgba(0, 0, 0, 0.55),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  --vl-shadow-strong:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 14px 36px -10px rgba(0, 0, 0, 0.6),
+    0 4px 12px rgba(0, 0, 0, 0.4);
+
+  /* Motion */
+  --vl-motion: 0.16s;
+  --vl-ease: cubic-bezier(.22, 1, .36, 1);
+
+  /* Spacing */
+  --vl-r-sm: 6px;
+  --vl-r: 10px;
+  --vl-r-lg: 14px;
+}
+
+* { box-sizing: border-box; }
+html, body, #app {
+  margin: 0;
+  padding: 0;
+  background: var(--vl-bg);
+  color: var(--vl-fg);
+  font-family: var(--vl-font-sans);
+  font-size: 12px;
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
+  min-height: 100vh;
+}
+
+body {
+  background:
+    radial-gradient(ellipse 1200px 800px at 50% -200px, rgba(168, 144, 232, 0.08), transparent 60%),
+    var(--vl-bg);
+}
+
+button { font: inherit; cursor: pointer; }
+input, select, textarea { font: inherit; }
+a { color: inherit; text-decoration: none; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--vl-surface-2); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--vl-surface-3); }
+
+.mono { font-family: var(--vl-font-mono); font-variant-numeric: tabular-nums; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ── Shell ────────────────────────────────────── */
+.vl-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.vl-topnav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: linear-gradient(180deg, rgba(20, 14, 34, 0.78) 0%, rgba(10, 8, 18, 0.92) 100%);
+  border-bottom: 1px solid rgba(168, 144, 232, 0.10);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+.vl-topnav-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 0 20px;
+  gap: 16px;
+}
+.vl-logo {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  user-select: none;
+}
+.vl-logo .v {
+  font-family: var(--vl-font-serif);
+  font-style: italic;
+  font-weight: 800;
+  font-size: 22px;
+  letter-spacing: -0.5px;
+  color: #b794f4;
+  text-shadow: 0 0 14px rgba(168, 144, 232, 0.35);
+}
+.vl-logo .l {
+  font-family: var(--vl-font-serif);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--vl-fg);
+  margin-left: 1px;
+  letter-spacing: -0.2px;
+}
+.vl-topnav-tabs { display: flex; align-items: center; gap: 2px; }
+.vl-topnav-tab {
+  background: transparent;
+  border: none;
+  color: var(--vl-fg-3);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  transition: color var(--vl-motion), background var(--vl-motion);
+}
+.vl-topnav-tab:hover { color: var(--vl-fg-2); background: rgba(168, 144, 232, 0.04); }
+.vl-topnav-tab.is-active {
+  color: var(--vl-purple-2);
+  background: linear-gradient(180deg, rgba(168, 144, 232, 0.14) 0%, rgba(168, 144, 232, 0.04) 100%);
+  box-shadow: inset 0 0 0 1px rgba(168, 144, 232, 0.16);
+}
+.vl-topnav-right { display: flex; align-items: center; gap: 10px; }
+.vl-conn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--vl-font-mono);
+  font-size: 11px;
+  color: var(--vl-fg-2);
+  padding: 5px 10px 5px 8px;
+  border: 1px solid var(--vl-border);
+  border-radius: 100px;
+  background: rgba(0, 0, 0, 0.25);
+}
+.vl-conn-pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vl-green);
+  box-shadow: 0 0 8px rgba(79, 182, 125, 0.6);
+}
+
+.vl-page {
+  max-width: 100%;
+  margin: 0;
+  padding: 0 0 32px;
+  width: 100%;
+}
+.vl-page.is-narrow { max-width: 1680px; }
+
+/* ── Card + surfaces ─────────────────────────── */
+.vl-card {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.01)),
+    var(--vl-surface);
+  border: 1px solid var(--vl-border);
+  border-radius: var(--vl-r);
+  box-shadow: var(--vl-shadow);
+  transition: border-color var(--vl-motion), background var(--vl-motion);
+}
+.vl-card.is-hero {
+  background:
+    radial-gradient(ellipse 600px 200px at 0% 0%, rgba(168, 144, 232, 0.10), transparent 65%),
+    linear-gradient(rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
+    var(--vl-surface);
+  border-color: var(--vl-purple-border);
+}
+.vl-card.is-interactive { cursor: pointer; }
+.vl-card.is-interactive:hover { border-color: var(--vl-border-h); }
+
+.vl-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--vl-border);
+  min-height: 30px;
+}
+.vl-card-body { padding: 9px 10px; }
+.vl-card-inset {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.vl-tile {
+  background: rgba(13, 11, 26, 0.5);
+  border: 1px solid var(--vl-border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  transition: border-color var(--vl-motion), background var(--vl-motion);
+}
+.vl-tile:hover { border-color: var(--vl-border-h); background: rgba(13, 11, 26, 0.7); }
+
+/* ── Section labels ─────────────────────────── */
+.vl-label {
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--vl-fg-3);
+}
+.vl-h1 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  color: var(--vl-fg);
+  margin: 0;
+}
+.vl-h2 {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--vl-fg);
+  margin: 0;
+}
+.vl-stat-value {
+  font-family: var(--vl-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--vl-fg);
+  line-height: 1.1;
+}
+.vl-stat-value.is-green { color: var(--vl-green); }
+.vl-stat-value.is-red { color: var(--vl-red); }
+.vl-stat-value.is-purple { color: var(--vl-purple-2); }
+.vl-stat-value.is-muted { color: var(--vl-fg-3); }
+
+/* ── Badge ──────────────────────────────────── */
+.vl-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 100px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.vl-badge.is-neutral { background: rgba(255, 255, 255, 0.03); border-color: var(--vl-border); color: var(--vl-fg-2); }
+.vl-badge.is-purple  { background: var(--vl-purple-soft); border-color: var(--vl-purple-border); color: var(--vl-purple-2); }
+.vl-badge.is-green   { background: var(--vl-green-soft); border-color: rgba(79, 182, 125, 0.30); color: var(--vl-green); }
+.vl-badge.is-red     { background: var(--vl-red-soft); border-color: rgba(239, 120, 120, 0.30); color: var(--vl-red); }
+.vl-badge.is-amber   { background: var(--vl-amber-soft); border-color: rgba(251, 191, 36, 0.30); color: var(--vl-amber); }
+.vl-badge.is-blue    { background: rgba(96, 165, 250, 0.10); border-color: rgba(96, 165, 250, 0.30); color: var(--vl-blue); }
+
+/* ── Buttons ────────────────────────────────── */
+.vl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  font-family: var(--vl-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  transition: all var(--vl-motion) var(--vl-ease);
+  white-space: nowrap;
+}
+.vl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.vl-btn.is-sm { padding: 6px 10px; font-size: 10px; gap: 5px; }
+.vl-btn.is-lg { padding: 11px 18px; font-size: 12px; }
+
+.vl-btn-primary {
+  background: linear-gradient(180deg, var(--vl-purple-2) 0%, var(--vl-purple) 100%);
+  color: #1a0e3a;
+  border-color: var(--vl-purple);
+  box-shadow: 0 0 0 1px rgba(168, 144, 232, 0.2), 0 4px 14px rgba(128, 104, 216, 0.30);
+}
+.vl-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 0 0 1px rgba(168, 144, 232, 0.45), 0 6px 20px rgba(128, 104, 216, 0.45);
+}
+.vl-btn-burn {
+  background: linear-gradient(180deg, #fb6f6f 0%, #e23838 100%);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(239, 120, 120, 0.28), 0 4px 16px rgba(239, 120, 120, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.vl-btn-burn:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+.vl-btn-ghost {
+  background: transparent;
+  border-color: var(--vl-border);
+  color: var(--vl-fg-2);
+}
+.vl-btn-ghost:hover:not(:disabled) {
+  border-color: var(--vl-purple-border);
+  color: var(--vl-purple-2);
+  background: rgba(168, 144, 232, 0.06);
+}
+.vl-btn-danger-ghost {
+  background: transparent;
+  border-color: var(--vl-border);
+  color: var(--vl-fg-3);
+}
+.vl-btn-danger-ghost:hover:not(:disabled) {
+  border-color: rgba(239, 120, 120, 0.45);
+  color: var(--vl-red);
+  background: rgba(239, 120, 120, 0.08);
+}
+
+/* ── Tabs strip ────────────────────────────── */
+.vl-tabstrip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-bottom: 1px solid var(--vl-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.vl-tabstrip::-webkit-scrollbar { display: none; }
+.vl-tab {
+  background: transparent;
+  border: none;
+  padding: 9px 14px;
+  color: var(--vl-fg-3);
+  font-family: var(--vl-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color var(--vl-motion), border-color var(--vl-motion), background var(--vl-motion);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.vl-tab:hover { color: var(--vl-fg); }
+.vl-tab.is-active {
+  color: var(--vl-purple-2);
+  border-bottom-color: var(--vl-purple);
+  background: linear-gradient(180deg, rgba(168, 144, 232, 0.08) 0%, transparent 100%);
+}
+.vl-tab .count {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 100px;
+  background: rgba(168, 144, 232, 0.10);
+  color: var(--vl-fg-2);
+  border: 1px solid var(--vl-border);
+}
+.vl-tab.is-active .count { background: var(--vl-purple-soft); border-color: var(--vl-purple-border); color: var(--vl-purple-2); }
+
+/* ── Inputs ────────────────────────────────── */
+.vl-input {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--vl-border);
+  border-radius: 7px;
+  padding: 7px 10px;
+  color: var(--vl-fg);
+  font-size: 12px;
+  outline: none;
+  transition: all var(--vl-motion);
+  width: 100%;
+}
+.vl-input.is-mono { font-family: var(--vl-font-mono); }
+.vl-input::placeholder { color: var(--vl-fg-4); }
+.vl-input:focus {
+  border-color: var(--vl-purple);
+  background: rgba(168, 144, 232, 0.04);
+  box-shadow: 0 0 0 3px rgba(168, 144, 232, 0.14);
+}
+
+.vl-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--vl-border);
+  border-radius: 7px;
+  padding: 0 10px;
+  transition: all var(--vl-motion);
+}
+.vl-search:focus-within {
+  border-color: var(--vl-purple);
+  background: rgba(168, 144, 232, 0.04);
+  box-shadow: 0 0 0 3px rgba(168, 144, 232, 0.14);
+}
+.vl-search input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--vl-fg);
+  font-size: 12px;
+  padding: 7px 0;
+  flex: 1;
+  min-width: 0;
+}
+.vl-search input::placeholder { color: var(--vl-fg-4); }
+.vl-search .icon { color: var(--vl-fg-4); display: flex; }
+
+/* ── Table ────────────────────────────────── */
+.vl-table-wrap {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
+    var(--vl-surface);
+  border: 1px solid var(--vl-border);
+  border-radius: var(--vl-r);
+  overflow: hidden;
+}
+.vl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.vl-table thead th {
+  font-family: var(--vl-font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--vl-fg-3);
+  text-align: left;
+  padding: 6px 10px;
+  background: rgba(168, 144, 232, 0.05);
+  border-bottom: 1px solid var(--vl-border);
+  white-space: nowrap;
+}
+.vl-table tbody td {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  border-bottom: 1px solid var(--vl-border);
+  color: var(--vl-fg);
+  background: rgba(0, 0, 0, 0.18);
+}
+.vl-table tbody tr:last-child td { border-bottom: none; }
+.vl-table tbody tr { transition: background var(--vl-motion); }
+.vl-table tbody tr:hover td { background: rgba(168, 144, 232, 0.07); }
+.vl-table tbody tr.is-selected td { background: rgba(168, 144, 232, 0.12); }
+.vl-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.vl-table .pos { color: var(--vl-green); }
+.vl-table .neg { color: var(--vl-red); }
+
+/* ── Checkbox ──────────────────────────────── */
+.vl-check {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--vl-border-h);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: all var(--vl-motion);
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.vl-check:hover { border-color: var(--vl-purple); }
+.vl-check:checked {
+  background: var(--vl-purple);
+  border-color: var(--vl-purple);
+}
+.vl-check:checked::after {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border-left: 1.5px solid #1a0e3a;
+  border-bottom: 1.5px solid #1a0e3a;
+  transform: rotate(-45deg) translate(1px, -1px);
+}
+.vl-check.is-indeterminate {
+  background: var(--vl-purple);
+  border-color: var(--vl-purple);
+}
+.vl-check.is-indeterminate::after {
+  content: '';
+  width: 8px;
+  height: 0;
+  border-top: 1.5px solid #1a0e3a;
+  transform: none;
+}
+
+/* ── Action bar (sticky) ───────────────────── */
+.vl-action-bar {
+  position: fixed;
+  bottom: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 28px);
+  max-width: 1080px;
+  background: rgba(13, 11, 26, 0.92);
+  border: 1px solid var(--vl-border-strong);
+  border-radius: 12px;
+  box-shadow: var(--vl-shadow-strong);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  z-index: 80;
+  animation: vl-slide-up 0.25s var(--vl-ease);
+}
+@keyframes vl-slide-up {
+  from { opacity: 0; transform: translate(-50%, 14px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+.vl-action-bar .left {
+  display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;
+}
+.vl-action-bar .meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.vl-action-bar .right { display: flex; align-items: center; gap: 8px; }
+.vl-action-bar .pip {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--vl-purple);
+  box-shadow: 0 0 10px rgba(168, 144, 232, 0.7);
+  flex-shrink: 0;
+}
+
+/* ── Warning strip ─────────────────────────── */
+.vl-warn-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(239, 120, 120, 0.20);
+  background: rgba(239, 120, 120, 0.04);
+  color: rgba(239, 120, 120, 0.92);
+  font-size: 12px;
+}
+.vl-warn-strip .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--vl-red);
+  box-shadow: 0 0 8px rgba(239, 120, 120, 0.6);
+}
+
+/* ── Burn / destructive card ──────────────── */
+.vl-burn-card {
+  position: relative;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
+    var(--vl-surface);
+  border: 1px solid rgba(239, 120, 120, 0.22);
+  border-radius: var(--vl-r);
+  box-shadow: var(--vl-shadow);
+}
+.vl-burn-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(239, 120, 120, 0.55) 30%, rgba(239, 120, 120, 0.55) 70%, transparent);
+  border-top-left-radius: var(--vl-r);
+  border-top-right-radius: var(--vl-r);
+}
+
+/* ── Compact gallery grid (small thumb + name + id) ─ */
+/* ── Layout-mode tokens (PC / Laptop / Phone) ───
+   Mirrors live-feed convention: <html data-layout="pc|laptop|phone">.
+   Burner grid uses a FIXED column count per mode and stretches to fill
+   the page width — no artificial narrow cap. Default = laptop (4 cols). */
+html[data-layout="pc"]     .vl-page.is-narrow,
+html[data-layout="laptop"] .vl-page.is-narrow,
+html[data-layout="phone"]  .vl-page.is-narrow { max-width: none; }
+
+html[data-layout="pc"]     .vl-nft-rows { grid-template-columns: repeat(6, minmax(0, 1fr)); padding: 8px 12px; }
+html[data-layout="laptop"] .vl-nft-rows { grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 8px 12px; }
+html[data-layout="phone"]  .vl-nft-rows { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 6px 10px; gap: 6px; }
+
+html[data-layout="phone"] .vl-topnav-tabs { display: none; }
+/* Phone .vl-page horizontal padding intentionally 0 — .vl-layout provides
+   the outer 10px gutter; doubling them was creating a narrower-looking
+   workspace than PC/Laptop. Keep vertical compensation for the fixed
+   action bar at the bottom. */
+html[data-layout="phone"] .vl-page { padding: 10px 0 80px; }
+
+/* ── Burner Tokens / Empty Accounts tables — responsive per mode ──
+   Tables already stretch to full container width (width:100%). Tune
+   internal column visibility + padding per mode so PC uses every
+   column at full breadth, Laptop balances, Phone collapses to the
+   essentials (Symbol + Reclaim) for a real mobile-friendly view. */
+.vl-table-burn { table-layout: auto; }
+.vl-table-burn tbody td { padding-top: 6px; padding-bottom: 6px; }
+
+/* ── Burner table — operator-terminal styling ──
+   Replace the flat spreadsheet look with row rhythm + clearer hierarchy
+   while keeping density. Borders become subtle separators every 5 rows;
+   even rows get a near-invisible tint for eye-tracking; hover adds a
+   left accent stripe via inset shadow. Header sticks to the top of the
+   card on scroll. Internal horizontal padding (12px default / 10px phone)
+   matches `.vl-nft-rows`, `.vl-coll-head`, and the top action toolbar so
+   every Burner tab aligns to the same internal grid. */
+.vl-table-burn { position: relative; }
+.vl-table-burn thead th,
+.vl-table-burn tbody td { padding-left: 12px; padding-right: 12px; }
+
+.vl-table-burn thead th {
+  position: sticky; top: 0;
+  z-index: 2;
+  background: linear-gradient(180deg, rgba(20,14,34,0.96) 0%, rgba(16,11,28,0.92) 100%);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--vl-border);
+  font-size: 9.5px;
+}
+
+/* Strip the per-cell heavy fill; let the card bg breathe through.
+   Borders become near-invisible by default — strong separator only
+   every 5 rows for visual cadence. */
+.vl-table-burn tbody td {
+  background: transparent;
+  border-bottom: 1px solid rgba(168,144,232,0.04);
+  color: var(--vl-fg-2);
+}
+.vl-table-burn tbody tr:nth-child(even) td { background: rgba(255,255,255,0.012); }
+.vl-table-burn tbody tr:nth-child(5n) td { border-bottom-color: rgba(168,144,232,0.10); }
+.vl-table-burn tbody tr:last-child td { border-bottom: none; }
+
+/* Hover/selected: inset left stripe instead of full-row fill. */
+.vl-table-burn tbody tr { cursor: pointer; }
+.vl-table-burn tbody tr:hover td {
+  background: rgba(168,144,232,0.06);
+  box-shadow: inset 2px 0 0 rgba(168,144,232,0.45);
+}
+.vl-table-burn tbody tr:hover td:first-child { box-shadow: inset 2px 0 0 var(--vl-purple); }
+.vl-table-burn tbody tr.is-selected td {
+  background: rgba(168,144,232,0.10);
+  box-shadow: inset 2px 0 0 var(--vl-purple);
+}
+
+/* Hierarchy: Symbol bright/bold, mint-suffix faded micro, reclaim
+   green+mono slightly heavier, balance/value muted mono. */
+.vl-table-burn tbody td.mono > span:first-child {
+  color: var(--vl-fg);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.vl-table-burn .col-mint-extra {
+  color: var(--vl-fg-4);
+  font-size: 9.5px;
+  letter-spacing: 0.3px;
+  opacity: 0.75;
+}
+.vl-table-burn td.pos {
+  color: var(--vl-green);
+  font-weight: 600;
+  text-shadow: 0 0 6px rgba(79,182,125,0.18);
+}
+.vl-table-burn td.col-balance,
+.vl-table-burn td.col-value {
+  color: var(--vl-fg-3);
+  font-size: 11px;
+}
+
+/* PC keeps the shared 12px horizontal rhythm (set on the base
+   `.vl-table-burn` rule); we only widen the type at this breakpoint. */
+html[data-layout="pc"] .vl-table-burn tbody td { font-size: 12px; }
+html[data-layout="pc"] .vl-table-burn thead th { font-size: 10px; }
+
+html[data-layout="phone"] .vl-table-burn .col-balance,
+html[data-layout="phone"] .vl-table-burn .col-value,
+html[data-layout="phone"] .vl-table-burn .col-ext,
+html[data-layout="phone"] .vl-table-burn .col-mint-extra { display: none; }
+html[data-layout="phone"] .vl-table-burn tbody td,
+html[data-layout="phone"] .vl-table-burn thead th { padding-left: 10px; padding-right: 10px; }
+html[data-layout="phone"] .vl-table-burn tbody td { padding-top: 9px; padding-bottom: 9px; }
+html[data-layout="phone"] .vl-table-burn td.pos { font-size: 12.5px; }
+
+/* ── Burner top stat strip — one horizontal row PC/Laptop ──
+   Force 4-up so 'Items Found · Selected · Reclaim · Fee' read as a
+   single operator status line. Compact internal layout (label inline
+   with value where space allows). Phone collapses to 2x2. */
+.vl-stat-strip {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+html[data-layout="phone"] .vl-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+
+.vl-stat-strip .vl-tile {
+  padding: 6px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 0;
+  align-items: baseline;
+}
+.vl-stat-strip .vl-tile .vl-label {
+  grid-column: 1; grid-row: 1;
+  font-size: 9px;
+  margin: 0;
+  align-self: end;
+}
+.vl-stat-strip .vl-tile .vl-stat-value {
+  grid-column: 2; grid-row: 1 / span 2;
+  font-size: 14px;
+  align-self: center;
+  white-space: nowrap;
+}
+.vl-stat-strip .vl-tile .vl-skel {
+  grid-column: 2; grid-row: 1 / span 2;
+  align-self: center;
+}
+.vl-stat-strip .vl-tile > .mono {
+  grid-column: 1; grid-row: 2;
+  font-size: 9.5px !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  align-self: start;
+}
+html[data-layout="phone"] .vl-stat-strip .vl-tile > .mono { display: none; }
+
+/* Pull burner page tighter — less vertical waste between header strip,
+   stats, tabs, and grid. Outer .vl-layout already removed its narrow
+   cap; this just compresses the section rhythm inside .vl-page. */
+.vl-page .col.gap-lg { gap: 8px; }
+html[data-layout="pc"] .vl-page .col.gap-lg { gap: 9px; }
+html[data-layout="phone"] .vl-page .col.gap-lg { gap: 7px; }
+
+/* Free the outer workspace from its narrow centered cap so the grid
+   can stretch into the available width per mode. */
+html[data-layout="pc"]     .vl-layout { max-width: none; padding-left: 24px; padding-right: 24px; }
+html[data-layout="laptop"] .vl-layout { max-width: none; padding-left: 16px; padding-right: 16px; }
+html[data-layout="phone"]  .vl-layout { max-width: none; padding-left: 10px; padding-right: 10px; }
+
+.vl-nft-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 220px));
+  justify-content: start;
+  gap: 6px;
+  padding: 8px 12px;
+}
+.vl-nft-row {
+  display: grid;
+  grid-template-columns: 16px 64px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--vl-border);
+  background: rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  transition: background var(--vl-motion), border-color var(--vl-motion);
+}
+.vl-nft-row:hover { border-color: var(--vl-border-h); background: rgba(168, 144, 232, 0.06); }
+.vl-nft-row.is-selected {
+  border-color: var(--vl-purple-border);
+  background: rgba(168, 144, 232, 0.10);
+}
+.vl-nft-row .thumb {
+  width: 64px; height: 64px;
+  border-radius: 5px;
+  background:
+    repeating-linear-gradient(45deg, rgba(168, 144, 232, 0.06) 0 3px, transparent 3px 6px),
+    linear-gradient(135deg, var(--vl-surface-2), var(--vl-surface));
+  overflow: hidden;
+  position: relative;
+  flex-shrink: 0;
+}
+.vl-nft-row .thumb .ph {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  font-family: var(--vl-font-mono);
+  font-size: 12px;
+  color: var(--vl-fg-4);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.vl-nft-row .name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vl-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vl-nft-row .id {
+  font-family: var(--vl-font-mono);
+  font-size: 11px;
+  color: var(--vl-fg-4);
+  white-space: nowrap;
+}
+.vl-nft-row .col-floor,
+.vl-nft-row .col-reclaim { display: none; }
+
+/* ── Collection-grouped sections (gallery layout) ─ */
+.vl-coll-groups { display: flex; flex-direction: column; }
+.vl-coll-section + .vl-coll-section { border-top: 1px solid var(--vl-border); }
+.vl-coll-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px 6px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.vl-coll-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.vl-coll-name {
+  font-size: 12px; font-weight: 700; letter-spacing: 0.4px;
+  color: var(--vl-fg); text-transform: uppercase;
+}
+.vl-coll-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; padding: 0 6px; height: 16px;
+  border-radius: 8px;
+  background: rgba(168, 144, 232, 0.10);
+  border: 1px solid var(--vl-border);
+  color: var(--vl-fg-2);
+  font-family: var(--vl-font-mono); font-size: 10px; font-weight: 600;
+}
+.vl-coll-addr {
+  font-size: 10px;
+  color: var(--vl-fg-4);
+}
+.vl-coll-sel {
+  font-size: 10px;
+  color: var(--vl-purple);
+  background: rgba(168, 144, 232, 0.10);
+  border: 1px solid var(--vl-purple-border);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.vl-btn.is-xs { height: 22px; padding: 0 8px; font-size: 10.5px; gap: 4px; }
+.vl-nft-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.vl-nft-tile {
+  background: var(--vl-surface);
+  border: 1px solid var(--vl-border);
+  border-radius: 9px;
+  overflow: hidden;
+  transition: all var(--vl-motion) var(--vl-ease);
+  cursor: pointer;
+  position: relative;
+}
+.vl-nft-tile:hover { border-color: var(--vl-border-h); transform: translateY(-1px); }
+.vl-nft-tile.is-selected {
+  border-color: var(--vl-purple);
+  box-shadow: 0 0 0 1px var(--vl-purple), 0 0 16px -4px rgba(168, 144, 232, 0.45);
+}
+.vl-nft-tile.is-selected::after {
+  content: '✓';
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--vl-purple);
+  color: #1a0e3a;
+  font-size: 11px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 0 2px var(--vl-surface), 0 2px 8px rgba(168, 144, 232, 0.5);
+}
+.vl-nft-tile .art {
+  aspect-ratio: 1 / 1;
+  background:
+    repeating-linear-gradient(45deg, rgba(168, 144, 232, 0.05) 0 6px, transparent 6px 12px),
+    linear-gradient(135deg, var(--vl-surface-2), var(--vl-surface));
+  position: relative;
+  overflow: hidden;
+}
+.vl-nft-tile .art .placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--vl-font-mono);
+  font-size: 9px;
+  color: var(--vl-fg-4);
+  letter-spacing: 0.3px;
+}
+.vl-nft-tile .meta {
+  padding: 7px 9px 8px;
+  border-top: 1px solid var(--vl-border);
+}
+.vl-nft-tile .name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vl-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vl-nft-tile .sub {
+  margin-top: 2px;
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  color: var(--vl-fg-3);
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.vl-nft-tile .sub .reclaim { color: var(--vl-green); }
+
+/* ── Skeleton / loading ───────────────────── */
+.vl-skel {
+  background: linear-gradient(
+    90deg,
+    rgba(168, 144, 232, 0.04) 0%,
+    rgba(168, 144, 232, 0.12) 50%,
+    rgba(168, 144, 232, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  border-radius: 4px;
+  animation: vl-shimmer 1.4s linear infinite;
+}
+@keyframes vl-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+/* Scan progress strip */
+.vl-scan {
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--vl-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.vl-scan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.vl-scan-head .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--vl-font-mono);
+  font-size: 11px;
+  color: var(--vl-purple-2);
+}
+.vl-scan-head .status .spin {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(168, 144, 232, 0.25);
+  border-top-color: var(--vl-purple);
+  animation: vl-spin 0.8s linear infinite;
+}
+@keyframes vl-spin {
+  to { transform: rotate(360deg); }
+}
+.vl-progress {
+  height: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 100px;
+  overflow: hidden;
+  position: relative;
+}
+.vl-progress .bar {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, var(--vl-purple), var(--vl-purple-2));
+  border-radius: 100px;
+  transition: width 0.3s var(--vl-ease);
+  box-shadow: 0 0 8px rgba(168, 144, 232, 0.6);
+}
+.vl-scan-steps {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.vl-scan-step {
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  color: var(--vl-fg-3);
+  padding: 2px 7px;
+  border-radius: 100px;
+  border: 1px solid var(--vl-border);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.vl-scan-step.is-done { color: var(--vl-green); border-color: rgba(79, 182, 125, 0.30); }
+.vl-scan-step.is-active { color: var(--vl-purple-2); border-color: var(--vl-purple-border); background: var(--vl-purple-soft); }
+
+/* ── Wallet pill ──────────────────────────── */
+.vl-wallet-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--vl-font-mono);
+  font-size: 11px;
+  color: var(--vl-fg-2);
+  padding: 3px 8px;
+  border: 1px solid var(--vl-border);
+  border-radius: 100px;
+  background: rgba(0, 0, 0, 0.22);
+}
+.vl-wallet-pill .ico {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--vl-purple), #e42575);
+  flex-shrink: 0;
+}
+
+/* ── Modal ─────────────────────────────────── */
+.vl-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 6, 14, 0.7);
+  backdrop-filter: blur(6px);
+  display: grid;
+  place-items: center;
+  z-index: 200;
+  animation: vl-fade 0.2s var(--vl-ease);
+}
+@keyframes vl-fade {
+  from { opacity: 0; } to { opacity: 1; }
+}
+.vl-modal {
+  width: min(560px, calc(100% - 32px));
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+    var(--vl-surface);
+  border: 1px solid var(--vl-border-h);
+  border-radius: 12px;
+  box-shadow: var(--vl-shadow-strong);
+  animation: vl-pop 0.22s var(--vl-ease);
+}
+@keyframes vl-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+.vl-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--vl-border);
+}
+.vl-modal-body { padding: 14px 16px; }
+.vl-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--vl-border);
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
+
+/* ── Empty state ──────────────────────────── */
+.vl-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 14px;
+  text-align: left;
+}
+.vl-empty .icon {
+  width: 42px; height: 42px;
+  border-radius: 10px;
+  background: rgba(168, 144, 232, 0.08);
+  border: 1px solid var(--vl-border);
+  display: grid; place-items: center;
+  color: var(--vl-purple);
+  font-size: 18px;
+}
+.vl-empty .title { font-size: 14px; font-weight: 600; color: var(--vl-fg); }
+.vl-empty .sub { font-size: 12px; color: var(--vl-fg-3); max-width: 340px; line-height: 1.5; }
+
+/* ── Misc helpers ─────────────────────────── */
+.row { display: flex; align-items: center; gap: 8px; }
+.row.gap-sm { gap: 5px; }
+.row.gap-lg { gap: 12px; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.col.gap-sm { gap: 4px; }
+.col.gap-lg { gap: 12px; }
+.spacer { flex: 1; }
+.divider { height: 1px; background: var(--vl-border); margin: 0; }
+.muted { color: var(--vl-fg-3); }
+.muted-2 { color: var(--vl-fg-4); }
+.pos { color: var(--vl-green); }
+.neg { color: var(--vl-red); }
+
+/* ── Operator side-rail (right) ───────────── */
+.vl-layout {
+  display: block;
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 10px 12px 40px;
+}
+.vl-rail { display: none; }
+.vl-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: sticky;
+  top: 56px;
+  align-self: start;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.vl-rail .vl-card { border-radius: 7px; }
+.vl-rail .vl-card-head { padding: 5px 9px; min-height: 26px; }
+.vl-rail .row-mini {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 9px;
+  border-bottom: 1px solid var(--vl-border);
+  font-size: 10.5px;
+}
+.vl-rail .row-mini:last-child { border-bottom: none; }
+.vl-rail .row-mini .when {
+  font-family: var(--vl-font-mono);
+  font-size: 9.5px;
+  color: var(--vl-fg-4);
+  min-width: 26px;
+}
+.vl-rail .row-mini .who {
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  color: var(--vl-fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.vl-rail .row-mini .amt {
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--vl-green);
+  white-space: nowrap;
+}
+.vl-rail .row-mini .amt.neg { color: var(--vl-red); }
+.vl-rail .row-mini .amt.dim { color: var(--vl-fg-3); }
+.vl-rail .telemetry {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.vl-rail .telemetry .cell {
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--vl-border);
+  border-right: 1px solid var(--vl-border);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.vl-rail .telemetry .cell:nth-child(2n) { border-right: none; }
+.vl-rail .telemetry .cell:nth-last-child(-n+2) { border-bottom: none; }
+.vl-rail .telemetry .k {
+  font-family: var(--vl-font-mono);
+  font-size: 9px;
+  color: var(--vl-fg-4);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.vl-rail .telemetry .v {
+  font-family: var(--vl-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--vl-fg);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 980px) {
+  .vl-layout { grid-template-columns: 1fr; }
+  .vl-rail { display: none; }
+}
+
+/* ── Bottom status bar (terminal feel) ─────── */
+.vl-statusbar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  background: linear-gradient(180deg, rgba(10, 8, 18, 0.85), rgba(7, 6, 14, 0.96));
+  border-top: 1px solid rgba(168, 144, 232, 0.08);
+  backdrop-filter: blur(10px);
+  font-family: var(--vl-font-mono);
+  font-size: 10px;
+  color: var(--vl-fg-4);
+  letter-spacing: 0.2px;
+  z-index: 70;
+}
+.vl-statusbar .item { display: inline-flex; align-items: center; gap: 5px; }
+.vl-statusbar .item .k { color: var(--vl-fg-4); text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.4px; }
+.vl-statusbar .item .v { color: var(--vl-fg); }
+.vl-statusbar .item.live .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--vl-green); box-shadow: 0 0 8px rgba(79,182,125,0.7); }
+.vl-statusbar .sep { width: 1px; height: 12px; background: var(--vl-border); }
+.vl-statusbar a { color: var(--vl-fg-3); transition: color var(--vl-motion); }
+.vl-statusbar a:hover { color: var(--vl-purple-2); }
+
+/* responsive */
+@media (max-width: 720px) {
+  .vl-topnav-inner { padding: 0 14px; gap: 10px; }
+  .vl-page { padding: 14px 14px 100px; }
+  .vl-card-head { padding: 8px 12px; }
+  .vl-card-body { padding: 10px 12px; }
+  .vl-action-bar { width: calc(100% - 16px); padding: 9px 12px; bottom: 10px; }
+  .hide-mobile { display: none !important; }
+  .vl-stat-value { font-size: 18px; }
+}
+@media (min-width: 721px) {
+  .show-mobile { display: none !important; }
+}
