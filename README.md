@@ -63,6 +63,7 @@ When a key is unset, the affected route returns `503` cleanly with a self-explan
 Two distinct prefixes — keeping them straight matters for nginx config and for reasoning about what runs where:
 
 - **`/api/*` → Express backend (port 3002).** All long-lived business endpoints (groups, wallets, PnL, trades, alerts, scan, burn-tx builders). Nginx forwards this prefix directly to the backend.
+  - **Exception — `/api/image-proxy` → Next.js (port 3003).** The NFT thumbnail proxy/cache ([web/app/api/image-proxy/route.ts](web/app/api/image-proxy/route.ts)) is a Next.js route, *not* a backend route, even though it lives under `/api/`. Nginx **must** carve it out with an exact-match `location` block that points at `:3003` *before* the generic `location /api/` block — see [§8 Nginx reverse proxy](#8-nginx-reverse-proxy-optional). If it isn't carved out, the browser's `<img src="/api/image-proxy?url=…">` hits the backend, gets a `401`/JSON response instead of image bytes, fires `onError`, and **every Burner NFT thumbnail falls back to its labelled placeholder.**
 - **`/web-api/*` → Next.js routes (port 3003).** Reserved for cancellable proxies that need to forward a browser-side `AbortController.abort()` through to the backend's `req.on("close")`. Currently:
   - `/web-api/wallet/:address/cleanup-scan`
   - `/web-api/groups/:groupId/cleanup-scan-all`
@@ -334,12 +335,28 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 
 Expose only the frontend publicly; route `/api/*` to the backend on the same domain so the browser never sees port 3002.
 
+> **⚠ `/api/image-proxy` is the one exception — it must go to the frontend (`:3003`), not the backend.**
+> It's a Next.js route ([web/app/api/image-proxy/route.ts](web/app/api/image-proxy/route.ts)) that fetches + disk-caches NFT thumbnails; the Burner UI renders `<img src="/api/image-proxy?url=…">` for every NFT/Core card. If nginx routes it to the backend on `:3002` along with the rest of `/api/*`, the backend has no such route and answers with JSON / a `401` — not image bytes — so the browser fires the `<img>` `onError` handler and **all Burner thumbnails fall back to placeholder tiles.** The fix is an **exact-match `location = /api/image-proxy` block placed *before* `location /api/`** (nginx exact-match wins over a prefix match). This regressed once already — keep the block.
+
 `/etc/nginx/sites-available/wallet-checker`:
 
 ```nginx
 server {
     listen 80;
     server_name your-domain.example.com;
+
+    # NFT thumbnail proxy/cache — Next.js route (web/app/api/image-proxy/route.ts)
+    # on :3003, NOT a backend route. Exact-match so it wins over `location /api/`
+    # below; MUST come first. Without it, every Burner NFT thumbnail breaks.
+    location = /api/image-proxy {
+        proxy_pass http://127.0.0.1:3003;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
 
     # API: proxy /api/* to backend
     location /api/ {
@@ -378,6 +395,18 @@ sudo ln -s /etc/nginx/sites-available/wallet-checker /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+
+Verify `/api/image-proxy` actually reaches Next.js (not the backend) — this is the check that catches the regression:
+
+```bash
+# Expect: HTTP/… 200  and  content-type: image/png  (an image, not application/json)
+curl -sI "https://your-domain.example.com/api/image-proxy?url=https%3A%2F%2Fres.stepn.com%2FimgOut%2F4581001.png"
+
+# A wrong (backend-routed) config instead returns ~401 + content-type: application/json,
+# and every Burner NFT card shows a labelled placeholder instead of artwork.
+```
+
+(Some NFT images are on retired gateways — e.g. shut-down `nft.storage` IPFS — and will still 502/timeout through the proxy and fall back to a placeholder *by design*; that's separate from the routing bug above. The routing bug breaks **all** thumbnails; a dead upstream breaks only that one collection.)
 
 If you front the API via Nginx, point the frontend at the public URL too so server-side fetches use the proxy:
 
