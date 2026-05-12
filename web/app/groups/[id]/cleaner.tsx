@@ -1393,6 +1393,11 @@ export interface CleanerRowSummary {
   nft: number;
 }
 
+// Open/collapsed state for the four destructive burn cards (close-empty is
+// always inline). Lifted to CleanerRow so it survives CleanerDetails being
+// unmounted during the scanned→loading→scanned cycle of a Rescan.
+type SectionOpenState = { spl: boolean; legacy: boolean; pnft: boolean; core: boolean };
+
 export function CleanerRow({
   wallet,
   visibleSection = "all",
@@ -1426,6 +1431,20 @@ export function CleanerRow({
   // Tracks the most recent successful send so post-send rescans can show
   // a different empty-state message ("Wallet cleaned: …") and skip auto-build.
   const [lastSentSig, setLastSentSig] = useState<string | null>(null);
+  // Burn-section open/collapsed state. Owned HERE — not in CleanerDetails —
+  // because CleanerDetails unmounts while a scan is in flight (`state.status`
+  // goes "scanned" → "loading" → "scanned" on a Rescan) and a fresh
+  // CleanerDetails would re-default these, so the toolbar Rescan silently
+  // collapsed sections that auto-scan had expanded. Seeded ONCE from
+  // `visibleSection` so the section matching the active /burner tab starts
+  // expanded (`"all"` mode → all collapsed: the original /groups/[id]
+  // behaviour); after that, the user's toggles persist across rescans.
+  const [sectionOpen, setSectionOpen] = useState<SectionOpenState>(() => ({
+    spl: visibleSection === "tokens",
+    legacy: visibleSection === "nfts",
+    pnft: visibleSection === "nfts",
+    core: visibleSection === "core",
+  }));
   // Push per-wallet scan results up to the section so the group overview
   // tile can aggregate. Updates on every successful (re)scan.
   const { setScan } = useScanRegistry();
@@ -1994,6 +2013,8 @@ export function CleanerRow({
             onWalletRescan={handleScan}
             rescanPending={pending}
             visibleSection={visibleSection}
+            sectionOpen={sectionOpen}
+            setSectionOpen={setSectionOpen}
           />
           {/* Hidden close-empty trigger — only present in compact mode so
               the page-level sticky action bar can `.click()` it via the
@@ -2725,6 +2746,8 @@ function CleanerDetails({
   onWalletRescan,
   rescanPending,
   visibleSection = "all",
+  sectionOpen,
+  setSectionOpen,
 }: {
   scan: CleanupScanResult;
   burn: BurnCandidatesResult;
@@ -2732,6 +2755,11 @@ function CleanerDetails({
   onWalletRescan: () => void;
   rescanPending: boolean;
   visibleSection?: CleanerVisibleSection;
+  // Burn-section open/collapsed state, lifted to CleanerRow so it survives
+  // this component's unmount/remount during a Rescan. Seeded there from the
+  // active /burner tab; toggled here.
+  sectionOpen: SectionOpenState;
+  setSectionOpen: React.Dispatch<React.SetStateAction<SectionOpenState>>;
 }) {
   // Compact mode is set by CleanerRow via the surrounding provider when
   // the page (e.g. /burner) wants the section's primary action button to
@@ -2808,20 +2836,17 @@ function CleanerDetails({
   );
   const reclaimCtx = useMemo(() => ({ report: reportReclaim }), [reportReclaim]);
 
-  // Unified open/collapsed state for the four destructive burn cards.
-  // Default: all collapsed. Close-empty is rendered inline and always
-  // visible. State is lifted to CleanerDetails so the action-plan panel
-  // (rendered below ReclaimSummary) can expand a target section in one
-  // click. Discovery state still lives inside each section component, so
-  // toggling never re-fires the network call.
-  // In tab mode (single-section /burner view) auto-expand the section
-  // that matches the active tab so the user lands on the discovery/grid
-  // immediately, without an extra collapse-toggle click. In `'all'` mode
-  // every section starts collapsed (original /groups/[id] behavior).
-  const [openSpl, setOpenSpl] = useState(visibleSection === "tokens");
-  const [openLegacy, setOpenLegacy] = useState(visibleSection === "nfts");
-  const [openPnft, setOpenPnft] = useState(visibleSection === "nfts");
-  const [openCore, setOpenCore] = useState(visibleSection === "core");
+  // Open/collapsed state for the four destructive burn cards. Lifted to
+  // CleanerRow (see `sectionOpen` there) so it survives this component being
+  // unmounted while a Rescan is in flight — otherwise a fresh CleanerDetails
+  // re-defaulted these and the Rescan silently collapsed sections auto-scan
+  // had expanded. The action-plan panel and per-card headers below toggle it
+  // via `setSectionOpen`; discovery state still lives inside each section
+  // component, so toggling never re-fires the network call.
+  const openSpl = sectionOpen.spl;
+  const openLegacy = sectionOpen.legacy;
+  const openPnft = sectionOpen.pnft;
+  const openCore = sectionOpen.core;
 
   // Refs used by the action-plan "Go to / Expand" buttons to scroll the
   // chosen section into view.
@@ -2840,19 +2865,19 @@ function CleanerDetails({
         ref = closeEmptyRef;
         break;
       case "splBurn":
-        setOpenSpl(true);
+        setSectionOpen((p) => ({ ...p, spl: true }));
         ref = splRef;
         break;
       case "legacyNft":
-        setOpenLegacy(true);
+        setSectionOpen((p) => ({ ...p, legacy: true }));
         ref = legacyRef;
         break;
       case "pnft":
-        setOpenPnft(true);
+        setSectionOpen((p) => ({ ...p, pnft: true }));
         ref = pnftRef;
         break;
       case "core":
-        setOpenCore(true);
+        setSectionOpen((p) => ({ ...p, core: true }));
         ref = coreRef;
         break;
     }
@@ -2860,7 +2885,7 @@ function CleanerDetails({
     requestAnimationFrame(() => {
       ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
-  }, []);
+  }, [setSectionOpen]);
 
   function toggleSelected(mint: string): void {
     setSelectedMints((prev) => {
@@ -2991,7 +3016,7 @@ function CleanerDetails({
       >
         <CollapsibleBurnHeader
           collapsed={!openSpl}
-          onToggle={() => setOpenSpl((v) => !v)}
+          onToggle={() => setSectionOpen((p) => ({ ...p, spl: !p.spl }))}
           title="SPL burn · destructive"
           count={`${burn.count} candidate${burn.count === 1 ? "" : "s"}`}
           estSol={burn.totalEstimatedReclaimSol}
@@ -3062,7 +3087,7 @@ function CleanerDetails({
           walletAddress={walletAddress}
           nftAccountCount={scan.nftTokenAccounts.length}
           collapsed={!openLegacy}
-          onToggle={() => setOpenLegacy((v) => !v)}
+          onToggle={() => setSectionOpen((p) => ({ ...p, legacy: !p.legacy }))}
           onWalletRescan={onWalletRescan}
           rescanPending={rescanPending}
           visible={showLegacy}
@@ -3081,7 +3106,7 @@ function CleanerDetails({
           walletAddress={walletAddress}
           nftAccountCount={scan.nftTokenAccounts.length}
           collapsed={!openPnft}
-          onToggle={() => setOpenPnft((v) => !v)}
+          onToggle={() => setSectionOpen((p) => ({ ...p, pnft: !p.pnft }))}
           onWalletRescan={onWalletRescan}
           rescanPending={rescanPending}
           visible={showPnft}
@@ -3100,7 +3125,7 @@ function CleanerDetails({
         <CoreBurnSection
           walletAddress={walletAddress}
           collapsed={!openCore}
-          onToggle={() => setOpenCore((v) => !v)}
+          onToggle={() => setSectionOpen((p) => ({ ...p, core: !p.core }))}
           onWalletRescan={onWalletRescan}
           rescanPending={rescanPending}
           visible={showCore}
