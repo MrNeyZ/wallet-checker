@@ -151,6 +151,12 @@ export interface BurnSelectionEntry {
   // to burn). null when the section hasn't finished discovery yet so
   // the page-level Items Found tile can show "—" instead of underreporting.
   totalBurnable: number | null;
+  // Clears this section's current selection. Stable (`useCallback`) per
+  // section instance. Undefined for sections with no per-item selection
+  // model (closeEmpty closes every empty account — nothing to deselect).
+  // Used by the /burner action bar's "Clear" button, which only clears
+  // the section(s) under the active tab.
+  clearSelection?: () => void;
 }
 
 interface BurnSelectionRegistryCtx {
@@ -217,6 +223,10 @@ function useBurnSelectionPublisher(
   selectedReclaimSol: number | null,
   canBuild: boolean,
   totalBurnable: number | null = null,
+  // Stable per-section clear handler. NOT part of `stableKey` (a stable
+  // useCallback never changes, so it can't drive a re-publish); it just
+  // rides along on every published entry. Undefined for closeEmpty.
+  clearSelection?: () => void,
 ): void {
   const ctx = useContext(BurnSelectionCtx);
   // Stringify so a fresh-object render with structurally-equal values
@@ -230,6 +240,7 @@ function useBurnSelectionPublisher(
       selectedReclaimSol,
       canBuild,
       totalBurnable,
+      clearSelection,
     });
     return () => ctx.publish(key, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2899,12 +2910,14 @@ function CleanerDetails({
     }
     return sum;
   }, [selectedMints, burn.candidates]);
+  const clearSplSelection = useCallback(() => setSelectedMints(new Set()), []);
   useBurnSelectionPublisher(
     "splBurn",
     selectedMints.size,
     splReclaimSol,
     canBuild,
     burn.candidates.length,
+    clearSplSelection,
   );
 
   return (
@@ -4746,12 +4759,14 @@ function LegacyNftBurnSection({
     }
     return sum;
   }, [selectedMints, candidates]);
+  const clearLegacySelection = useCallback(() => setSelectedMints(new Set()), []);
   useBurnSelectionPublisher(
     "legacyNft",
     selectedMints.size,
     legacyReclaimSol,
     canBuild,
     candidates ? candidates.burnable.length : null,
+    clearLegacySelection,
   );
 
   // Toggle every mint in a collection group at once. If `selectAll` is
@@ -6425,12 +6440,14 @@ function PnftBurnSection({
     }
     return sum;
   }, [selectedMints, candidates]);
+  const clearPnftSelection = useCallback(() => setSelectedMints(new Set()), []);
   useBurnSelectionPublisher(
     "pnft",
     selectedMints.size,
     pnftReclaimSol,
     canBuild,
     candidates ? candidates.burnable.length : null,
+    clearPnftSelection,
   );
 
   const toggleGroupSelected = useCallback(
@@ -7106,12 +7123,14 @@ function CoreBurnSection({
     }
     return sum;
   }, [selectedAssets, candidates]);
+  const clearCoreSelection = useCallback(() => setSelectedAssets(new Set()), []);
   useBurnSelectionPublisher(
     "core",
     selectedAssets.size,
     coreReclaimSol,
     canBuild,
     candidates ? candidates.burnable.length : null,
+    clearCoreSelection,
   );
 
   const toggleGroupSelected = useCallback(

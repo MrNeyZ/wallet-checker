@@ -488,7 +488,18 @@ function StickyActionBarWired({ tab }: { tab: CleanerVisibleSection }) {
   const registry = useBurnSelectionRegistry();
   const aggregate = aggregateForTab(registry, tab);
   if (aggregate.selectedCount === 0) return null;
-  return <StickyActionBar tab={tab} aggregate={aggregate} />;
+  // "Clear" clears only the section(s) under the ACTIVE tab — matching our
+  // per-section selection model. Sections with no per-item selection
+  // (closeEmpty) expose no `clearSelection`, so the Clear button is hidden
+  // on the Empty tab. Each handler is the section's own stable
+  // `setSelected*(new Set())` — the same reset that fires after a
+  // successful burn — so this is a safe, no-side-effect operation.
+  const clearFns = TAB_TO_SECTIONS[tab]
+    .map((k) => registry[k]?.clearSelection)
+    .filter((f): f is () => void => typeof f === "function");
+  const onClear =
+    clearFns.length > 0 ? () => clearFns.forEach((f) => f()) : undefined;
+  return <StickyActionBar tab={tab} aggregate={aggregate} onClear={onClear} />;
 }
 
 function DisconnectedCta({
@@ -622,9 +633,13 @@ function totalReclaimAcrossSections(
 function StickyActionBar({
   tab,
   aggregate,
+  onClear,
 }: {
   tab: CleanerVisibleSection;
   aggregate: TabAggregate;
+  // Clears the active tab's selection; undefined for tabs whose section
+  // has no per-item selection (Empty) — the Clear button is then hidden.
+  onClear?: () => void;
 }) {
   const actionVerb = TAB_ACTION_VERB[tab];
   const itemLabel = TAB_LABEL[tab];
@@ -685,6 +700,16 @@ function StickyActionBar({
         </div>
       </div>
       <div className="right">
+        {onClear && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="vl-btn vl-btn-ghost is-sm shrink-0"
+            aria-label={`Clear ${itemLabel} selection`}
+          >
+            Clear
+          </button>
+        )}
         <button
           type="button"
           onClick={handleBurn}
