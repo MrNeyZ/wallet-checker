@@ -85,6 +85,38 @@ function BurnerBody() {
     scanTriggerRef.current?.();
   }, []);
 
+  // ── Auto-scan on open ──────────────────────────────────────────────────
+  // When the burner opens with a connected wallet, start the cleanup scan
+  // automatically — once per connected wallet, for the life of this page.
+  // It reuses CleanerRow's own scan trigger (the same one the Scan/Rescan
+  // button and `handleRescan` call), exposed up via `registerScanTrigger`;
+  // there is NO separate auto-scan code path or API.
+  //
+  // Guard rails (must not double-scan, must not auto-loop, must not re-fire
+  // on React re-renders):
+  //  • `autoScannedRef` — a Set of addresses we've already auto-triggered.
+  //    Re-renders, burn-registry ticks, the React.StrictMode double-mount,
+  //    and every `scanStatus` transition all hit an early return. Connecting
+  //    a *different* wallet re-arms it for that new address.
+  //  • `scanStatus !== "idle"` → a scan is already loading / done (the user
+  //    beat the effect to it, or `scanStatus` is briefly stale from the
+  //    previous wallet right after a switch) → skip without arming, so the
+  //    next render (once CleanerRow re-reports "idle") can auto-scan.
+  //  • `!scanTriggerRef.current` → CleanerRow hasn't registered its trigger
+  //    yet (shouldn't happen — child effects commit before this parent
+  //    effect — but defensive); leave the address un-armed so a later render
+  //    retries. Worst case the user clicks Scan manually.
+  const autoScannedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!connected) return;
+    if (autoScannedRef.current.has(connected)) return;
+    if (scanStatus !== "idle") return;
+    const trigger = scanTriggerRef.current;
+    if (!trigger) return;
+    autoScannedRef.current.add(connected);
+    trigger();
+  }, [connected, scanStatus]);
+
   // BurnAckProvider is hard-coded `true` (the page-level ack checkbox was
   // removed by operator request); the real safety boundary is the per-section
   // BurnSignAndSendBlock (audit + simulation + wallet-match + sign), untouched.

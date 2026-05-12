@@ -1798,7 +1798,11 @@ export function CleanerRow({
                 : btnPrimary
             }
           >
-            {state.status === "loading" || pending ? "Scanning…" : state.status === "scanned" ? "Rescan" : "Scan"}
+            {state.status === "loading" || pending
+              ? "Scanning…"
+              : state.status === "scanned" || state.status === "error"
+                ? "Rescan"
+                : "Scan"}
           </button>
           {/* Cancel button — only visible while a scan is in flight. Wired to
               cancelScan, which aborts the upstream fetch (so the backend
