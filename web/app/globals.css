@@ -567,6 +567,21 @@ body {
   border-bottom-color: var(--vl-purple);
   background: linear-gradient(180deg, rgba(128,104,216,0.08) 0%, rgba(128,104,216,0.00) 100%);
 }
+/* Per-tab count pill (WC v2 — `.vl-tab .count` from the prototype's
+   tokens.css). The `.num` helper on the same span gives tabular figures. */
+.vl-tab .count {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 100px;
+  background: rgba(168, 144, 232, 0.10);
+  color: var(--vl-fg-2);
+  border: 1px solid var(--vl-border);
+}
+.vl-tab.is-active .count {
+  background: var(--vl-purple-soft);
+  border-color: var(--vl-purple-border);
+  color: var(--vl-purple-2);
+}
 
 /* ============================================================================
    /burner perf-trim overrides. Scoped to `.vl-burner` (set on the
@@ -901,6 +916,20 @@ html[data-layout="phone"] .vl-stat-strip .vl-tile > .mono { display: none; }
   border-radius: 100px;
   transition: width 0.3s var(--vl-ease);
   box-shadow: 0 0 8px rgba(168, 144, 232, 0.6);
+}
+/* Indeterminate variant — for scans where we don't have a real per-step
+   percentage to report (the production scan is a single call, not the
+   prototype's faked stepped interval). A clearly-indeterminate sweep,
+   not a fake %. */
+.vl-progress .bar.is-indeterminate {
+  left: 0; right: auto;
+  width: 32%;
+  transition: none;
+  animation: vl-progress-indeterminate 1.15s ease-in-out infinite;
+}
+@keyframes vl-progress-indeterminate {
+  0%   { transform: translateX(-110%); }
+  100% { transform: translateX(320%); }
 }
 .vl-scan-steps { display: flex; gap: 5px; flex-wrap: wrap; }
 .vl-scan-step {

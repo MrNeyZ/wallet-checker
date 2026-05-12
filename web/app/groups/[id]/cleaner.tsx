@@ -1387,11 +1387,18 @@ export function CleanerRow({
   visibleSection = "all",
   compact = false,
   onSummaryChange,
+  onScanStateChange,
 }: {
   wallet: WalletEntry;
   visibleSection?: CleanerVisibleSection;
   compact?: boolean;
   onSummaryChange?: (s: CleanerRowSummary | null) => void;
+  // Lifts the scan lifecycle status so a parent (the standalone /burner
+  // page) can drive its page-level scan-progress chrome. Presentation
+  // only — does not change scan behavior. No-op when not passed.
+  onScanStateChange?: (
+    status: "idle" | "loading" | "scanned" | "error",
+  ) => void;
 }) {
   const [state, setState] = useState<ScanState>({ status: "idle" });
   const [showDetails, setShowDetails] = useState(false);
@@ -1688,6 +1695,13 @@ export function CleanerRow({
   useEffect(() => {
     if (onSummaryChange) onSummaryChange(summary);
   }, [summary, onSummaryChange]);
+
+  // Lift the scan lifecycle status (idle/loading/scanned/error) so the
+  // /burner page can render a page-level scan-progress strip wired to
+  // real state. No-op when `onScanStateChange` isn't passed.
+  useEffect(() => {
+    if (onScanStateChange) onScanStateChange(state.status);
+  }, [state.status, onScanStateChange]);
 
   return (
     <div className="vl-card overflow-hidden">
