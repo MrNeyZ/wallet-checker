@@ -5038,24 +5038,30 @@ const NftThumbnail = React.memo(function NftThumbnail({
 }) {
   const isCompact = useCompactMode();
   const cls = size === "lg" ? "h-16 w-16" : "h-7 w-7";
+  // Small labelled box ("NFT" / "pNFT" / "Core" / "SPL"). Used in two
+  // cases: (1) compact, image-loading intentionally suppressed; (2) the
+  // image URL is missing / non-http / failed to load. In case (2) this
+  // replaces a blank dark `bg-neutral-800` square — which is visually
+  // indistinguishable from a still-loading thumbnail and reads as a bug —
+  // with something that says "no artwork available". (NFTs whose
+  // off-chain image lives on a dead gateway, e.g. retired nft.storage
+  // IPFS, hit case 2; the proxy 502s and onError flips us here.)
+  const labelledPlaceholder = (label: string) => (
+    <span
+      aria-hidden
+      className={`inline-flex ${cls} shrink-0 items-center justify-center rounded bg-neutral-800 font-mono text-[9px] font-bold uppercase tracking-wider text-[color:var(--vl-fg-3)]`}
+    >
+      {label}
+    </span>
+  );
   // /burner runs CleanerRow with `compact`, which flips this context on.
-  // In that mode we deliberately render a labelled placeholder instead of
-  // ever touching `proxyImageUrl(src)` or mounting an <img>. Hundreds of
-  // image-proxy round-trips + decodes per scan was a major source of
-  // the laptop CPU/GPU heat the operator reported. The full /groups/[id]
-  // view (non-compact) still loads images normally; `forceImage` callers
-  // (virtualized grids) also load normally.
-  if (isCompact && !forceImage) {
-    const label = kindLabel ?? alt;
-    return (
-      <span
-        aria-hidden
-        className={`inline-flex ${cls} shrink-0 items-center justify-center rounded bg-neutral-800 font-mono text-[9px] font-bold uppercase tracking-wider text-[color:var(--vl-fg-3)]`}
-      >
-        {label}
-      </span>
-    );
-  }
+  // In that mode (without `forceImage`) we deliberately render a labelled
+  // placeholder instead of ever touching `proxyImageUrl(src)` or mounting
+  // an <img>. Hundreds of image-proxy round-trips + decodes per scan was a
+  // major source of the laptop CPU/GPU heat the operator reported. The
+  // full /groups/[id] view (non-compact) still loads images normally;
+  // `forceImage` callers (virtualized grids) also load normally.
+  if (isCompact && !forceImage) return labelledPlaceholder(kindLabel ?? alt);
   // Hide-on-error needs state so the placeholder takes over reliably across
   // re-renders (style.visibility hack survived for one render only).
   const [errored, setErrored] = useState(false);
@@ -5064,7 +5070,9 @@ const NftThumbnail = React.memo(function NftThumbnail({
   // sources (which the placeholder branch handles).
   const proxied = proxyImageUrl(src);
   if (!src || !proxied || errored) {
-    return (
+    return kindLabel ? (
+      labelledPlaceholder(kindLabel)
+    ) : (
       <span
         aria-hidden
         className={`inline-block ${cls} shrink-0 rounded bg-neutral-800`}
@@ -5200,6 +5208,7 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
               src={image}
               alt={name ?? itemKindLabel}
               size="lg"
+              kindLabel={itemKindLabel}
               forceImage
             />
           ) : (
