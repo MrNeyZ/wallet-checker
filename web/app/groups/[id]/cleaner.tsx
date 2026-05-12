@@ -5078,13 +5078,13 @@ const NftThumbnail = React.memo(function NftThumbnail({
       alt={alt}
       loading="lazy"
       decoding="async"
-      // Deprioritize the network + decode queue for small (28px)
-      // thumbnails — they're decorative, off-the-critical-path, and a
-      // grid of 200+ at once was previously fighting the rest of the
-      // page for bandwidth/CPU. `lg` thumbnails sit in the burn
-      // preview where the user is actively reviewing — keep those at
-      // default priority.
-      fetchPriority={size === "lg" ? "auto" : "low"}
+      // Deprioritize the network + decode queue for thumbnails that show
+      // up in bulk — the small (28px) ones, and the 64px ones in the
+      // compact virtualized burner grid (`forceImage`, where a viewport
+      // can hold a couple dozen at once). Only the standalone burn-preview
+      // `lg` thumbnail (no `forceImage` — the user is actively reviewing a
+      // single batch) keeps default priority.
+      fetchPriority={size === "lg" && !forceImage ? "auto" : "low"}
       referrerPolicy="no-referrer"
       width={size === "lg" ? 64 : 28}
       height={size === "lg" ? 64 : 28}

@@ -149,20 +149,27 @@ export function isSupportedAsset(asset: DasAsset | null | undefined): boolean {
 function parse(asset: DasAsset): AssetMetadata {
   const name = strOrNull(asset.content?.metadata?.name);
   const symbol = strOrNull(asset.content?.metadata?.symbol);
-  // Image URL priority: the Helius CDN copy first. `files[0].cdn_uri` is
-  // always an https://cdn.helius-rpc.com/… URL — Helius has already
-  // resolved any ipfs:// / ar:// gateway server-side AND down-scaled the
-  // image, so it's both directly fetchable by our /api/image-proxy and
-  // ideal for the 64×64 burner thumbnails. The off-chain `links.image`
-  // and the raw file `uri` stay as fallbacks; when those are ipfs:// /
-  // ar:// (common for pre-2023 collections) the frontend image-proxy
-  // rejects them and the card falls back to the neutral placeholder —
-  // promoting cdn_uri ahead of links.image is what makes those
-  // collections render real art instead of a blank thumbnail slot.
+  // Image URL priority — prefer a URL the frontend /api/image-proxy can
+  // actually fetch (it follows redirects but only accepts http(s)):
+  //   1. `links.image`     — Helius's normalised off-chain image URL;
+  //                          already an http(s) gateway URL for nearly
+  //                          every asset. This is the one the proxy
+  //                          resolves to real bytes.
+  //   2. `files[0].uri`    — the raw first-file URI, as a fallback.
+  //   3. `files[0].cdn_uri`— Helius's own CDN copy (cdn.helius-rpc.com/
+  //                          cdn-cgi/image/…). LAST resort only: that
+  //                          endpoint answers HTTP 403 ("ERROR 9408") for
+  //                          server-side / unauthenticated requests — it's
+  //                          gated to Helius's dashboard — so the proxy
+  //                          can't use it; it's here purely so we don't
+  //                          regress to `null` if 1 and 2 are both absent.
+  // Whichever wins, an ipfs:// / ar:// scheme — or a dead gateway like the
+  // shut-down nft.storage one — falls through to the neutral placeholder
+  // on the frontend. That's expected and bounded.
   const image =
-    strOrNull(asset.content?.files?.[0]?.cdn_uri) ??
     strOrNull(asset.content?.links?.image) ??
-    strOrNull(asset.content?.files?.[0]?.uri);
+    strOrNull(asset.content?.files?.[0]?.uri) ??
+    strOrNull(asset.content?.files?.[0]?.cdn_uri);
   const uri = strOrNull(asset.content?.json_uri);
   const iface =
     typeof asset.interface === "string" ? asset.interface : null;
