@@ -5076,15 +5076,20 @@ const NftThumbnail = React.memo(function NftThumbnail({
     <img
       src={proxied}
       alt={alt}
-      loading="lazy"
+      // `forceImage` = the burner's window-scroll virtualizer, which ALREADY
+      // mounts only viewport±overscan rows — so it IS the lazy-loading. Don't
+      // also set `loading="lazy"`: inside that virtualizer (rows in a
+      // position:absolute box inside a tall position:relative container,
+      // window scroll) the browser's lazy-load IntersectionObserver
+      // frequently never fires for these <img>s, so the bitmap never
+      // downloads and the thumbnail stays a dark `bg-neutral-800` square.
+      // Eager load + normal fetch priority is the standard pattern for a
+      // virtualized image grid and is still bounded (~viewport-worth of
+      // 64px thumbs). Non-virtualized callers (burn-preview, /groups
+      // cleaner, SPL token table) keep lazy + deprioritized as before.
+      loading={forceImage ? "eager" : "lazy"}
       decoding="async"
-      // Deprioritize the network + decode queue for thumbnails that show
-      // up in bulk — the small (28px) ones, and the 64px ones in the
-      // compact virtualized burner grid (`forceImage`, where a viewport
-      // can hold a couple dozen at once). Only the standalone burn-preview
-      // `lg` thumbnail (no `forceImage` — the user is actively reviewing a
-      // single batch) keeps default priority.
-      fetchPriority={size === "lg" && !forceImage ? "auto" : "low"}
+      fetchPriority={forceImage || size === "lg" ? "auto" : "low"}
       referrerPolicy="no-referrer"
       width={size === "lg" ? 64 : 28}
       height={size === "lg" ? 64 : 28}
