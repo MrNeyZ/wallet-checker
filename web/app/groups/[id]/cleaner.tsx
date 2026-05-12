@@ -4972,6 +4972,7 @@ const NftThumbnail = React.memo(function NftThumbnail({
   alt,
   size = "sm",
   kindLabel,
+  forceImage = false,
 }: {
   src: string | null;
   alt: string;
@@ -4982,6 +4983,14 @@ const NftThumbnail = React.memo(function NftThumbnail({
   // text so the cards stay visually distinguishable without doing any
   // network/decode work.
   kindLabel?: string;
+  // Opt back IN to real image loading even inside compact (`/burner`)
+  // context. Used by the v2 NFT/Core card grid, which IS virtualized —
+  // only ~viewport-worth of cards mount at a time, so the "hundreds of
+  // image-proxy round-trips per scan" heat concern that motivated the
+  // blanket compact-mode suppression no longer applies there. Per-card
+  // callers that aren't virtualized (e.g. the SPL token table thumb)
+  // leave this off and keep the cheap labelled placeholder.
+  forceImage?: boolean;
 }) {
   const isCompact = useCompactMode();
   const cls = size === "lg" ? "h-16 w-16" : "h-7 w-7";
@@ -4990,8 +4999,9 @@ const NftThumbnail = React.memo(function NftThumbnail({
   // ever touching `proxyImageUrl(src)` or mounting an <img>. Hundreds of
   // image-proxy round-trips + decodes per scan was a major source of
   // the laptop CPU/GPU heat the operator reported. The full /groups/[id]
-  // view (non-compact) still loads images normally.
-  if (isCompact) {
+  // view (non-compact) still loads images normally; `forceImage` callers
+  // (virtualized grids) also load normally.
+  if (isCompact && !forceImage) {
     const label = kindLabel ?? alt;
     return (
       <span
@@ -5113,13 +5123,14 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
     })();
     return (
       <label
-        // Compact card sizing — TARGET min-height ~52px so the cards
-        // read as chunky rectangles (≈ 3:1 → 4:1 ratio at typical
-        // 6-col widths) instead of the previous narrow strip that
-        // was hard to hit on a touchpad. Width / grid columns
-        // unchanged; only the vertical envelope grows. Compact-only —
-        // the full /groups/[id]?tab=cleaner card branch is unchanged.
-        className={`vl-card is-interactive flex min-h-[52px] cursor-pointer items-center gap-2 px-2.5 py-3 text-left ${
+        // Compact card — WC v2 NFT/Core cell: 16px checkbox · 64×64 thumb ·
+        // name (prefix over unique suffix) · short mint. Border-box height
+        // ≈ 82px (64 thumb + py-2 + 1px borders); the virtualizer's
+        // COMPACT_ROW_HEIGHT_PX is tuned to that. Width / column count
+        // unchanged (PC 6 / Laptop 4 / Phone 2 via compactColsForLayout).
+        // Compact-only — the full /groups/[id]?tab=cleaner card branch
+        // below is unchanged.
+        className={`vl-card is-interactive flex min-h-[80px] cursor-pointer items-center gap-2.5 px-2.5 py-2 text-left ${
           isChecked ? "is-selected" : ""
         }`}
         title={name ?? id}
@@ -5129,16 +5140,28 @@ const BurnCandidateCard = React.memo(function BurnCandidateCard({
           checked={isChecked}
           onChange={() => onToggle(id)}
           aria-label={`Select ${name ?? itemKindLabel} for burn`}
-          className="vl-checkbox h-[18px] w-[18px] shrink-0 cursor-pointer"
+          className="vl-checkbox h-4 w-4 shrink-0 cursor-pointer"
         />
-        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white">
-          {split.prefix || (name ?? shortAddr(id, 4, 4))}
-        </span>
-        {split.suffix && (
-          <span className="shrink-0 font-mono text-[10px] text-[color:var(--vl-fg-3)]">
-            {split.suffix}
+        <NftThumbnail
+          src={image}
+          alt={name ?? itemKindLabel}
+          size="lg"
+          kindLabel={itemKindLabel}
+          forceImage
+        />
+        <div className="flex min-w-0 flex-1 flex-col gap-px">
+          <span className="truncate text-[11px] font-semibold text-white">
+            {split.prefix || (name ?? shortAddr(id, 4, 4))}
           </span>
-        )}
+          {split.suffix && (
+            <span className="font-mono text-[10px] text-[color:var(--vl-fg-3)]">
+              {split.suffix}
+            </span>
+          )}
+          <span className="truncate font-mono text-[9px] text-[color:var(--vl-fg-4)]">
+            {shortAddr(id, 4, 4)}
+          </span>
+        </div>
       </label>
     );
   }
@@ -5212,19 +5235,31 @@ const GRID_PAGE_SIZE = 60;
 // elsewhere in the file. Selection toggling re-renders the parent's
 // `selected` set, but `BurnCandidateCard` is React.memo'd on primitive
 // props so only the toggled card actually re-renders.
-// Card env: min-h-[52px] + py-3 + 1px borders ≈ 52-54px rendered. Keep
-// the row stride a couple px above the visual card height so the
-// virtualizer's absolutely-positioned rows never overlap (a too-tight
-// stride causes the next row to sit a hair on top of the previous,
-// chopping ~2 pixels off card text). 54 + 4 gap = 58px stride.
-const COMPACT_ROW_HEIGHT_PX = 54;
+// Card env (WC v2 cell): 64px thumb + py-2 (8+8) + 1px×2 borders ≈ 82px
+// rendered border-box. Keep the row stride a couple px above the visual
+// card height so the virtualizer's absolutely-positioned rows never
+// overlap (a too-tight stride causes the next row to sit a hair on top
+// of the previous, chopping pixels off card text). 84 + 4 gap = 88px stride.
+const COMPACT_ROW_HEIGHT_PX = 84;
 const COMPACT_ROW_GAP_PX = 4;
 const COMPACT_OVERSCAN_ROWS = 3;
 
-function compactColsForWidth(w: number): number {
-  if (w >= 1280) return 7;
-  if (w >= 1024) return 6;
-  if (w >= 768) return 4;
+// Column count for the compact (`/burner`) NFT/Core card grid. Primary
+// driver is the WC v2 layout mode (`<html data-layout="pc|laptop|phone">`,
+// set by LayoutModeSwitcher) — PC = 6, Laptop = 4, Phone = 2, matching the
+// `.vl-nft-rows` CSS in globals.css. Width-based fallback only kicks in if
+// `data-layout` is somehow absent (it isn't in normal operation — the root
+// layout ships `data-layout="laptop"`).
+function compactColsForLayout(
+  layout: string | undefined,
+  w: number,
+): number {
+  if (layout === "pc") return 6;
+  if (layout === "laptop") return 4;
+  if (layout === "phone") return 2;
+  // Fallback: viewport-width heuristic mirroring the v2 mode breakpoints.
+  if (w >= 1680) return 6;
+  if (w >= 1024) return 4;
   if (w >= 640) return 3;
   return 2;
 }
@@ -5248,12 +5283,19 @@ function VirtualizedCompactCardGrid({
   const [viewportH, setViewportH] = useState<number>(() =>
     typeof window === "undefined" ? 800 : window.innerHeight,
   );
+  // Current WC v2 layout mode (`<html data-layout>`). Drives the column
+  // count (PC 6 / Laptop 4 / Phone 2). Re-read on scroll/resize AND via a
+  // MutationObserver below so flipping the LayoutModeSwitcher re-flows the
+  // grid immediately rather than waiting for the next scroll tick.
+  const [layoutMode, setLayoutMode] = useState<string | undefined>(() =>
+    typeof document === "undefined" ? undefined : document.documentElement.dataset.layout,
+  );
   // Container's offsetTop relative to the viewport top, recomputed on
   // window scroll/resize. Used to derive which rows fall inside the
   // viewport without giving up window-level scrolling.
   const [containerTop, setContainerTop] = useState<number>(0);
 
-  const cols = compactColsForWidth(viewportW);
+  const cols = compactColsForLayout(layoutMode, viewportW);
   const rowStride = COMPACT_ROW_HEIGHT_PX + COMPACT_ROW_GAP_PX;
   const totalRows = Math.ceil(items.length / cols);
   const totalHeight =
@@ -5267,13 +5309,21 @@ function VirtualizedCompactCardGrid({
       setContainerTop(rect.top);
       setViewportH(window.innerHeight);
       setViewportW(window.innerWidth);
+      setLayoutMode(document.documentElement.dataset.layout);
     }
     measure();
     window.addEventListener("scroll", measure, { passive: true });
     window.addEventListener("resize", measure);
+    // React to LayoutModeSwitcher flipping <html data-layout="…">.
+    const mo = new MutationObserver(measure);
+    mo.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-layout"],
+    });
     return () => {
       window.removeEventListener("scroll", measure);
       window.removeEventListener("resize", measure);
+      mo.disconnect();
     };
   }, [totalHeight]);
 
@@ -7671,33 +7721,36 @@ function CollapsibleBurnHeader({
 }
 
 function EmptyAccountsTable({ rows }: { rows: ScannedTokenAccount[] }) {
+  // Compact terminal asset list in the `.vl-table-burn` visual idiom
+  // (mono uppercase header, faint purple row separators, zebra, purple
+  // hover) — kept as a fluid div-grid (no `<table>` rewrite, only 3
+  // columns so it shrinks to fit on phone without a horizontal scroll).
+  // Fills the `.vl-layout` workspace width; never centered-narrow.
   return (
-    <div className="overflow-x-auto">
-     <div className="min-w-[480px]">
-      <div className="grid grid-cols-12 gap-3 border-b border-[color:var(--vl-border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
+    <div className="w-full">
+      <div className="grid grid-cols-12 gap-3 border-b border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.05)] px-3 py-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.4px] text-[color:var(--vl-fg-3)]">
         <div className="col-span-5">Token account</div>
         <div className="col-span-5">Mint</div>
         <div className="col-span-2 text-right">Reclaim SOL</div>
       </div>
       <div>
-        {rows.map((r) => (
+        {rows.map((r, i) => (
           <div
             key={r.tokenAccount}
-            className="grid grid-cols-12 items-center gap-3 border-b border-[color:var(--vl-border)] px-3 py-1.5 text-xs last:border-b-0"
+            className={`grid grid-cols-12 items-center gap-3 border-b border-[rgba(168,144,232,0.05)] px-3 py-1.5 text-[11.5px] transition-colors duration-[var(--vl-motion,160ms)] last:border-b-0 hover:bg-[rgba(168,144,232,0.06)] ${i % 2 === 1 ? "bg-[rgba(255,255,255,0.012)]" : ""}`}
           >
-            <div className="col-span-5 truncate font-mono text-neutral-100">
+            <div className="col-span-5 truncate font-mono text-[color:var(--vl-fg)]">
               {shortAddr(r.tokenAccount, 6, 6)}
             </div>
-            <div className="col-span-5 truncate font-mono text-neutral-300">
+            <div className="col-span-5 truncate font-mono text-[color:var(--vl-fg-2)]">
               {shortAddr(r.mint, 6, 6)}
             </div>
-            <div className="col-span-2 text-right font-semibold tabular-nums text-emerald-300">
+            <div className="col-span-2 text-right font-mono font-semibold tabular-nums text-[color:var(--vl-green)]">
               {fmtSol(r.estimatedReclaimSol)}
             </div>
           </div>
         ))}
       </div>
-     </div>
     </div>
   );
 }
@@ -7712,9 +7765,15 @@ function BurnCandidatesTable({
   onToggle: (mint: string) => void;
 }) {
   return (
-    <div className="overflow-x-auto">
-     <div className="min-w-[720px]">
-      <div className="grid grid-cols-12 gap-3 border-b border-red-500/20 bg-red-500/[0.03] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-300/80">
+    // 8 columns — too dense to fit a phone viewport without a horizontal
+    // scroll, so we keep `overflow-x-auto` + a (reduced) min-width rather
+    // than forcing a `<table>` rewrite. On desktop it fills the `.vl-layout`
+    // workspace width. Visual idiom matches `.vl-table-burn` (faint purple
+    // row separators, zebra, purple hover); the SPL section is the
+    // destructive one so the header keeps a red accent.
+    <div className="w-full overflow-x-auto">
+     <div className="min-w-[640px]">
+      <div className="grid grid-cols-12 gap-3 border-b border-red-500/20 bg-red-500/[0.04] px-3 py-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.4px] text-red-300/80">
         <div className="col-span-1">Burn</div>
         <div className="col-span-2">Token</div>
         <div className="col-span-2">Mint</div>
@@ -7725,12 +7784,20 @@ function BurnCandidatesTable({
         <div className="col-span-1">Rec?</div>
       </div>
       <div>
-        {rows.map((r) => {
+        {rows.map((r, i) => {
           // Rows where burnRecommended=false get a stronger visual: red strip
           // background + red badge in the last column, so the user can't miss
           // that this token needs manual review before any (future) burn.
-          const rowTint = r.burnRecommended ? "" : "bg-red-500/[0.06]";
+          // One background per row (no conflicting `bg-*` utilities): red >
+          // selected-purple > zebra.
           const isChecked = selected.has(r.mint);
+          const rowBg = !r.burnRecommended
+            ? "bg-red-500/[0.06]"
+            : isChecked
+              ? "bg-[var(--vl-purple-soft)]"
+              : i % 2 === 1
+                ? "bg-[rgba(255,255,255,0.012)]"
+                : "";
           // Headline is the symbol when present, then name, then short
           // mint as a final fallback. We never display a misleading
           // "unknown token" — the mint short addr is unambiguous and
@@ -7742,7 +7809,7 @@ function BurnCandidatesTable({
           return (
             <label
               key={r.tokenAccount}
-              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-[color:var(--vl-border)] px-3 py-1.5 text-xs last:border-b-0 transition-colors duration-[var(--vl-motion,180ms)] hover:bg-[rgba(168,144,232,0.06)] ${rowTint} ${isChecked ? "bg-[var(--vl-purple-soft)] ring-1 ring-inset ring-[var(--vl-purple-border)]" : ""}`}
+              className={`grid cursor-pointer grid-cols-12 items-center gap-3 border-b border-[rgba(168,144,232,0.05)] px-3 py-1.5 text-[11.5px] last:border-b-0 transition-colors duration-[var(--vl-motion,160ms)] hover:bg-[rgba(168,144,232,0.06)] ${rowBg} ${isChecked ? "ring-1 ring-inset ring-[var(--vl-purple-border)]" : ""}`}
             >
               <div className="col-span-1">
                 <input
@@ -7781,7 +7848,7 @@ function BurnCandidatesTable({
               <div className="col-span-1 text-right tabular-nums text-neutral-400">
                 {r.decimals}
               </div>
-              <div className="col-span-2 text-right font-semibold tabular-nums text-emerald-300/90">
+              <div className="col-span-2 text-right font-mono font-semibold tabular-nums text-[color:var(--vl-green)]">
                 {fmtSol(r.estimatedReclaimSolAfterBurnAndClose)}
               </div>
               <div className="col-span-1">

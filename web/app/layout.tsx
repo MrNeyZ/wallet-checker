@@ -2,6 +2,7 @@ import "./globals.css";
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { TopNav } from "./_components/TopNav";
+import { LayoutModeSwitcher } from "./_components/LayoutModeSwitcher";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -21,15 +22,39 @@ export const metadata: Metadata = {
   description: "Solana wallet group dashboard",
 };
 
+// Pre-paint layout-mode application. The SSR HTML ships with the laptop
+// default (`data-layout="laptop"` below) so the most common case never
+// flashes; this inline script runs during HTML parse — before hydration —
+// to swap in the persisted `pc` / `phone` value for those users. Mirrors
+// the nft-live-feed `vl.layoutMode` convention. Kept inline (not a module)
+// so it executes synchronously ahead of any layout-affecting CSS.
+const LAYOUT_MODE_BOOT = `try{var m=localStorage.getItem('vl.layoutMode');if(m==='pc'||m==='laptop'||m==='phone'){document.documentElement.dataset.layout=m;}}catch(e){}`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const authEnabled = Boolean(process.env.WEB_PASSWORD);
   return (
-    <html lang="en" className={`${inter.variable} dark`}>
+    // suppressHydrationWarning: the inline script below mutates
+    // documentElement.dataset.layout before React hydrates, which would
+    // otherwise be flagged as an attribute mismatch on <html>.
+    <html
+      lang="en"
+      className={`${inter.variable} dark`}
+      data-layout="laptop"
+      suppressHydrationWarning
+    >
       <body className="min-h-screen bg-neutral-950 text-white" style={{ fontFamily: "var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif" }}>
+        <script dangerouslySetInnerHTML={{ __html: LAYOUT_MODE_BOOT }} />
         <TopNav authEnabled={authEnabled} />
-        <div className="mx-auto max-w-7xl px-4 py-3">
+        {/* WC v2 `.vl-layout` content wrapper. Default = centered 1480px;
+            `data-layout="pc|laptop|phone"` switches to full-width with
+            mode-specific horizontal padding (24 / 16 / 10 px) — so the
+            Burner (and every page) shares one workspace width per mode
+            instead of the old fixed 1280px centered column. Auth, TopNav,
+            providers and global shell behavior are unchanged. */}
+        <div className="vl-layout">
           <main>{children}</main>
         </div>
+        <LayoutModeSwitcher />
       </body>
     </html>
   );

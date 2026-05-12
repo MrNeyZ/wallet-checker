@@ -81,12 +81,11 @@ function BurnerBody() {
         Hundreds of frosted cards on a 1000+ NFT wallet were a major
         compositor hot path. The full /groups/[id] view stays untouched. */}
     <div className="vl-burner space-y-2.5">
-      {/* Warning strip — slim red-coded banner; matches Burner.html. */}
-      <div
-        role="note"
-        className="flex items-center gap-2 rounded-[10px] border border-[rgba(239,120,120,0.16)] bg-[rgba(239,120,120,0.04)] px-3 py-1.5 text-[12px] text-[rgba(239,120,120,0.85)]"
-      >
-        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--vl-red)] shadow-[0_0_8px_rgba(239,120,120,0.6)]" />
+      {/* Warning strip — WC v2 `.vl-warn-strip` (destructive-context line,
+          lighter than `.vl-burn-card`). Same copy + the safety:strict
+          tag pushed right. */}
+      <div role="note" className="vl-warn-strip">
+        <span className="dot" />
         <span>
           <span className="font-semibold text-[#f8a7a7]">destructive</span>
           {" · "}burns are irreversible. Every burn requires acknowledgement,
@@ -164,28 +163,19 @@ function StatCard({
   sub?: string;
   accent?: "green" | "muted";
 }) {
-  // Compact tile inside the .vl-card surface. Smaller value + tighter
-  // padding so the empty pre-scan state reads as informational chrome,
-  // not as four giant placeholder cards.
-  const valColor =
-    accent === "green"
-      ? "text-[color:var(--vl-purple-2)]"
-      : accent === "muted"
-        ? "text-[color:var(--vl-fg-2)]"
-        : "text-white";
+  // WC v2 `.vl-tile` rendered inside a `.vl-stat-strip` parent — the
+  // strip's grid rules place `.vl-section-header` (caption), `.vl-stat-value`
+  // (number), and the `.mono` sub-line into a compact one-row layout that
+  // collapses to 2x2 on `html[data-layout="phone"]`. Accent → vl-stat-value
+  // modifier (`is-purple` preserves the prior reclaim-tile look, `is-muted`
+  // for placeholder/dim values).
+  const valMod =
+    accent === "green" ? "is-purple" : accent === "muted" ? "is-muted" : "";
   return (
-    <div className="vl-card flex flex-col gap-0.5 px-3 py-2">
-      <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.4px] text-[color:var(--vl-fg-3)]">
-        {label}
-      </div>
-      <div className={`text-[18px] font-bold leading-tight tracking-tight tabular-nums ${valColor}`}>
-        {value}
-      </div>
-      {sub && (
-        <div className="font-mono text-[10px] text-[color:var(--vl-fg-4)]">
-          {sub}
-        </div>
-      )}
+    <div className="vl-tile">
+      <div className="vl-section-header">{label}</div>
+      <div className={`vl-stat-value${valMod ? ` ${valMod}` : ""}`}>{value}</div>
+      {sub && <div className="mono">{sub}</div>}
     </div>
   );
 }
@@ -251,7 +241,7 @@ function BurnerStatTiles({ summary }: { summary: CleanerRowSummary | null }) {
   }, [legacyBurnable, pnftBurnable, coreBurnable, splBurnable]);
 
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    <div className="vl-stat-strip">
       <StatCard
         label="Items Found"
         value={itemsFound !== null ? itemsFound.toLocaleString("en-US") : "—"}
