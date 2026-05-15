@@ -3624,6 +3624,7 @@ function CompactSendStatus({
   requiresSignatureFrom,
   onWalletRescan,
   rescanPending,
+  cancelNotice,
 }: {
   kindLabel: string;
   send: BurnSendState;
@@ -3639,6 +3640,11 @@ function CompactSendStatus({
   requiresSignatureFrom: string;
   onWalletRescan: () => void;
   rescanPending: boolean;
+  // Soft "Signing cancelled in wallet" notice shown after a Phantom
+  // user-rejection. Takes priority over the standard idle/preparing
+  // status line so the operator sees the rejection feedback inline
+  // without the loud red "Send failed" block.
+  cancelNotice?: string | null;
 }) {
   // Pre-build / pre-sign gate failure — surface the reason inline so the
   // user knows why nothing fired automatically.
@@ -3684,6 +3690,19 @@ function CompactSendStatus({
             {rescanPending ? "Refreshing…" : "Rescan & retry"}
           </button>
         </div>
+      </div>
+    );
+  }
+
+  // Soft cancellation notice — fires after a user-rejected wallet sign
+  // when the catch in handleSignAndSend reset `send` to idle. Amber
+  // rather than red so it reads as informational, not failure. Clears
+  // automatically on the next sign attempt (handleSignAndSend's
+  // setCancelNotice(null) at the top).
+  if (cancelNotice) {
+    return (
+      <div className="border-t border-[rgba(232,193,74,0.30)] bg-[rgba(232,193,74,0.06)] px-3 py-1.5 text-[11px] text-[#e8c14a]">
+        {cancelNotice}
       </div>
     );
   }
@@ -3779,6 +3798,16 @@ function BurnSignAndSendBlock({
   // destructive acknowledgement instead of the in-section checkbox.
   const effectiveAck = isCompact ? pageAck : ackDestructive;
   const [send, setSend] = useState<BurnSendState>({ status: "idle" });
+  // Compact-mode soft notice surfaced after a user-rejected sign. When
+  // present, the CompactSendStatus row renders a non-blocking
+  // "Signing cancelled — click Burn Selected to retry" hint instead of
+  // the red "Send failed" block, AND `send` is reset to `idle` so the
+  // sticky bar's Burn Selected click rebuilds cleanly without the user
+  // having to first dismiss an error or trigger a wallet rescan. Cleared
+  // at the start of every send attempt so it never lingers across
+  // retries. Non-compact mode is unaffected by this state — the
+  // existing in-section error UI still owns its own error display.
+  const [cancelNotice, setCancelNotice] = useState<string | null>(null);
   // Belt-and-braces guard against the rare double-click race: a user can
   // physically click twice before React re-renders the disabled state.
   // For an irreversible burn we never want two `signAndSendTransaction`
@@ -3888,6 +3917,9 @@ function BurnSignAndSendBlock({
     // state paints can never start a parallel sign.
     if (inFlightRef.current) return;
     inFlightRef.current = true;
+    // Clear any prior cancel notice so a fresh attempt doesn't carry the
+    // previous "Signing cancelled" hint into the new sign popup.
+    setCancelNotice(null);
     let signature: string | undefined;
     try {
       if (!canSend || transactionBase64 === null) return;
@@ -4014,14 +4046,41 @@ function BurnSignAndSendBlock({
         );
       }
     } catch (err) {
-      setSend({
-        status: "error",
-        signature,
-        error: prettifyWalletError(err),
-      });
+      // Distinguish "user rejected in wallet" from real send failures.
+      // Phantom emits EIP-1193 code 4001 + various rejection phrasings.
+      // For a user-cancellation we DON'T want to leave a red "Send
+      // failed" block sitting on the surface in compact mode (the
+      // /burner page) — there is no in-place retry button there, and
+      // the red block obscures the fact that the sticky bar's "Burn
+      // Selected" still works. We reset `send` to `idle` (clears the
+      // signing flag and lets the rebuild path produce a clean fresh
+      // mount on the next click) and surface a soft inline notice.
+      // `autoFireRef` is intentionally NOT cleared — it stays `true`
+      // so the SAME mount can't immediately re-fire the wallet popup
+      // (no infinite-popup loop on a stuck rejection). The user must
+      // click Burn Selected, which rebuilds and remounts this block
+      // with a fresh autoFireRef.
+      const e = err as { code?: number; message?: string } | null;
+      const msg = (e?.message ?? "").toLowerCase();
+      const userRejected =
+        e?.code === 4001 ||
+        /user rejected|user denied|request rejected|cancelled/.test(msg);
+      if (userRejected && isCompact && !signature) {
+        setSend({ status: "idle" });
+        setCancelNotice(
+          "Signing cancelled in wallet — click Burn Selected to retry.",
+        );
+      } else {
+        setSend({
+          status: "error",
+          signature,
+          error: prettifyWalletError(err),
+        });
+      }
       console.warn("[burnSend] failed", {
         kind: kindLabel,
         signature,
+        userRejected,
         error: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -4068,6 +4127,7 @@ function BurnSignAndSendBlock({
         requiresSignatureFrom={requiresSignatureFrom}
         onWalletRescan={onWalletRescan}
         rescanPending={rescanPending}
+        cancelNotice={cancelNotice}
       />
     );
   }

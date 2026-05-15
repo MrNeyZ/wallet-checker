@@ -696,17 +696,37 @@ function StickyActionBar({
       `[data-vl-burn-trigger="${key}"]`,
     );
     if (!btn) return;
-    // Scroll the section's card into view first so the inline preview
-    // / sign block that the trigger reveals lands on screen.
+    // Only scroll if the section's card is NOT already in view — the
+    // previous unconditional `scrollIntoView` caused a jump-to-top
+    // every click when the user was already looking at the section
+    // (the common case once they've selected NFTs from inside it).
+    // We still scroll when the user clicked from somewhere else on
+    // the page (e.g. scrolled down to the bottom action bar without
+    // the burn card visible) so the inline preview / sign block that
+    // the trigger reveals lands on screen.
     const wrap = btn.closest(".vl-burn-card") ?? btn;
+    let willScroll = false;
     if (wrap instanceof HTMLElement) {
-      wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+      const r = wrap.getBoundingClientRect();
+      const vh = window.innerHeight || document.documentElement.clientHeight;
+      // Treat the card as "in view" when its top sits at least 8 px
+      // below the viewport top AND its top is above the viewport
+      // bottom. Bottom-of-card overflow off-screen is fine — the
+      // sign block typically lives near the top of the card.
+      const isInView = r.top >= 8 && r.top <= vh - 80;
+      if (!isInView) {
+        wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+        willScroll = true;
+      }
     }
-    // Defer the click one frame so the scroll starts before the
-    // build/preview render swaps the layout out from under it.
-    window.setTimeout(() => {
+    // When we scrolled, defer the click ~240 ms so the smooth scroll
+    // starts before the build/preview render swaps layout under it.
+    // When we didn't scroll, fire immediately — no need to wait.
+    const fire = () => {
       if (!btn.disabled) btn.click();
-    }, 240);
+    };
+    if (willScroll) window.setTimeout(fire, 240);
+    else fire();
   };
 
   // Bar only renders when selectedCount > 0 (StickyActionBarWired gates it),
