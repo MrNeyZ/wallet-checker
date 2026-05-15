@@ -5459,18 +5459,6 @@ function VirtualizedCompactCardGrid({
   onToggle: (id: string) => void;
   itemKindLabel: string;
 }) {
-  // === [burner-perf] TEMPORARY INSTRUMENTATION ===========================
-  // Counts renders + measure() calls per second, plus current visible
-  // range and whether this grid is in a hidden ancestor. One log line per
-  // grid instance per second, prefixed [burner-perf]. Active in prod too
-  // — this is a diagnostic build, not the steady state. Remove this whole
-  // block (along with the bump line in scheduleMeasure and the
-  // `data-vl-vcg` attribute on the root <div>) when done.
-  const _bpRendersRef  = useRef(0);
-  const _bpMeasuresRef = useRef(0);
-  const _bpStateRef    = useRef({ startIdx: 0, endIdx: 0, total: 0, hidden: false });
-  _bpRendersRef.current++;
-  // === [burner-perf] END ================================================
   const containerRef = useRef<HTMLDivElement | null>(null);
   // SSR-safe defaults; the layout effect below corrects on mount.
   const [viewportW, setViewportW] = useState<number>(() =>
@@ -5523,8 +5511,6 @@ function VirtualizedCompactCardGrid({
       requestAnimationFrame(() => {
         scheduled = false;
         measure();
-        // [burner-perf] count actual measure() calls (post-throttle)
-        _bpMeasuresRef.current++;
       });
     }
     measure();
@@ -5569,41 +5555,9 @@ function VirtualizedCompactCardGrid({
   const endIdx = Math.min(items.length, endRow * cols);
   const slice = items.slice(startIdx, endIdx);
 
-  // === [burner-perf] keep stateRef + log fresh values =====================
-  _bpStateRef.current = {
-    startIdx,
-    endIdx,
-    total: items.length,
-    hidden: typeof window !== "undefined" && !!containerRef.current
-      ? (containerRef.current as HTMLElement).offsetParent === null
-      : false,
-  };
-  useEffect(() => {
-    const t = window.setInterval(() => {
-      const r = _bpRendersRef.current;
-      const m = _bpMeasuresRef.current;
-      _bpRendersRef.current = 0;
-      _bpMeasuresRef.current = 0;
-      const s = _bpStateRef.current;
-      // Drop the 1Hz log entirely when this grid has had ZERO activity
-      // since the last tick — avoids polluting the console with 4+
-      // identical "0/0" lines per second once the page has settled.
-      if (r === 0 && m === 0) return;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[burner-perf] grid ${itemKindLabel} render/s=${r} measure/s=${m} ` +
-        `mounted=${s.endIdx - s.startIdx} total=${s.total} hidden=${s.hidden}`,
-      );
-    }, 1000);
-    return () => window.clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [itemKindLabel]);
-  // === [burner-perf] END ==================================================
-
   return (
     <div
       ref={containerRef}
-      data-vl-vcg={itemKindLabel}
       className="px-3"
       style={{ height: totalHeight, position: "relative" }}
     >

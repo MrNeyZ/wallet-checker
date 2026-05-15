@@ -117,57 +117,6 @@ function BurnerBody() {
     trigger();
   }, [connected, scanStatus]);
 
-  // === [burner-perf] TEMPORARY DOM probe ===================================
-  // Counts mounted NFT cards / <img>s / virtualized grids / hidden sections
-  // and the current scroll position, once per second. Prefix [burner-perf]
-  // so logs can be filtered. Active in prod (diagnostic build) — remove
-  // this whole effect when the audit is done. Skipped when not connected
-  // (the disconnected CTA has no NFT cards anyway).
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!connected) return;
-    const t = window.setInterval(() => {
-      const cards = document.querySelectorAll<HTMLElement>(".vl-nft-row");
-      const imgs  = document.querySelectorAll<HTMLImageElement>(".vl-nft-row img");
-      let visibleCards = 0;
-      let visibleImgs  = 0;
-      cards.forEach((el) => {
-        if (el.offsetParent !== null) {
-          visibleCards++;
-          visibleImgs += el.querySelectorAll("img").length;
-        }
-      });
-      const burnCards = document.querySelectorAll<HTMLElement>(".vl-burn-card");
-      let hiddenSections = 0;
-      burnCards.forEach((el) => { if (el.offsetParent === null) hiddenSections++; });
-      const grids = document.querySelectorAll<HTMLElement>("[data-vl-vcg]");
-      let hiddenGrids = 0;
-      const gridKinds: string[] = [];
-      grids.forEach((el) => {
-        const kind = el.dataset.vlVcg ?? "?";
-        const isHidden = el.offsetParent === null;
-        if (isHidden) hiddenGrids++;
-        gridKinds.push(`${kind}${isHidden ? "(h)" : ""}`);
-      });
-      // eslint-disable-next-line no-console
-      console.log(
-        `[burner-perf] dom cards=${cards.length} visibleCards=${visibleCards} ` +
-        `imgs=${imgs.length} visibleImgs=${visibleImgs} ` +
-        `sections=${burnCards.length} hiddenSections=${hiddenSections} ` +
-        `grids=${grids.length}[${gridKinds.join(",")}] hiddenGrids=${hiddenGrids}`,
-      );
-      const ae = document.activeElement as HTMLElement | null;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[burner-perf] idle probe scrollY=${Math.round(window.scrollY)} ` +
-        `activeElement=${ae ? `${ae.tagName.toLowerCase()}${ae.className ? "." + ae.className.split(" ")[0] : ""}` : "null"} ` +
-        `tab=${tab}`,
-      );
-    }, 1000);
-    return () => window.clearInterval(t);
-  }, [connected, tab]);
-  // === [burner-perf] END ===================================================
-
   // BurnAckProvider is hard-coded `true` (the page-level ack checkbox was
   // removed by operator request); the real safety boundary is the per-section
   // BurnSignAndSendBlock (audit + simulation + wallet-match + sign), untouched.
