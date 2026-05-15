@@ -229,12 +229,33 @@ function useBurnSelectionPublisher(
   clearSelection?: () => void,
 ): void {
   const ctx = useContext(BurnSelectionCtx);
+  // Hold `ctx` in a ref so the publish effect below can depend ONLY on
+  // the section's own data identity (`stableKey`), not on the registry
+  // context's identity. This is the load-bearing change behind the
+  // idle-CPU loop fix:
+  //
+  // Before, the effect was `[ctx, key, stableKey]`. Every publish from
+  // any section mutated `registry` → BurnSelectionProvider's `useMemo`
+  // produced a new `value` object → every consumer's `ctx` changed →
+  // every section's publish effect re-fired (cleanup deletes the entry,
+  // setup re-adds it) → registry mutated again → ctx changed again →
+  // perpetual loop, ~3000 re-renders/sec at idle.
+  //
+  // After: the effect depends only on the section's own data. ctx
+  // changes don't trigger republish, so the cleanup-deletes-then-setup-
+  // re-adds oscillation can't fire. Cleanup at unmount still works
+  // because `ctxRef.current` carries the latest ctx, captured up to the
+  // moment of unmount. Provider remount (essentially never in practice)
+  // is handled too — the ref points at whatever ctx exists at fire-time.
+  const ctxRef = useRef(ctx);
+  ctxRef.current = ctx;
   // Stringify so a fresh-object render with structurally-equal values
   // doesn't trigger a redundant publish.
   const stableKey = `${selectedCount}:${selectedReclaimSol ?? "null"}:${canBuild ? 1 : 0}:${totalBurnable ?? "null"}`;
   useEffect(() => {
-    if (!ctx) return;
-    ctx.publish(key, {
+    const c = ctxRef.current;
+    if (!c) return;
+    c.publish(key, {
       sectionKey: key,
       selectedCount,
       selectedReclaimSol,
@@ -242,9 +263,12 @@ function useBurnSelectionPublisher(
       totalBurnable,
       clearSelection,
     });
-    return () => ctx.publish(key, null);
+    return () => {
+      const c2 = ctxRef.current;
+      if (c2) c2.publish(key, null);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx, key, stableKey]);
+  }, [key, stableKey]);
 }
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
