@@ -1,6 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import { TopNav } from "./_components/TopNav";
 import { LayoutModeSwitcher } from "./_components/LayoutModeSwitcher";
 
@@ -8,6 +8,18 @@ const inter = Inter({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-inter",
+});
+
+// Terminal-feel mono shipped self-hosted via next/font/google. Same
+// `display: swap` as Inter so first paint uses system mono and then
+// re-renders without layout shift once the web font lands. Weights:
+// 500/600 for labels, 700 for tabular values, 400 kept for incidentals.
+// `--vl-font-mono` in globals.css points at this CSS variable first.
+const jetBrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  display: "swap",
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-jetbrains-mono",
 });
 
 export const metadata: Metadata = {
@@ -38,7 +50,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     // otherwise be flagged as an attribute mismatch on <html>.
     <html
       lang="en"
-      className={`${inter.variable} dark`}
+      className={`${inter.variable} ${jetBrainsMono.variable} dark`}
       data-layout="laptop"
       suppressHydrationWarning
     >

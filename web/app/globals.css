@@ -43,7 +43,7 @@
   --vl-green: #4fb67d;
   --vl-red: #ef7878;
   --vl-amber: #fbbf24;
-  --vl-font-mono: 'Fira Code', 'SF Mono', ui-monospace, monospace;
+  --vl-font-mono: var(--font-jetbrains-mono), 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
   --vl-font-serif: 'Playfair Display', Georgia, serif;
   --vl-motion: 0.18s;
 }
@@ -712,9 +712,13 @@ body {
   --vl-blue: #60a5fa;
   --vl-cyan: #38bdf8;
 
-  /* ── Type — JetBrains Mono primary so terminal feel reads cleaner ── */
+  /* ── Type — JetBrains Mono primary so terminal feel reads cleaner.
+     The `--font-jetbrains-mono` CSS var is set by next/font/google in
+     app/layout.tsx; the named-family entries are SSR / no-JS fallbacks
+     so a system-installed JetBrains Mono (or SF Mono / ui-monospace)
+     still renders before the web font arrives. ─────────────────────── */
   --vl-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
-  --vl-font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
+  --vl-font-mono: var(--font-jetbrains-mono), 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
 
   /* ── Shadow — base + strong. Old `--vl-shadow-card` aliased so any
      existing rule that referenced it still resolves. ─────────────── */
@@ -819,14 +823,15 @@ html[data-layout="phone"] .vl-burner-dash {
 }
 .vl-donut-row {
   display: grid;
-  grid-template-columns: 6px 30px minmax(0, 1fr) 32px;
+  grid-template-columns: 6px 34px minmax(0, 1fr) 36px;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   font-family: var(--vl-font-mono);
-  font-size: 10.5px;
+  font-feature-settings: "tnum", "ss01";
+  font-size: 11.5px;
   color: var(--vl-fg-2);
   /* Stable height across rows so the legend reads as a clean grid. */
-  height: 14px;
+  height: 16px;
 }
 .vl-donut-row.is-dim { opacity: 0.42; }
 .vl-donut-row .dot {
@@ -835,11 +840,11 @@ html[data-layout="phone"] .vl-burner-dash {
   border-radius: 50%;
 }
 .vl-donut-row .label {
-  color: var(--vl-fg-3);
-  font-size: 9.5px;
-  letter-spacing: 0.4px;
+  color: var(--vl-fg-2);
+  font-size: 10.5px;
+  letter-spacing: 0.6px;
   text-transform: uppercase;
-  font-weight: 700;
+  font-weight: 600;
 }
 .vl-donut-row .bar {
   height: 4px;
@@ -857,7 +862,7 @@ html[data-layout="phone"] .vl-burner-dash {
   color: var(--vl-fg);
   font-variant-numeric: tabular-nums;
   font-weight: 700;
-  font-size: 11px;
+  font-size: 12.5px;
   text-align: right;
   letter-spacing: -0.2px;
 }
@@ -884,12 +889,29 @@ html[data-layout="phone"] .vl-burner-dash {
   border: 1px solid var(--vl-border);
   border-radius: 10px;
 }
+/* Section header is the metric label ("ITEMS FOUND", "EST. TXS"…). The
+   base `.vl-stat-strip .vl-tile .vl-section-header` rule (further down)
+   uses 9px / no letter-spacing — burner widens it slightly so the labels
+   read as deliberate caps not retro-debug text. tnum/ss01 sits on the
+   value rule so digits in long counts stay perfectly aligned. */
+.vl-burner .vl-stat-strip .vl-tile .vl-section-header {
+  font-size: 10.5px;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+  color: var(--vl-fg-3);
+}
+.vl-burner .vl-stat-strip .vl-tile .vl-stat-value {
+  font-feature-settings: "tnum", "ss01";
+}
 .vl-burner .vl-stat-strip .vl-tile.is-primary .vl-stat-value {
-  font-size: 21px;
-  letter-spacing: -0.6px;
+  font-size: 23px;
+  font-weight: 700;
+  letter-spacing: -0.8px;
 }
 .vl-burner .vl-stat-strip .vl-tile.is-secondary .vl-stat-value {
-  font-size: 16px;
+  font-size: 17.5px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
   color: var(--vl-fg-2);
 }
 .vl-burner .vl-stat-strip .vl-tile.is-inactive .vl-stat-value {

@@ -444,24 +444,25 @@ const WalletDonut = memo(function WalletDonut({
         );
       })}
       <text
-        x="50" y="48"
+        x="50" y="47.5"
         textAnchor="middle"
-        fontSize="15"
+        fontSize="16"
         fontFamily="var(--vl-font-mono)"
         fontWeight="700"
         fill="var(--vl-fg)"
-        letterSpacing="-0.6"
+        letterSpacing="-0.8"
+        style={{ fontFeatureSettings: '"tnum","ss01"' }}
       >
         {total > 0 ? total.toLocaleString("en-US") : "—"}
       </text>
       <text
         x="50" y="59"
         textAnchor="middle"
-        fontSize="6"
+        fontSize="6.2"
         fontFamily="var(--vl-font-mono)"
         fontWeight="600"
-        fill="var(--vl-fg-3)"
-        letterSpacing="0.8"
+        fill="var(--vl-fg-2)"
+        letterSpacing="1.4"
       >
         ITEMS
       </text>
