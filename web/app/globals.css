@@ -611,6 +611,13 @@ body {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   box-shadow: none;
+  /* Drop the always-on `will-change: transform` GPU promotion that the
+     base `.vl-card` rule applies. The hover `transform: scale(1.01)` is
+     disabled below for burner cards, so the layer promotion does no
+     useful work — it just keeps an extra compositor layer alive per
+     card. On a wallet with hundreds of NFT cards this is a real,
+     persistent idle GPU/memory cost (laptop fans / heat). */
+  will-change: auto;
 }
 .vl-burner .vl-card.is-interactive:hover {
   /* Same border tweak; drop the multi-layer purple glow + scale lift. */

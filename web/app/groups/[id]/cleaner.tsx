@@ -5471,18 +5471,36 @@ function VirtualizedCompactCardGrid({
       setViewportW(window.innerWidth);
       setLayoutMode(document.documentElement.dataset.layout);
     }
+    // rAF-coalesced scroll handler — coalesces multiple scroll events
+    // fired within a single frame into one `measure()` so we don't
+    // re-render the virtualized grid more than once per repaint.
+    // Without this, a fast scroll fires `measure()` 60+ times/second
+    // and each call ran 4 setStates (containerTop / viewportH /
+    // viewportW / layoutMode); React 18 auto-batches the 4 setStates
+    // into a single render, but the call itself still happens per
+    // event. Throttling at the rAF boundary caps work to the refresh
+    // rate, which is the maximum useful update rate for a sticky-grid.
+    let scheduled = false;
+    function scheduleMeasure() {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        measure();
+      });
+    }
     measure();
-    window.addEventListener("scroll", measure, { passive: true });
-    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", scheduleMeasure, { passive: true });
+    window.addEventListener("resize", scheduleMeasure);
     // React to LayoutModeSwitcher flipping <html data-layout="…">.
-    const mo = new MutationObserver(measure);
+    const mo = new MutationObserver(scheduleMeasure);
     mo.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["data-layout"],
     });
     return () => {
-      window.removeEventListener("scroll", measure);
-      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", scheduleMeasure);
+      window.removeEventListener("resize", scheduleMeasure);
       mo.disconnect();
     };
   }, [totalHeight]);
@@ -5583,6 +5601,15 @@ function BurnCandidateGroupGrid({
   onToggleGroup: (ids: string[], selectAll: boolean) => void;
   itemKindLabel: string; // "NFT" / "pNFT" / "asset"
 }) {
+  // Stable callback for PickNInGroup so its memo / event handler doesn't
+  // see a fresh function identity on every parent render. Pure wrapper
+  // over `onToggleGroup` — semantically identical to the inline arrow
+  // `(toAdd) => onToggleGroup(toAdd, true)` it replaces at the call sites
+  // below.
+  const handlePick = useCallback(
+    (toAdd: string[]) => onToggleGroup(toAdd, true),
+    [onToggleGroup],
+  );
   // Compact (`/burner`) virtualizes the per-group card grid against the
   // window scroll. The visual UX is "one continuous grid" but only the
   // rows in the viewport (plus a small overscan) are mounted. On a
@@ -5745,7 +5772,7 @@ function BurnCandidateGroupGrid({
                   <PickNInGroup
                     ids={ids}
                     selected={selected}
-                    onPick={(toAdd) => onToggleGroup(toAdd, true)}
+                    onPick={handlePick}
                   />
                   <button
                     type="button"
@@ -5806,7 +5833,7 @@ function BurnCandidateGroupGrid({
                 <PickNInGroup
                   ids={ids}
                   selected={selected}
-                  onPick={(toAdd) => onToggleGroup(toAdd, true)}
+                  onPick={handlePick}
                 />
                 <button
                   type="button"

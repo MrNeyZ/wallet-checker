@@ -456,6 +456,7 @@ function BurnerStatTiles({
   // inside each section's local state), so we surface only the four
   // burnable totals here.
   useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
     console.log("[burner] routing summary", {
       legacy: legacyBurnable,
       pnft: pnftBurnable,
