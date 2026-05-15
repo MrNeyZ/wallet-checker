@@ -267,7 +267,12 @@ body {
   background:
     linear-gradient(rgba(255,255,255,0.03), rgba(255,255,255,0.03)),
     var(--vl-surface);
-  border: 1px solid rgba(239,120,120,0.22);
+  /* Slightly softer red border alpha + the existing ::before red stripe
+     carries the "destructive" signal on its own. Lower border alpha lets
+     the section header (one tier brighter bg) read as the dominant
+     structure cue, so the hierarchy reads: section header → collection
+     row → item card → action. */
+  border: 1px solid rgba(239,120,120,0.16);
   border-radius: 10px;
   box-shadow: var(--vl-shadow-card);
 }
@@ -302,13 +307,17 @@ body {
   justify-content: space-between;
   gap: 8px;
   border-bottom: 1px solid var(--vl-border);
-  background: rgba(168,144,232,0.04);
-  padding: 8px 12px;
+  /* Tighter vertical padding so collapsed sections read as a compact
+     accordion bar rather than a tall panel header. Horizontal padding
+     unchanged. Section header is also one tier brighter than the card
+     surface so it visibly leads the hierarchy section → collection. */
+  background: rgba(168,144,232,0.055);
+  padding: 6px 12px;
   text-align: left;
   transition: background var(--vl-motion);
   cursor: pointer;
 }
-.vl-burn-section-head:hover { background: rgba(168,144,232,0.08); }
+.vl-burn-section-head:hover { background: rgba(168,144,232,0.09); }
 .vl-burn-section-title {
   display: inline-flex;
   align-items: baseline;
@@ -520,14 +529,17 @@ body {
 }
 .vl-btn-ghost {
   background: transparent;
-  border: 1px solid var(--vl-border);
+  /* One tier stronger than `--vl-border` so the secondary action (Rescan,
+     Clear) reads as clickable at a glance without competing with the
+     primary Burn button. Still subordinate to primary. */
+  border: 1px solid var(--vl-border-h);
   color: var(--vl-fg-2);
 }
 .vl-btn-ghost:hover:not(:disabled) {
   border-color: var(--vl-purple);
   color: var(--vl-purple-2);
-  background: rgba(168,144,232,0.08);
-  box-shadow: 0 0 0 1px rgba(168,144,232,0.18);
+  background: rgba(168,144,232,0.10);
+  box-shadow: 0 0 0 1px rgba(168,144,232,0.22);
 }
 
 /* Tabs — used as a page-level tab strip on /groups/[id]. Mirrors the
@@ -567,20 +579,23 @@ body {
   border-bottom-color: var(--vl-purple);
   background: linear-gradient(180deg, rgba(128,104,216,0.08) 0%, rgba(128,104,216,0.00) 100%);
 }
-/* Per-tab count pill (WC v2 — `.vl-tab .count` from the prototype's
-   tokens.css). The `.num` helper on the same span gives tabular figures. */
+/* Per-tab count badge — reads as part of the tab label rather than a
+   floating pill. Slim padding, transparent border, lower-contrast bg so
+   the count sits next to the label as a built-in numeric. Active state
+   keeps the purple accent so the eye still finds the live count. */
 .vl-tab .count {
   font-size: 10px;
-  padding: 1px 6px;
+  padding: 0 5px;
   border-radius: 100px;
-  background: rgba(168, 144, 232, 0.10);
-  color: var(--vl-fg-2);
-  border: 1px solid var(--vl-border);
+  background: rgba(168, 144, 232, 0.08);
+  color: var(--vl-fg-3);
+  border: 1px solid transparent;
+  font-variant-numeric: tabular-nums;
 }
 .vl-tab.is-active .count {
-  background: var(--vl-purple-soft);
-  border-color: var(--vl-purple-border);
+  background: rgba(168, 144, 232, 0.18);
   color: var(--vl-purple-2);
+  border-color: transparent;
 }
 
 /* ============================================================================
@@ -870,13 +885,16 @@ html[data-layout="phone"] .vl-stat-strip .vl-tile > .mono { display: none; }
 .vl-search input::placeholder { color: var(--vl-fg-4); }
 .vl-search .icon { color: var(--vl-fg-4); display: flex; }
 
-/* Warning strip — destructive context line, lighter than vl-burn-card. */
+/* Warning strip — destructive context line, lighter than vl-burn-card.
+   Thinned vertically and softened the red border so it reads as
+   ambient context, not an error banner. Section header and burn-card
+   border still carry the real "destructive" signal. */
 .vl-warn-strip {
   display: flex; align-items: center; gap: 8px;
-  padding: 7px 12px;
+  padding: 5px 12px;
   border-radius: 8px;
-  border: 1px solid rgba(239, 120, 120, 0.20);
-  background: rgba(239, 120, 120, 0.04);
+  border: 1px solid rgba(239, 120, 120, 0.14);
+  background: rgba(239, 120, 120, 0.035);
   color: rgba(239, 120, 120, 0.92);
   font-size: 12px;
 }
@@ -1316,7 +1334,16 @@ html[data-layout="phone"]  .vl-nft-rows { grid-template-columns: repeat(2, minma
   transition: background var(--vl-motion), border-color var(--vl-motion);
 }
 .vl-nft-row:hover { border-color: var(--vl-border-h); background: rgba(168, 144, 232, 0.06); }
-.vl-nft-row.is-selected { border-color: var(--vl-purple-border); background: rgba(168, 144, 232, 0.10); }
+/* Selected state — stronger purple border + 3 px inset left strip so
+   the eye locks onto staged cards even across hundreds of items. Pure
+   paint (no shadow blur, no transform), so the perf-trim guarantee on
+   `.vl-burner` is preserved. Background tint bumped one notch to lock
+   the selected/non-selected contrast cleanly. */
+.vl-nft-row.is-selected {
+  border-color: var(--vl-purple);
+  background: rgba(168, 144, 232, 0.14);
+  box-shadow: inset 3px 0 0 var(--vl-purple);
+}
 .vl-nft-row .thumb {
   width: 64px; height: 64px;
   border-radius: 5px;

@@ -448,6 +448,16 @@ function BurnerStatTiles({
   const totalSelected = totalSelectedAcrossSections(registry);
   const totalReclaimSelected = totalReclaimAcrossSections(registry);
 
+  // Per-section tx-count estimate (Math.ceil(selected / TX_BATCH_SIZE) per
+  // kind), summed across all sections. Drives the new "Est. TXs" tile +
+  // its sub line. Frontend estimate — the backend's chunker is authoritative
+  // at build time; once it surfaces a real count we'll prefer that.
+  const txsLegacy = estimateTxsForSection(registry, "legacyNft");
+  const txsPnft   = estimateTxsForSection(registry, "pnft");
+  const txsCore   = estimateTxsForSection(registry, "core");
+  const txsSpl    = estimateTxsForSection(registry, "splBurn");
+  const totalTxs  = txsLegacy + txsPnft + txsCore + txsSpl;
+
   // Routing summary log — fires only when one of the per-type discovery
   // counts actually changes (selection toggles don't move these), so we
   // get one stable line per "discovery completed" event rather than a
@@ -503,10 +513,26 @@ function BurnerStatTiles({
         accent="green"
       />
       <StatCard
-        label="Est. Network Fee"
-        value="—"
-        sub="depends on selection"
-        accent="muted"
+        label="Est. TXs"
+        value={totalTxs > 0 ? totalTxs.toLocaleString("en-US") : "—"}
+        sub={
+          totalTxs > 0
+            // Show the per-kind tx breakdown only when more than one kind
+            // contributes — keeps the line short for single-kind burns.
+            ? (() => {
+                const parts: string[] = [];
+                if (txsLegacy > 0) parts.push(`${txsLegacy} legacy`);
+                if (txsPnft   > 0) parts.push(`${txsPnft} pNFT`);
+                if (txsCore   > 0) parts.push(`${txsCore} Core`);
+                if (txsSpl    > 0) parts.push(`${txsSpl} SPL`);
+                return parts.length > 1 ? parts.join(" + ") : `auto-split into batches`;
+              })()
+            // Pre-selection: surface the recommended batch sizes so the
+            // operator knows how the chunker carves up large picks. Tone
+            // matches the rest of the sub line (mono · muted).
+            : "≤6 legacy · ≤3 pNFT · ≤4 Core · ≤8 SPL per tx"
+        }
+        accent={totalTxs > 0 ? undefined : "muted"}
       />
     </div>
   );
@@ -581,6 +607,39 @@ const TAB_TO_SECTIONS: Record<CleanerVisibleSection, BurnSectionKey[]> = {
   // leave empty so dispatch is a no-op in that branch.
   all: [],
 };
+
+// Rough per-tx capacity by burn kind — drives the "Est. TXs" headline and
+// the small "≤ N per tx" recommendation. Numbers come from the existing
+// builder's bounded-by-Solana-1232-byte-tx-size constraint:
+//   • Legacy Metaplex BurnV1 — ~6 mints per tx (smallest instruction set)
+//   • pNFT BurnV1            — ~3 mints per tx (token-record + auth-rules
+//                              accounts swell the message)
+//   • Metaplex Core BurnV1   — ~4 assets per tx
+//   • SPL burn-and-close     — ~8 mints per tx (burn ix + close ix per mint)
+//   • Empty-account close    — ~20 accounts per tx (close ix only)
+// These are *frontend display* estimates. The backend's chunker is the
+// source of truth at build time; once we expose a real per-build count
+// it'll replace this map. Until then, the values match the operator's
+// observed per-tx capacity.
+const TX_BATCH_SIZE: Record<BurnSectionKey, number> = {
+  legacyNft:  6,
+  pnft:       3,
+  core:       4,
+  splBurn:    8,
+  closeEmpty: 20,
+};
+
+// Compute a per-section estimated tx count from a registry entry's
+// `selectedCount`. Returns 0 when no selection (or no entry). Caller
+// sums across the relevant keys (per-tab or global).
+function estimateTxsForSection(
+  registry: Partial<Record<BurnSectionKey, import("../groups/[id]/cleaner").BurnSelectionEntry>>,
+  key: BurnSectionKey,
+): number {
+  const entry = registry[key];
+  if (!entry || entry.selectedCount === 0) return 0;
+  return Math.ceil(entry.selectedCount / TX_BATCH_SIZE[key]);
+}
 
 const TAB_LABEL: Record<CleanerVisibleSection, string> = {
   nfts: "NFT",
@@ -760,7 +819,23 @@ function StickyActionBar({
   // Bar only renders when selectedCount > 0 (StickyActionBarWired gates it),
   // so the subline is always the "staged" form. The build pipeline may not
   // be ready yet (canBuild false → button disabled), but items are staged.
-  const subline = `${selectedCount} ${itemLabel}${selectedCount === 1 ? "" : "s"} staged · +${fmtSol(reclaimSol)} SOL reclaim`;
+  //
+  // Tx-count estimate: TabAggregate only carries the SUM across sections,
+  // not per-section counts. For single-section tabs (Core / Tokens /
+  // Empty) the math is exact. For the NFTs tab (legacy + pnft) we don't
+  // know the per-kind split, so we use the SMALLEST batch size in the
+  // tab as a conservative upper bound — the displayed "est N tx" then
+  // reads as "at most N transactions", which is the honest answer when
+  // the split isn't known.
+  const batchSizesForTab = TAB_TO_SECTIONS[tab].map((k) => TX_BATCH_SIZE[k]);
+  const conservativeBatchSize = batchSizesForTab.length === 0
+    ? Infinity
+    : Math.min(...batchSizesForTab);
+  const estTxs = conservativeBatchSize === Infinity || selectedCount === 0
+    ? 0
+    : Math.ceil(selectedCount / conservativeBatchSize);
+  const txTail = estTxs > 0 ? ` · est ${estTxs} tx${estTxs === 1 ? "" : "s"}` : "";
+  const subline = `${selectedCount} ${itemLabel}${selectedCount === 1 ? "" : "s"} staged · +${fmtSol(reclaimSol)} SOL reclaim${txTail}`;
 
   return (
     <div

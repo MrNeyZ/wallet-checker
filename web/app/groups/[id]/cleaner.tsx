@@ -3053,6 +3053,11 @@ function CleanerDetails({
             <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-1.5 text-[11px] font-semibold text-red-300">
               ⚠ Destructive and irreversible. Review every line of the preview, then explicitly sign to confirm.
             </div>
+            {/* Lightweight batch hint — frontend-side guidance only. The
+                backend's chunker is authoritative at build time. */}
+            <div className="border-b border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.03)] px-3 py-1 text-[10.5px] text-[color:var(--vl-fg-3)]">
+              Large selections auto-split into batches · up to 8 mints per tx
+            </div>
             {burn.warning && (
               <div className="border-b border-red-500/15 bg-amber-500/5 px-3 py-1 text-[11px] text-amber-300">
                 ⚠ {burn.warning}
@@ -4948,6 +4953,10 @@ function LegacyNftBurnSection({
           <div className="border-b border-red-500/20 bg-red-500/5 px-3 py-1.5 text-[11px] font-semibold text-red-300">
             ⚠ Destructive and irreversible. Review every line of the preview, then explicitly sign to confirm.
           </div>
+          {/* Batch hint — see SPL section for rationale. */}
+          <div className="border-b border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.03)] px-3 py-1 text-[10.5px] text-[color:var(--vl-fg-3)]">
+            Large selections auto-split into batches · up to 6 NFTs per tx
+          </div>
 
           {discover.status === "empty" && (
             <EmptyHint>
@@ -6708,6 +6717,11 @@ function PnftBurnSection({
             record, collection metadata, and auth-rules. Review the preview
             before signing.
           </div>
+          {/* Batch hint — pNFTs carry token-record + auth-rules accounts
+              so each tx fits fewer mints than legacy NFTs. */}
+          <div className="border-b border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.03)] px-3 py-1 text-[10.5px] text-[color:var(--vl-fg-3)]">
+            Large selections auto-split into batches · up to 3 pNFTs per tx
+          </div>
 
           {discover.status === "empty" && (
             <EmptyHint>
@@ -7389,6 +7403,10 @@ function CoreBurnSection({
             ⚠ Destructive and irreversible. Uses Metaplex Core BurnV1 and
             reclaims the Core asset account rent. Review the preview before
             signing.
+          </div>
+          {/* Batch hint — Core. */}
+          <div className="border-b border-[color:var(--vl-border)] bg-[rgba(168,144,232,0.03)] px-3 py-1 text-[10.5px] text-[color:var(--vl-fg-3)]">
+            Large selections auto-split into batches · up to 4 Core assets per tx
           </div>
 
           {discover.status === "loading" && (
