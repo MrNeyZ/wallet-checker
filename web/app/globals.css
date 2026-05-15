@@ -773,6 +773,133 @@ body {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 html[data-layout="phone"] .vl-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+
+/* ── Burner dashboard ────────────────────────────────────────────────
+   Two-column dashboard: composition donut (left) + metric strip (right).
+   On phone the donut stacks above the strip. Performance-safe: SVG only,
+   no continuous animations, no backdrop-filter (perf-trim already strips
+   it on .vl-burner descendants). */
+.vl-burner-dash {
+  display: grid;
+  grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  gap: 6px;
+  align-items: stretch;
+}
+html[data-layout="phone"] .vl-burner-dash {
+  grid-template-columns: 1fr;
+}
+.vl-burner-donut-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background:
+    linear-gradient(rgba(255,255,255,0.025), rgba(255,255,255,0.025)),
+    var(--vl-surface);
+  border: 1px solid var(--vl-border);
+  border-radius: 10px;
+  min-width: 0;
+}
+.vl-burner-donut {
+  flex-shrink: 0;
+  /* Subtle purple drop-shadow gives the ring a terminal-glow without
+     adding compositor cost — single SVG element, one shadow layer. */
+  filter: drop-shadow(0 0 6px rgba(168, 144, 232, 0.16));
+}
+.vl-donut-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: repeat(4, auto);
+  gap: 4px;
+  align-content: center;
+}
+.vl-donut-row {
+  display: grid;
+  grid-template-columns: 6px 30px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--vl-font-mono);
+  font-size: 10.5px;
+  color: var(--vl-fg-2);
+  /* Stable height across rows so the legend reads as a clean grid. */
+  height: 14px;
+}
+.vl-donut-row.is-dim { opacity: 0.42; }
+.vl-donut-row .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.vl-donut-row .label {
+  color: var(--vl-fg-3);
+  font-size: 9.5px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.vl-donut-row .bar {
+  height: 4px;
+  border-radius: 100px;
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+.vl-donut-row .bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 100px;
+  opacity: 0.88;
+}
+.vl-donut-row .count {
+  color: var(--vl-fg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 11px;
+  text-align: right;
+  letter-spacing: -0.2px;
+}
+
+/* ── Burner-scoped stat-strip overrides ──────────────────────────────
+   Taller tiles + stronger value hierarchy. `.is-primary` = headline
+   metric (Items Found / Est. Reclaim), bigger value font. `.is-secondary`
+   = supporting metric (Selected / Est. TXs), smaller value. `.is-inactive`
+   dims the whole tile when the metric has nothing to report (e.g.
+   Selected=0, TXs=0 pre-selection). Phone keeps the existing 2×2 grid
+   from the base `.vl-stat-strip` rule. */
+.vl-burner .vl-stat-strip {
+  height: 100%;
+  gap: 5px;
+}
+.vl-burner .vl-stat-strip .vl-tile {
+  padding-top: 9px;
+  padding-bottom: 11px;
+  /* Slight surface lift so the strip reads as one row of "panels" next
+     to the donut panel, not a row of bare cards. */
+  background:
+    linear-gradient(rgba(255,255,255,0.025), rgba(255,255,255,0.025)),
+    var(--vl-surface);
+  border: 1px solid var(--vl-border);
+  border-radius: 10px;
+}
+.vl-burner .vl-stat-strip .vl-tile.is-primary .vl-stat-value {
+  font-size: 21px;
+  letter-spacing: -0.6px;
+}
+.vl-burner .vl-stat-strip .vl-tile.is-secondary .vl-stat-value {
+  font-size: 16px;
+  color: var(--vl-fg-2);
+}
+.vl-burner .vl-stat-strip .vl-tile.is-inactive .vl-stat-value {
+  color: var(--vl-fg-3);
+  opacity: 0.6;
+}
+.vl-burner .vl-stat-strip .vl-tile.is-inactive .vl-section-header,
+.vl-burner .vl-stat-strip .vl-tile.is-inactive > .mono {
+  opacity: 0.65;
+}
 .vl-stat-strip .vl-tile {
   padding: 6px 10px;
   display: grid;

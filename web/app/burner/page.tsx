@@ -13,7 +13,7 @@
 //     BurnSelectionProvider registry that each burn section publishes
 //     into via useBurnSelectionPublisher
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   BurnAckProvider,
   BurnSelectionProvider,
@@ -364,18 +364,166 @@ function BurnerTabs({
   );
 }
 
+// Color palette for the wallet-composition donut + segmented bars in the
+// legend. Cyan + amber join the existing site purple + neutral to give
+// each kind a distinct hue without leaving the dark-terminal vibe.
+const KIND_COLORS = {
+  pnft:   "#a890e8", // purple — matches site --vl-purple
+  legacy: "#7a7a94", // muted lilac-gray
+  core:   "#5fcde4", // cyan
+  spl:    "#e8c14a", // amber
+} as const;
+
+// Wallet composition donut. Memoized on the four primitive counts so
+// it never re-renders during selection toggles / scroll / hover —
+// matches the perf rules: SVG only, no libs, no continuous animation.
+// Fixed 96 × 96 px viewport. The center "items" total reads as the
+// headline number; the four arcs read counter-clockwise from top.
+const WalletDonut = memo(function WalletDonut({
+  legacy,
+  pnft,
+  core,
+  spl,
+}: {
+  legacy: number | null;
+  pnft:   number | null;
+  core:   number | null;
+  spl:    number | null;
+}) {
+  const safe = (n: number | null) => (typeof n === "number" && n > 0 ? n : 0);
+  const sLegacy = safe(legacy);
+  const sPnft   = safe(pnft);
+  const sCore   = safe(core);
+  const sSpl    = safe(spl);
+  const total = sLegacy + sPnft + sCore + sSpl;
+  const r = 42;
+  const C = 2 * Math.PI * r;
+  // Segment stack: each arc starts where the previous one ended via
+  // strokeDashoffset, so the four arcs compose one continuous ring.
+  // Order = pNFT (usually biggest), legacy, core, spl — stable so the
+  // ring doesn't reshuffle colors when one kind appears/disappears.
+  const segs = [
+    { k: "pnft",   v: sPnft,   c: KIND_COLORS.pnft   },
+    { k: "legacy", v: sLegacy, c: KIND_COLORS.legacy },
+    { k: "core",   v: sCore,   c: KIND_COLORS.core   },
+    { k: "spl",    v: sSpl,    c: KIND_COLORS.spl    },
+  ];
+  let accFrac = 0;
+  return (
+    <svg
+      viewBox="0 0 100 100"
+      width="96"
+      height="96"
+      className="vl-burner-donut"
+      aria-hidden
+    >
+      <circle
+        cx="50" cy="50" r={r}
+        fill="none"
+        stroke="rgba(255,255,255,0.05)"
+        strokeWidth="7"
+      />
+      {total > 0 && segs.map((s) => {
+        if (s.v <= 0) return null;
+        const frac   = s.v / total;
+        const arc    = frac * C;
+        const offset = -(accFrac * C);
+        accFrac += frac;
+        return (
+          <circle
+            key={s.k}
+            cx="50" cy="50" r={r}
+            fill="none"
+            stroke={s.c}
+            strokeWidth="7"
+            strokeDasharray={`${arc} ${C - arc}`}
+            strokeDashoffset={offset}
+            strokeLinecap="butt"
+            transform="rotate(-90 50 50)"
+          />
+        );
+      })}
+      <text
+        x="50" y="48"
+        textAnchor="middle"
+        fontSize="15"
+        fontFamily="var(--vl-font-mono)"
+        fontWeight="700"
+        fill="var(--vl-fg)"
+        letterSpacing="-0.6"
+      >
+        {total > 0 ? total.toLocaleString("en-US") : "—"}
+      </text>
+      <text
+        x="50" y="59"
+        textAnchor="middle"
+        fontSize="6"
+        fontFamily="var(--vl-font-mono)"
+        fontWeight="600"
+        fill="var(--vl-fg-3)"
+        letterSpacing="0.8"
+      >
+        ITEMS
+      </text>
+    </svg>
+  );
+});
+
+// One row in the donut legend: color dot + uppercase label + mini bar +
+// count. Width-bound bar uses relative share (count / max-across-kinds)
+// so the eye can compare item sizes at a glance. Rendered dim when the
+// count is 0 / null so empty kinds recede.
+function DonutLegendRow({
+  color,
+  label,
+  count,
+  max,
+}: {
+  color: string;
+  label: string;
+  count: number | null;
+  max:   number;
+}) {
+  const c = typeof count === "number" ? count : 0;
+  const widthPct = max > 0 ? Math.max(2, (c / max) * 100) : 0;
+  const isDim = c === 0;
+  return (
+    <li className={`vl-donut-row${isDim ? " is-dim" : ""}`}>
+      <span className="dot" style={{ background: color }} aria-hidden />
+      <span className="label">{label}</span>
+      <span className="bar" aria-hidden>
+        <span
+          className="bar-fill"
+          style={{ width: `${widthPct}%`, background: color }}
+        />
+      </span>
+      <span className="count">{count === null ? "—" : c.toLocaleString("en-US")}</span>
+    </li>
+  );
+}
+
 function StatCard({
   label,
   value,
   sub,
   accent,
   loading,
+  tier = "secondary",
+  active = true,
 }: {
   label: string;
   value: string;
   sub?: string;
   accent?: "green" | "muted";
   loading?: boolean;
+  // `primary` = headline metric (larger value font, full opacity).
+  // `secondary` = supporting metric (smaller value, slightly muted).
+  // Hierarchy lives in CSS via `.vl-burner .vl-tile.is-primary/.is-secondary`.
+  tier?: "primary" | "secondary";
+  // When false, the tile dims (value color → fg-3, label opacity 0.65).
+  // Use for "selected=0", "txs=0" pre-selection states so empty cards
+  // visibly recede.
+  active?: boolean;
 }) {
   // WC v2 `.vl-tile` rendered inside a `.vl-stat-strip` parent — the
   // strip's grid rules place `.vl-section-header` (caption), `.vl-stat-value`
@@ -386,8 +534,10 @@ function StatCard({
   // shimmer (matches the prototype's <StatTile loading>).
   const valMod =
     accent === "green" ? "is-purple" : accent === "muted" ? "is-muted" : "";
+  const tierCls = tier === "primary" ? " is-primary" : " is-secondary";
+  const activeCls = active ? "" : " is-inactive";
   return (
-    <div className="vl-tile">
+    <div className={`vl-tile${tierCls}${activeCls}`}>
       <div className="vl-section-header">{label}</div>
       {loading ? (
         <div className="vl-skel" style={{ height: 18, width: "62%" }} />
@@ -476,64 +626,103 @@ function BurnerStatTiles({
     });
   }, [legacyBurnable, pnftBurnable, coreBurnable, splBurnable]);
 
+  // Max single-kind count drives the legend's bar widths so the eye can
+  // compare relative sizes (vs `count/total` which makes everything tiny
+  // when one kind dominates). Falls back to 0 → bars empty.
+  const maxKind = Math.max(
+    typeof legacyBurnable === "number" ? legacyBurnable : 0,
+    typeof pnftBurnable   === "number" ? pnftBurnable   : 0,
+    typeof coreBurnable   === "number" ? coreBurnable   : 0,
+    typeof splBurnable    === "number" ? splBurnable    : 0,
+  );
+  const hasReclaimContext =
+    totalReclaimSelected > 0 || (summary !== null && summary.reclaimSol > 0);
+
   return (
-    <div className="vl-stat-strip">
-      <StatCard
-        label="Items Found"
-        value={itemsFound !== null ? itemsFound.toLocaleString("en-US") : "—"}
-        sub={summary ? itemsBreakdown : scanning ? "scanning…" : "scan to populate"}
-        loading={scanning && itemsFound === null}
-      />
-      <StatCard
-        label="Selected"
-        value={totalSelected > 0 ? totalSelected.toLocaleString("en-US") : "—"}
-        sub={
-          totalSelected > 0
-            ? "across all sections"
-            : "select items below"
-        }
-        accent={totalSelected > 0 ? undefined : "muted"}
-      />
-      <StatCard
-        label="Est. Reclaim"
-        value={
-          totalSelected > 0
-            ? `${fmtSol(totalReclaimSelected)} SOL`
-            : summary
-              ? `${fmtSol(summary.reclaimSol)} SOL`
-              : "—"
-        }
-        sub={
-          totalSelected > 0
-            ? "from current selection"
-            : summary
-              ? "max possible"
-              : "scan to populate"
-        }
-        accent="green"
-      />
-      <StatCard
-        label="Est. TXs"
-        value={totalTxs > 0 ? totalTxs.toLocaleString("en-US") : "—"}
-        sub={
-          totalTxs > 0
-            // Show the per-kind tx breakdown only when more than one kind
-            // contributes — keeps the line short for single-kind burns.
-            ? (() => {
-                const parts: string[] = [];
-                if (txsLegacy > 0) parts.push(`${txsLegacy} legacy`);
-                if (txsPnft   > 0) parts.push(`${txsPnft} pNFT`);
-                if (txsCore   > 0) parts.push(`${txsCore} Core`);
-                if (txsSpl    > 0) parts.push(`${txsSpl} SPL`);
-                return parts.length > 1 ? parts.join(" + ") : `auto-split into batches`;
-              })()
-            // Pre-selection: surface the recommended batch sizes so the
-            // operator knows how the chunker carves up large picks. Tone
-            // matches the rest of the sub line (mono · muted).
-            : "≤6 legacy · ≤3 pNFT · ≤4 Core · ≤8 SPL per tx"
-        }
-        accent={totalTxs > 0 ? undefined : "muted"}
-      />
+    // Two-column dashboard: composition donut on the left, metric strip
+    // on the right. On phone the donut stacks above the strip via the
+    // `.vl-burner-dash` media rule in globals.css.
+    <div className="vl-burner-dash">
+      <div className="vl-burner-donut-panel">
+        <WalletDonut
+          legacy={legacyBurnable}
+          pnft={pnftBurnable}
+          core={coreBurnable}
+          spl={splBurnable}
+        />
+        <ul className="vl-donut-legend">
+          <DonutLegendRow color={KIND_COLORS.pnft}   label="pNFT" count={pnftBurnable}   max={maxKind} />
+          <DonutLegendRow color={KIND_COLORS.legacy} label="NFT"  count={legacyBurnable} max={maxKind} />
+          <DonutLegendRow color={KIND_COLORS.core}   label="Core" count={coreBurnable}   max={maxKind} />
+          <DonutLegendRow color={KIND_COLORS.spl}    label="SPL"  count={splBurnable}    max={maxKind} />
+        </ul>
+      </div>
+      <div className="vl-stat-strip">
+        <StatCard
+          label="Items Found"
+          value={itemsFound !== null ? itemsFound.toLocaleString("en-US") : "—"}
+          sub={summary ? itemsBreakdown : scanning ? "scanning…" : "scan to populate"}
+          loading={scanning && itemsFound === null}
+          tier="primary"
+          active={itemsFound !== null && itemsFound > 0}
+        />
+        <StatCard
+          label="Selected"
+          value={totalSelected > 0 ? totalSelected.toLocaleString("en-US") : "—"}
+          sub={
+            totalSelected > 0
+              ? "across all sections"
+              : "select items below"
+          }
+          accent={totalSelected > 0 ? undefined : "muted"}
+          tier="secondary"
+          active={totalSelected > 0}
+        />
+        <StatCard
+          label="Est. Reclaim"
+          value={
+            totalSelected > 0
+              ? `${fmtSol(totalReclaimSelected)} SOL`
+              : summary
+                ? `${fmtSol(summary.reclaimSol)} SOL`
+                : "—"
+          }
+          sub={
+            totalSelected > 0
+              ? "from current selection"
+              : summary
+                ? "max possible"
+                : "scan to populate"
+          }
+          accent="green"
+          tier="primary"
+          active={hasReclaimContext}
+        />
+        <StatCard
+          label="Est. TXs"
+          value={totalTxs > 0 ? totalTxs.toLocaleString("en-US") : "—"}
+          sub={
+            totalTxs > 0
+              // Show the per-kind tx breakdown only when more than one kind
+              // contributes — keeps the line short for single-kind burns.
+              ? (() => {
+                  const parts: string[] = [];
+                  if (txsLegacy > 0) parts.push(`${txsLegacy} legacy`);
+                  if (txsPnft   > 0) parts.push(`${txsPnft} pNFT`);
+                  if (txsCore   > 0) parts.push(`${txsCore} Core`);
+                  if (txsSpl    > 0) parts.push(`${txsSpl} SPL`);
+                  return parts.length > 1 ? parts.join(" + ") : `auto-split into batches`;
+                })()
+              // Pre-selection: surface the recommended batch sizes so the
+              // operator knows how the chunker carves up large picks. Tone
+              // matches the rest of the sub line (mono · muted).
+              : "≤6 legacy · ≤3 pNFT · ≤4 Core · ≤8 SPL per tx"
+          }
+          accent={totalTxs > 0 ? undefined : "muted"}
+          tier="secondary"
+          active={totalTxs > 0}
+        />
+      </div>
     </div>
   );
 }
