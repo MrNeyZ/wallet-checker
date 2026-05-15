@@ -696,37 +696,64 @@ function StickyActionBar({
       `[data-vl-burn-trigger="${key}"]`,
     );
     if (!btn) return;
-    // Only scroll if the section's card is NOT already in view — the
-    // previous unconditional `scrollIntoView` caused a jump-to-top
-    // every click when the user was already looking at the section
-    // (the common case once they've selected NFTs from inside it).
-    // We still scroll when the user clicked from somewhere else on
-    // the page (e.g. scrolled down to the bottom action bar without
-    // the burn card visible) so the inline preview / sign block that
-    // the trigger reveals lands on screen.
+    // Only scroll if the section's card is COMPLETELY offscreen.
+    // Earlier `r.top >= 8 && r.top <= vh - 80` was a TOP-only check —
+    // it treated a tall card whose header had scrolled off as "not in
+    // view" and forcibly scrolled the page back up to the header.
+    // That's the actual scroll-jump the operator sees: they scroll
+    // down through the NFT grid (which lives inside the card), click
+    // Burn Selected, and the page snaps to the section start. Switch
+    // to a strict overlap geometry: ANY pixel of the card inside the
+    // viewport counts as "in view" and skips the scroll entirely.
+    // This matches the operator's expectation that staying inside the
+    // section preserves position exactly.
     const wrap = btn.closest(".vl-burn-card") ?? btn;
     let willScroll = false;
     if (wrap instanceof HTMLElement) {
       const r = wrap.getBoundingClientRect();
       const vh = window.innerHeight || document.documentElement.clientHeight;
-      // Treat the card as "in view" when its top sits at least 8 px
-      // below the viewport top AND its top is above the viewport
-      // bottom. Bottom-of-card overflow off-screen is fine — the
-      // sign block typically lives near the top of the card.
-      const isInView = r.top >= 8 && r.top <= vh - 80;
-      if (!isInView) {
+      // Card overlaps viewport whenever its bottom hasn't scrolled
+      // above the top AND its top hasn't scrolled past the bottom.
+      const overlapsViewport = r.bottom > 0 && r.top < vh;
+      if (!overlapsViewport) {
         wrap.scrollIntoView({ behavior: "smooth", block: "start" });
         willScroll = true;
       }
     }
     // When we scrolled, defer the click ~240 ms so the smooth scroll
     // starts before the build/preview render swaps layout under it.
-    // When we didn't scroll, fire immediately — no need to wait.
+    // When we didn't scroll, fire immediately — but capture scrollY
+    // first and restore it across the React re-render. Restoration
+    // pattern: double `requestAnimationFrame` (waits for React's
+    // commit + browser paint) then a setTimeout(50) mop-up for any
+    // async layout follow-up (Server Action latency repaint,
+    // transition-pending → ready re-render). All three are idempotent
+    // — they only call scrollTo if the page actually drifted off the
+    // captured scrollY. Covers the two non-scrollIntoView causes of a
+    // jump:
+    //   • document shrinks when an existing preview unmounts on a
+    //     retry click → browser clamps scrollY down to new max.
+    //   • DOM mutation triggers scroll-anchor adjustment.
+    // Both restores are skipped in the scrolled path so the smooth
+    // scroll-into-view animation isn't cancelled mid-flight.
     const fire = () => {
       if (!btn.disabled) btn.click();
     };
-    if (willScroll) window.setTimeout(fire, 240);
-    else fire();
+    if (willScroll) {
+      window.setTimeout(fire, 240);
+    } else {
+      const prevY = window.scrollY;
+      fire();
+      const restore = () => {
+        if (Math.abs(window.scrollY - prevY) > 1) {
+          window.scrollTo({ top: prevY, behavior: "auto" });
+        }
+      };
+      requestAnimationFrame(() => {
+        requestAnimationFrame(restore);
+      });
+      window.setTimeout(restore, 50);
+    }
   };
 
   // Bar only renders when selectedCount > 0 (StickyActionBarWired gates it),
