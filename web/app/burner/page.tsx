@@ -20,6 +20,7 @@ import {
   CleanerRow,
   ScanRegistryProvider,
   WalletProvider,
+  useBurnSelectionClearAll,
   useBurnSelectionRegistry,
   useWallet,
   type BurnSectionKey,
@@ -116,6 +117,24 @@ function BurnerBody() {
     autoScannedRef.current.add(connected);
     trigger();
   }, [connected, scanStatus]);
+
+  // ── Stale-selection guard on wallet switch ──────────────────────────────
+  // Burn-selection sections stay mounted across wallet identity changes
+  // (the connected boolean stays truthy when the user switches accounts
+  // inside Phantom), so their per-section publisher cleanup never fires
+  // and prior wallet's selection entries linger in the registry. Without
+  // this guard the sticky action bar can briefly show wallet-A's
+  // selection counts while wallet-B's scan is still in flight. The
+  // clearAll is a single setState that no-ops when the registry is
+  // already empty, so it pays nothing on initial connect.
+  const clearBurnSelection = useBurnSelectionClearAll();
+  const prevConnectedRef = useRef<string | null>(connected);
+  useEffect(() => {
+    if (prevConnectedRef.current !== connected) {
+      if (prevConnectedRef.current !== null) clearBurnSelection();
+      prevConnectedRef.current = connected;
+    }
+  }, [connected, clearBurnSelection]);
 
   // BurnAckProvider is hard-coded `true` (the page-level ack checkbox was
   // removed by operator request); the real safety boundary is the per-section

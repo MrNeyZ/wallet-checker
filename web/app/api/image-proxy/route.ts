@@ -60,6 +60,49 @@ const MAX_REDIRECTS = 3;
 const RATE_LIMIT_PER_MIN = 120;
 const RATE_WINDOW_MS = 60_000;
 interface Bucket { count: number; resetAt: number }
+
+// Known-dead-gateway hosts whose timeouts aren't actionable signal:
+// nft.storage retired its public IPFS gateway, w3s/dweb subdomain
+// gateways are unreliable for old CIDs. Every NFT we still hold with
+// art pinned to these hosts hangs for the full 10 s fetch timeout. One
+// `[image-proxy] cache=miss reason=timeout` per thumbnail buries the
+// channel under thousands of identical lines and hides real proxy
+// errors. We roll up per-host timeout counts here and emit one summary
+// every 60 s of activity (or whenever the window first elapses).
+const DEAD_GATEWAY_HOST_HINTS = [
+  "nftstorage.link",
+  "w3s.link",
+  "ipfs.dweb.link",
+];
+const DEAD_GATEWAY_ROLLUP_WINDOW_MS = 60_000;
+interface DeadGatewayRollup { count: number; firstAt: number; lastAt: number }
+const deadGatewayRollups = new Map<string, DeadGatewayRollup>();
+function isKnownDeadGatewayHost(host: string): boolean {
+  for (const hint of DEAD_GATEWAY_HOST_HINTS) {
+    if (host.includes(hint)) return true;
+  }
+  return false;
+}
+function noteDeadGatewayTimeout(host: string): void {
+  // Roll up under the bare host (no path) so per-CID thumbnails share
+  // a single counter per gateway. Bounded by `DEAD_GATEWAY_HOST_HINTS`
+  // — in practice 2-3 entries in the map ever.
+  const key = host.split("/")[0] ?? host;
+  const now = Date.now();
+  const cur = deadGatewayRollups.get(key);
+  if (!cur) {
+    deadGatewayRollups.set(key, { count: 1, firstAt: now, lastAt: now });
+    return;
+  }
+  cur.count++;
+  cur.lastAt = now;
+  if (now - cur.firstAt >= DEAD_GATEWAY_ROLLUP_WINDOW_MS) {
+    console.warn(
+      `[image-proxy] dead-gateway-rollup host=${key} timeouts=${cur.count} windowMs=${now - cur.firstAt}`,
+    );
+    deadGatewayRollups.delete(key);
+  }
+}
 const buckets = new Map<string, Bucket>();
 
 // Throttle the slow-path log so a 200-thumb grid that all misses cache
@@ -489,9 +532,20 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const fetched = await safeFetch(fetchUrl);
   if (fetched.kind === "err") {
-    console.warn(
-      `[image-proxy] cache=miss reason=${fetched.reason} host=${hostLog} ms=${Date.now() - startedAt}`,
-    );
+    // Demote routine timeouts against known-dead public gateways to a
+    // sampled per-host rollup. Every other error path (4xx/5xx,
+    // fetch_failed, non-dead-host timeouts) still logs immediately so
+    // real proxy regressions stay visible.
+    if (
+      fetched.reason === "timeout" &&
+      isKnownDeadGatewayHost(hostLog)
+    ) {
+      noteDeadGatewayTimeout(hostLog);
+    } else {
+      console.warn(
+        `[image-proxy] cache=miss reason=${fetched.reason} host=${hostLog} ms=${Date.now() - startedAt}`,
+      );
+    }
     return NextResponse.json(
       { error: fetched.reason },
       { status: fetched.status },

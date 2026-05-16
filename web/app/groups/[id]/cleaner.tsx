@@ -162,6 +162,13 @@ export interface BurnSelectionEntry {
 interface BurnSelectionRegistryCtx {
   registry: Partial<Record<BurnSectionKey, BurnSelectionEntry>>;
   publish: (key: BurnSectionKey, entry: BurnSelectionEntry | null) => void;
+  // Drop every entry at once. Used by /burner on wallet identity
+  // change so the sticky action bar doesn't briefly show wallet A's
+  // selection counts while wallet B's scan is still in flight.
+  // Sections stay mounted across wallet changes, so their per-section
+  // cleanup never fires; without this, stale entries persist until
+  // each section publishes new data for the new wallet.
+  clearAll: () => void;
 }
 const BurnSelectionCtx = createContext<BurnSelectionRegistryCtx | null>(null);
 
@@ -195,7 +202,19 @@ export function BurnSelectionProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
-  const value = useMemo(() => ({ registry, publish }), [registry, publish]);
+  // No-op when the registry is already empty so a wallet-change effect
+  // that fires before any selection landed doesn't trigger a phantom
+  // render of the whole subtree.
+  const clearAll = useCallback(() => {
+    setRegistry((prev) => {
+      for (const _ in prev) return {};
+      return prev;
+    });
+  }, []);
+  const value = useMemo(
+    () => ({ registry, publish, clearAll }),
+    [registry, publish, clearAll],
+  );
   return (
     <BurnSelectionCtx.Provider value={value}>{children}</BurnSelectionCtx.Provider>
   );
@@ -210,6 +229,18 @@ export function useBurnSelectionRegistry(): Partial<
 > {
   const ctx = useContext(BurnSelectionCtx);
   return ctx?.registry ?? {};
+}
+
+// Stable no-op kept at module scope so the hook's return reference is
+// stable across renders for callers without a provider (lets them put
+// the function in a `useEffect` dep array without retriggering).
+const noopClearBurnSelection = () => {};
+// Drop every registry entry. /burner calls this on wallet identity
+// change so the sticky action bar doesn't briefly show the previous
+// wallet's totals while the new wallet's scan is in flight.
+export function useBurnSelectionClearAll(): () => void {
+  const ctx = useContext(BurnSelectionCtx);
+  return ctx?.clearAll ?? noopClearBurnSelection;
 }
 
 // Publisher hook — each burn section calls this with its current state.
@@ -5137,6 +5168,19 @@ function LegacyNftCandidatesTable({
   );
 }
 
+// Flipped to `true` by the window-scroll virtualizer wrapper below.
+// When a NftThumbnail mounts inside that subtree, the IntersectionObserver
+// path of `loading="lazy"` is unreliable (rows live in a position:absolute
+// box → IO observers frequently never fire → bitmaps never download →
+// thumbnails stay dark forever). The virtualizer is the lazy-loading
+// layer; cards inside it should always load eagerly. Defaults to false
+// elsewhere so non-virtualized callers (SPL token table, burn preview,
+// /groups full view) keep their lazy + deprioritized behaviour. This
+// is a defensive belt — the BurnCandidateCard call site still passes
+// `forceImage` explicitly, but if a future caller drops that prop the
+// context keeps thumbnails working inside any virtualizer subtree.
+const InsideBurnerVirtualizerCtx = createContext(false);
+
 // Tiny image cell for NFT/Core candidate rows. Renders a fixed-size neutral
 // placeholder box when image is null OR errors, so layout stays consistent
 // and broken-image icons never flash. Lazy + async decode + no-referrer keep
@@ -5172,6 +5216,12 @@ const NftThumbnail = React.memo(function NftThumbnail({
   forceImage?: boolean;
 }) {
   const isCompact = useCompactMode();
+  // Effective force-image flag: the explicit prop OR the virtualizer
+  // context (set to true by the window-scroll virtualizer wrapper).
+  // Used in three places below: the compact-mode suppression branch,
+  // the <img> loading attr, and the fetchPriority hint.
+  const insideVirtualizer = useContext(InsideBurnerVirtualizerCtx);
+  const effectiveForceImage = forceImage || insideVirtualizer;
   const cls = size === "lg" ? "h-16 w-16" : "h-7 w-7";
   // Small labelled box ("NFT" / "pNFT" / "Core" / "SPL"). Used in two
   // cases: (1) compact, image-loading intentionally suppressed; (2) the
@@ -5196,7 +5246,7 @@ const NftThumbnail = React.memo(function NftThumbnail({
   // major source of the laptop CPU/GPU heat the operator reported. The
   // full /groups/[id] view (non-compact) still loads images normally;
   // `forceImage` callers (virtualized grids) also load normally.
-  if (isCompact && !forceImage) return labelledPlaceholder(kindLabel ?? alt);
+  if (isCompact && !effectiveForceImage) return labelledPlaceholder(kindLabel ?? alt);
   // Hide-on-error needs state so the placeholder takes over reliably across
   // re-renders (style.visibility hack survived for one render only).
   const [errored, setErrored] = useState(false);
@@ -5230,9 +5280,9 @@ const NftThumbnail = React.memo(function NftThumbnail({
       // virtualized image grid and is still bounded (~viewport-worth of
       // 64px thumbs). Non-virtualized callers (burn-preview, /groups
       // cleaner, SPL token table) keep lazy + deprioritized as before.
-      loading={forceImage ? "eager" : "lazy"}
+      loading={effectiveForceImage ? "eager" : "lazy"}
       decoding="async"
-      fetchPriority={forceImage || size === "lg" ? "auto" : "low"}
+      fetchPriority={effectiveForceImage || size === "lg" ? "auto" : "low"}
       referrerPolicy="no-referrer"
       width={size === "lg" ? 64 : 28}
       height={size === "lg" ? 64 : 28}
@@ -5565,39 +5615,46 @@ function VirtualizedCompactCardGrid({
   const slice = items.slice(startIdx, endIdx);
 
   return (
-    <div
-      ref={containerRef}
-      className="px-3"
-      style={{ height: totalHeight, position: "relative" }}
-    >
-      {slice.length > 0 && (
-        <div
-          style={{
-            position: "absolute",
-            top: startRow * rowStride,
-            left: "12px", // matches container px-3 + .vl-nft-rows horizontal padding
-            right: "12px",
-            display: "grid",
-            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-            gap: `${COMPACT_ROW_GAP_PX}px`,
-          }}
-        >
-          {slice.map((item) => (
-            <BurnCandidateCard
-              key={item.id}
-              id={item.id}
-              name={item.name}
-              image={item.image}
-              itemKindLabel={itemKindLabel}
-              estimatedGrossReclaimSol={item.estimatedGrossReclaimSol}
-              isChecked={selected.has(item.id)}
-              onToggle={onToggle}
-              compact
-            />
-          ))}
-        </div>
-      )}
-    </div>
+    // Flip the InsideBurnerVirtualizerCtx flag for the whole subtree so
+    // any NftThumbnail mounted in here defaults to eager image load,
+    // even if a future caller drops the explicit `forceImage` prop on
+    // BurnCandidateCard. Belt-and-braces with the existing explicit
+    // flag at the BurnCandidateCard → NftThumbnail call site.
+    <InsideBurnerVirtualizerCtx.Provider value={true}>
+      <div
+        ref={containerRef}
+        className="px-3"
+        style={{ height: totalHeight, position: "relative" }}
+      >
+        {slice.length > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              top: startRow * rowStride,
+              left: "12px", // matches container px-3 + .vl-nft-rows horizontal padding
+              right: "12px",
+              display: "grid",
+              gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+              gap: `${COMPACT_ROW_GAP_PX}px`,
+            }}
+          >
+            {slice.map((item) => (
+              <BurnCandidateCard
+                key={item.id}
+                id={item.id}
+                name={item.name}
+                image={item.image}
+                itemKindLabel={itemKindLabel}
+                estimatedGrossReclaimSol={item.estimatedGrossReclaimSol}
+                isChecked={selected.has(item.id)}
+                onToggle={onToggle}
+                compact
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </InsideBurnerVirtualizerCtx.Provider>
   );
 }
 
