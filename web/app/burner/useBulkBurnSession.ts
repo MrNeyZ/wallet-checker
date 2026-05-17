@@ -35,21 +35,20 @@ import type { BulkBurnMintsSnapshot } from "../groups/[id]/cleaner";
 // frontend cap here merely produces an extra batch with zero items — wasted
 // build call but not a correctness bug.
 const MAX_SPL_PER_TX = 5;
-// Legacy: backend's effective per-tx cap is 5 in practice (the response
-// returns `maxPerTx: 6` but `burnCount` lands at 5 due to packet+CU fit
-// after the trim loop). With Phase 1 NOT chaining `nextBatchCandidates`,
-// sending more than 5 per spec silently drops the overflow. Match the
-// backend's effective cap so the partition produces deterministic
-// per-spec counts the user can see in the dialog.
-const MAX_LEGACY_PER_TX = 5;
-const MAX_CORE_PER_TX = 10;
-// pNFT: observed backend `burnCount` lands at 4 in production (token-
-// record + auth-rules accounts inflate per-mint account count, which
-// the packet+CU trim loop cuts at 4). Matching this avoids unnecessary
-// continuation specs for the typical case (12 selected → 3 specs of 4
-// → 3 txs → 1 batched popup). Dynamic chaining still backstops if the
-// backend ever returns nextBatchCandidates for a 4-mint chunk.
+// NFT (legacy + pNFT) per-tx cap is 4. Smaller than the backend's
+// observed maximum, deliberately: at the previous cap of 5 for legacy,
+// Phantom's NFT-burn preview surface degraded (Blowfish red banner,
+// "0 changes" display) for the first tx of a multi-tx selection. At 4
+// per tx the preview consistently renders the asset diff. pNFT has
+// also been observed to land at 4 in production due to the token-
+// record + auth-rules + ruleSet account inflation, so 4 matches both.
+// Dynamic chaining via `nextBatchCandidates` still backstops if the
+// backend slices smaller on any individual build.
+const MAX_LEGACY_PER_TX = 4;
 const MAX_PNFT_PER_TX = 4;
+// Core: 10 in production. Different ix family (mpl-core, not token-
+// metadata) and lighter per-asset account set; kept separate.
+const MAX_CORE_PER_TX = 10;
 
 // Window: number of transactions signed in a single Phantom prompt.
 // Conservative for Phase 1 — Phantom's signAllTransactions has its own
@@ -82,6 +81,17 @@ export type BulkBurnCategory =
   | "legacyNft"
   | "core"
   | "pnft";
+
+// Signing UX modes. "safe" is the default — every tx in a window is
+// signed via provider.signTransaction one at a time so Phantom shows
+// the actual NFT asset diff before each approval (the only Phantom
+// mode that reliably surfaces per-tx changes for Token Metadata burns).
+// "fast" opts into provider.signAllTransactions for windows with >1 tx
+// at the cost of a fee-only / 0-changes batch confirm screen — the
+// user must trust the dialog's preview instead. Auto-falls back to
+// safe (with a notice) when the wallet doesn't advertise
+// signAllTransactions.
+export type BulkBurnMode = "safe" | "fast";
 
 export type BulkBurnStatus =
   | "idle"
@@ -151,14 +161,16 @@ export interface BulkBurnSessionState {
   // Per-spec rolling state. Order matches the original build queue.
   results: BulkBurnWindowEntryResult[];
   // Snapshot of provider's signAllTransactions capability at start time.
-  // Frozen for the duration of the run. Informational only — the
-  // default bulk path always uses provider.signTransaction(tx) per tx
-  // (one Phantom popup each) so the user sees Phantom's accurate NFT
-  // asset diff on every confirm. signAllTransactions is intentionally
-  // NOT taken in the default flow; this field is retained so a future
-  // opt-in toggle can surface "batched signing available" UI without
-  // re-running detection.
+  // Frozen for the duration of the run.
   hadSignAll: boolean;
+  // Active signing mode for this run. Mirrors opts.mode at start time;
+  // does NOT update mid-run if the user toggles the UI (the toggle
+  // applies to the NEXT bulk-burn start).
+  mode: BulkBurnMode;
+  // True iff the user requested "fast" but the wallet doesn't advertise
+  // signAllTransactions OR every window in the run has been size 1.
+  // Dialog surfaces a one-line notice so the user knows fast was a no-op.
+  fellBackToSequential: boolean;
   // Top-level error if the session bailed before completion (e.g. no
   // wallet connected, queue was empty). null for in-progress / clean
   // completions.
@@ -173,6 +185,8 @@ const INITIAL_STATE: BulkBurnSessionState = {
   activeTxInWindow: 0,
   results: [],
   hadSignAll: false,
+  mode: "safe",
+  fellBackToSequential: false,
   topError: null,
 };
 
@@ -194,6 +208,12 @@ export interface UseBulkBurnSessionOpts {
   // mint snapshot because closeEmpty has no per-item selection model.
   includeCloseEmpty: boolean;
   windowSize?: number;
+  // Signing UX mode. Default "safe". "fast" opts into
+  // signAllTransactions for windows with >1 tx; falls back to safe
+  // automatically when the wallet lacks signAllTransactions, with a
+  // dialog notice. Read once at start; later toggle changes only
+  // affect the next start().
+  mode?: BulkBurnMode;
 }
 
 function partition<T>(items: readonly T[], size: number): T[][] {
@@ -615,6 +635,13 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
     // Per-category continuation sequence number for cosmetic labels.
     const contSeqByKind = new Map<BuildSpec["kind"], number>();
 
+    const mode: BulkBurnMode = opts.mode ?? "safe";
+    // Whether the user's chosen mode can actually use the batched API.
+    // Fast mode without provider support degrades to safe + a notice.
+    // We don't surface fellBackToSequential as `true` for size-1
+    // windows alone — it's purely a wallet-capability fallback signal.
+    const fastModeAvailable = mode === "fast" && hadSignAll;
+
     setState({
       status: "running",
       step: "preparing",
@@ -623,6 +650,8 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
       activeTxInWindow: 0,
       results,
       hadSignAll,
+      mode,
+      fellBackToSequential: mode === "fast" && !hadSignAll,
       topError: null,
     });
 
@@ -811,33 +840,36 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
           break;
         }
 
-        // ── SIGN + SUBMIT (per-tx, interleaved) ───────────────────
-        // Phantom's signAllTransactions UI collapses to fee-only batch
-        // confirm with no per-tx asset diff. Empirical observation on
-        // this branch's earlier deploy: a single-tx legacy burn signed
-        // via signTransaction shows the NFT removal preview correctly,
-        // but a 2- or 3-tx signAllTransactions popup shows "0 changes"
-        // even when the txs are real and destructive. For a burn UX
-        // that's unacceptable — the user must see what they're
-        // destroying.
+        // ── SIGN + SUBMIT ─────────────────────────────────────────
+        // Two modes:
         //
-        // New default: always provider.signTransaction(tx) ONE AT A
-        // TIME, submit immediately after each signature, then wait
-        // SUBMIT_INTERVAL_MS before the next Phantom popup. This gives
-        // the full Phantom UI (asset diff visible) for every tx in
-        // the window, at the cost of N popups instead of 1.
+        //   SAFE (default): provider.signTransaction(tx) ONE AT A TIME,
+        //   submit, wait SUBMIT_INTERVAL_MS, next popup. Phantom shows
+        //   the full per-tx asset diff. N popups per window.
         //
-        // The signAllTransactions code path is intentionally NOT
-        // executed here. It may return later behind an opt-in flag for
-        // wallets / users that prefer the batched UX — for now,
-        // correctness of the destructive-action preview wins.
+        //   FAST: provider.signAllTransactions(windowTxs) for the
+        //   whole window when length > 1 and wallet supports it,
+        //   then sequential submit with the same delay. ONE Phantom
+        //   popup per window — at the cost of Phantom's batch UI
+        //   showing fee-only / 0 asset changes. Auto-falls back to
+        //   safe when length === 1 (no win to be had) or when the
+        //   wallet lacks signAllTransactions.
+        //
+        // Both branches share: wallet-match re-check at every step,
+        // 1s inter-tx delay between submits, refusal to sign on a
+        // mid-run wallet switch, simulationOk already enforced by
+        // gateBuilt() above.
         const conn = getConnection();
         const submitted: Array<{ idx: number; signature: string }> = [];
+        const useFastBatch =
+          fastModeAvailable &&
+          provider.signAllTransactions &&
+          builtForSigning.length > 1;
+
         setState((prev) => ({ ...prev, step: "signing", activeTxInWindow: 0 }));
 
         // Pre-sign wallet-match — covers the case where the connected
-        // wallet changed during the BUILD phase. Re-checked again
-        // before EACH popup below.
+        // wallet changed during the BUILD phase.
         if (connectedWalletRef.current !== wallet) {
           for (const e of builtForSigning) {
             updateResult(e.idx, {
@@ -848,76 +880,120 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
           continue;
         }
 
-        for (let i = 0; i < builtForSigning.length; i++) {
-          if (cancelRef.current.cancelled) {
-            for (let j = i; j < builtForSigning.length; j++) {
-              updateResult(builtForSigning[j].idx, { status: "skipped-cancel" });
-            }
-            break;
-          }
-          // Re-check wallet identity before each popup. A mid-window
-          // Phantom account switch must trip the gate before the next
-          // signTransaction call rather than relying on Phantom to
-          // reject the mismatched feePayer.
-          if (connectedWalletRef.current !== wallet) {
-            for (let j = i; j < builtForSigning.length; j++) {
-              updateResult(builtForSigning[j].idx, {
-                status: "gate-failed",
-                error: "Wallet changed during signing",
-              });
-            }
-            break;
-          }
-
-          const e = builtForSigning[i];
-
-          // SIGN — Phantom popup #i.
-          setState((prev) => ({ ...prev, activeTxInWindow: i, step: "signing" }));
-          let signedTx: Transaction;
+        if (useFastBatch) {
+          // ── FAST PATH: signAllTransactions for the whole window
+          let signedTxs: Transaction[];
           try {
             // eslint-disable-next-line no-await-in-loop
-            signedTx = await provider.signTransaction(e.tx);
+            signedTxs = await provider.signAllTransactions!(
+              builtForSigning.map((e) => e.tx),
+            );
           } catch (err) {
             const msg = err instanceof Error ? err.message : "Sign failed";
-            updateResult(e.idx, { status: "sign-failed", error: msg });
-            // Continue to next tx — the user may have intentionally
-            // skipped this one. If they wanted to halt entirely, the
-            // Cancel button on the dialog is the explicit stop. Apply
-            // the inter-popup delay before the next sign attempt so
-            // the wallet UI has a moment to settle.
+            for (const e of builtForSigning) {
+              updateResult(e.idx, { status: "sign-failed", error: msg });
+            }
+            continue;
+          }
+          // Belt-and-braces — Phantom should return one signed tx per
+          // input, but a partial return must not silently submit holes.
+          if (signedTxs.length !== builtForSigning.length) {
+            for (let i = signedTxs.length; i < builtForSigning.length; i++) {
+              updateResult(builtForSigning[i].idx, {
+                status: "sign-failed",
+                error: "Signature not produced",
+              });
+            }
+          }
+          // Sequential submit with 1s spacing.
+          setState((prev) => ({ ...prev, step: "submitting", activeTxInWindow: 0 }));
+          for (let i = 0; i < signedTxs.length; i++) {
+            if (cancelRef.current.cancelled) break;
+            if (i > 0) {
+              // eslint-disable-next-line no-await-in-loop
+              await new Promise<void>((res) => setTimeout(res, SUBMIT_INTERVAL_MS));
+              if (cancelRef.current.cancelled) break;
+            }
+            const idx = builtForSigning[i].idx;
+            setState((prev) => ({ ...prev, activeTxInWindow: i, step: "submitting" }));
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              const signature = await conn.sendRawTransaction(signedTxs[i].serialize(), {
+                skipPreflight: false,
+                preflightCommitment: "confirmed",
+                maxRetries: 3,
+              });
+              updateResult(idx, { status: "submitted", signature });
+              submitted.push({ idx, signature });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Submit failed";
+              updateResult(idx, { status: "submit-failed", error: msg });
+            }
+          }
+        } else {
+          // ── SAFE PATH: per-tx sign+submit, current default behavior
+          for (let i = 0; i < builtForSigning.length; i++) {
+            if (cancelRef.current.cancelled) {
+              for (let j = i; j < builtForSigning.length; j++) {
+                updateResult(builtForSigning[j].idx, { status: "skipped-cancel" });
+              }
+              break;
+            }
+            // Re-check wallet identity before each popup. A mid-window
+            // Phantom account switch must trip the gate before the next
+            // signTransaction call rather than relying on Phantom to
+            // reject the mismatched feePayer.
+            if (connectedWalletRef.current !== wallet) {
+              for (let j = i; j < builtForSigning.length; j++) {
+                updateResult(builtForSigning[j].idx, {
+                  status: "gate-failed",
+                  error: "Wallet changed during signing",
+                });
+              }
+              break;
+            }
+
+            const e = builtForSigning[i];
+
+            // SIGN — Phantom popup #i (single-tx UI with asset diff).
+            setState((prev) => ({ ...prev, activeTxInWindow: i, step: "signing" }));
+            let signedTx: Transaction;
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              signedTx = await provider.signTransaction(e.tx);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Sign failed";
+              updateResult(e.idx, { status: "sign-failed", error: msg });
+              if (i < builtForSigning.length - 1 && !cancelRef.current.cancelled) {
+                // eslint-disable-next-line no-await-in-loop
+                await new Promise<void>((res) => setTimeout(res, SUBMIT_INTERVAL_MS));
+              }
+              continue;
+            }
+
+            // SUBMIT — fire-and-forget for this tx.
+            setState((prev) => ({ ...prev, activeTxInWindow: i, step: "submitting" }));
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              const signature = await conn.sendRawTransaction(signedTx.serialize(), {
+                skipPreflight: false,
+                preflightCommitment: "confirmed",
+                maxRetries: 3,
+              });
+              updateResult(e.idx, { status: "submitted", signature });
+              submitted.push({ idx: e.idx, signature });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Submit failed";
+              updateResult(e.idx, { status: "submit-failed", error: msg });
+            }
+
+            // INTER-TX delay — gives the just-submitted tx a moment to
+            // land in the validator's leader queue + spaces out Phantom
+            // popups so the user can read each one.
             if (i < builtForSigning.length - 1 && !cancelRef.current.cancelled) {
               // eslint-disable-next-line no-await-in-loop
               await new Promise<void>((res) => setTimeout(res, SUBMIT_INTERVAL_MS));
             }
-            continue;
-          }
-
-          // SUBMIT — fire-and-forget for this tx. We do NOT wait for
-          // confirmation here; the CONFIRM phase below polls all
-          // submitted sigs in order after the window's last popup
-          // closes, so the user can keep approving without waiting
-          // ~5s per confirmation between popups.
-          setState((prev) => ({ ...prev, activeTxInWindow: i, step: "submitting" }));
-          try {
-            // eslint-disable-next-line no-await-in-loop
-            const signature = await conn.sendRawTransaction(signedTx.serialize(), {
-              skipPreflight: false,
-              preflightCommitment: "confirmed",
-              maxRetries: 3,
-            });
-            updateResult(e.idx, { status: "submitted", signature });
-            submitted.push({ idx: e.idx, signature });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : "Submit failed";
-            updateResult(e.idx, { status: "submit-failed", error: msg });
-          }
-
-          // INTER-TX delay — gives the just-submitted tx a moment to
-          // land in the validator's leader queue + spaces out Phantom
-          // popups so the user can read each one.
-          if (i < builtForSigning.length - 1 && !cancelRef.current.cancelled) {
-            // eslint-disable-next-line no-await-in-loop
-            await new Promise<void>((res) => setTimeout(res, SUBMIT_INTERVAL_MS));
           }
         }
 

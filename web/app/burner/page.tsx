@@ -29,7 +29,7 @@ import {
   type CleanerVisibleSection,
 } from "../groups/[id]/cleaner";
 import { fmtSol } from "@/lib/format";
-import { useBulkBurnSession } from "./useBulkBurnSession";
+import { useBulkBurnSession, type BulkBurnMode } from "./useBulkBurnSession";
 import { BulkBurnDialog } from "./BulkBurnDialog";
 import { useClientLegacyBurnPrototype } from "./useClientLegacyBurnPrototype";
 import { ClientLegacyBurnDialog } from "./ClientLegacyBurnDialog";
@@ -806,32 +806,42 @@ function BulkBurnUiWired() {
     { selectedCount: number } | undefined
   >).reduce((s, e) => s + (e?.selectedCount ?? 0), 0);
   const includeCloseEmpty = (registry.closeEmpty?.selectedCount ?? 0) > 0;
+  // Signing mode — defaults to "safe" so first-time users get the
+  // accurate-preview Phantom UX without thinking. Persisted to this
+  // component's lifetime only (no localStorage); the user re-picks per
+  // session because the trade-off is meaningful.
+  const [mode, setMode] = useState<BulkBurnMode>("safe");
   const session = useBulkBurnSession({
     targetWallet: connected,
     connectedWallet: connected,
     getMintsSnapshot,
     includeCloseEmpty,
+    mode,
   });
   const isRunning =
     session.state.status === "running" ||
     session.state.status === "done" ||
     session.state.status === "cancelled" ||
     session.state.status === "failed";
-  // Floating button — visible only when something is selected AND the
-  // dialog isn't open (the dialog has its own cancel/close controls).
+  // Floating UI — visible only when something is selected AND the
+  // dialog isn't open. Shows the Safe/Fast toggle inline with the
+  // bulk-burn trigger so the user picks the mode at the click point.
   const showButton =
     !isRunning && totalSelected > 0 && session.state.status === "idle";
   return (
     <>
       {showButton && (
-        <button
-          type="button"
-          onClick={() => void session.start()}
-          aria-label={`Bulk burn (${totalSelected} items across categories)`}
-          className="fixed bottom-[68px] right-4 z-[60] vl-btn vl-btn-secondary is-sm shadow-lg"
-        >
-          Bulk burn · {totalSelected}
-        </button>
+        <div className="fixed bottom-[68px] right-4 z-[60] flex flex-col items-end gap-1.5">
+          <BulkBurnModeToggle mode={mode} onChange={setMode} />
+          <button
+            type="button"
+            onClick={() => void session.start()}
+            aria-label={`Bulk burn (${totalSelected} items across categories, ${mode} mode)`}
+            className="vl-btn vl-btn-secondary is-sm shadow-lg"
+          >
+            Bulk burn · {totalSelected}
+          </button>
+        </div>
       )}
       <BulkBurnDialog
         state={session.state}
@@ -839,6 +849,54 @@ function BulkBurnUiWired() {
         onClose={session.reset}
       />
     </>
+  );
+}
+
+// Small inline Safe/Fast pill. Compact, default safe, no localStorage.
+// Tooltip-style description on hover via `title` so the unicode-only
+// pill stays out of the way visually.
+function BulkBurnModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: BulkBurnMode;
+  onChange: (m: BulkBurnMode) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Bulk burn signing mode"
+      className="flex items-center gap-0 rounded border border-[color:var(--vl-border)] bg-[color:var(--vl-bg-1)] overflow-hidden shadow-md text-[11px]"
+    >
+      <button
+        type="button"
+        role="radio"
+        aria-checked={mode === "safe"}
+        onClick={() => onChange("safe")}
+        title="Safe: one approval per transaction. Phantom shows accurate NFT changes."
+        className={`px-2.5 py-1 ${
+          mode === "safe"
+            ? "bg-emerald-900/40 text-emerald-200"
+            : "text-[color:var(--vl-fg-3)] hover:text-[color:var(--vl-fg-1)]"
+        }`}
+      >
+        Safe
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={mode === "fast"}
+        onClick={() => onChange("fast")}
+        title="Fast: one batched approval per window. Phantom may show 0 changes / unsafe warning."
+        className={`px-2.5 py-1 border-l border-[color:var(--vl-border)] ${
+          mode === "fast"
+            ? "bg-red-900/40 text-red-200"
+            : "text-[color:var(--vl-fg-3)] hover:text-[color:var(--vl-fg-1)]"
+        }`}
+      >
+        Fast
+      </button>
+    </div>
   );
 }
 

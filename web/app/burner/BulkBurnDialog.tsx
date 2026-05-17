@@ -145,8 +145,18 @@ export function BulkBurnDialog({
         {/* HEADER */}
         <div className="px-5 py-4 border-b border-[color:var(--vl-border)] flex items-center gap-3">
           <div className="flex-1 min-w-0">
-            <div className="text-base font-semibold leading-tight">
-              {state.status === "running" ? "Bulk burn in progress" : "Bulk burn"}
+            <div className="text-base font-semibold leading-tight flex items-center gap-2">
+              <span>{state.status === "running" ? "Bulk burn in progress" : "Bulk burn"}</span>
+              <span
+                className={`text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                  state.mode === "fast"
+                    ? "bg-red-900/40 text-red-300"
+                    : "bg-[color:var(--vl-bg-2)] text-[color:var(--vl-fg-2)]"
+                }`}
+                aria-label={`signing mode: ${state.mode}`}
+              >
+                {state.mode}
+              </span>
             </div>
             <div className="mt-0.5 text-[12px] text-[color:var(--vl-fg-3)]">
               {state.status === "running" ? (
@@ -185,16 +195,31 @@ export function BulkBurnDialog({
           )}
         </div>
 
-        {/* SIGNING-UX NOTICE — always shown.
-            Phantom's signAllTransactions UI collapses to a fee-only batch
-            confirm with no per-tx asset diff, which is unsafe for a
-            destructive NFT burn flow. The bulk burner now signs every
-            tx one at a time so each Phantom confirm shows the actual
-            NFT changes. */}
-        <div className="px-5 py-2 border-b border-[color:var(--vl-border)] bg-amber-900/20 text-[12px] text-amber-200">
-          Phantom shows accurate NFT changes only when signing one
-          transaction at a time. Bulk burn will open one approval per batch.
-        </div>
+        {/* MODE NOTICES — different copy per active mode.
+            Safe: explains why N approvals appear.
+            Fast (real): warns about Phantom's "0 changes" batch UI.
+            Fast (fell back): user requested fast but wallet doesn't
+            support batched signing — show the safe-mode copy plus a
+            one-line acknowledgement of the fallback. */}
+        {state.mode === "safe" && (
+          <div className="px-5 py-2 border-b border-[color:var(--vl-border)] bg-amber-900/20 text-[12px] text-amber-200">
+            Safe mode: Phantom shows accurate NFT changes only when signing
+            one transaction at a time. Bulk burn will open one approval per batch.
+          </div>
+        )}
+        {state.mode === "fast" && !state.fellBackToSequential && (
+          <div className="px-5 py-2 border-b border-[color:var(--vl-border)] bg-red-900/25 text-[12px] text-red-200">
+            Fast mode uses one batched Phantom approval, but Phantom may
+            show 0 changes / unsafe warning for NFT burns. Review the
+            batch details below before signing.
+          </div>
+        )}
+        {state.mode === "fast" && state.fellBackToSequential && (
+          <div className="px-5 py-2 border-b border-[color:var(--vl-border)] bg-amber-900/20 text-[12px] text-amber-200">
+            Fast mode requested but this wallet doesn&apos;t support batched
+            signing — falling back to safe mode. One approval per batch.
+          </div>
+        )}
 
         {/* TOP-LEVEL TOTALS */}
         <div className="px-5 py-3 border-b border-[color:var(--vl-border)] grid grid-cols-4 gap-3 text-[12px]">
