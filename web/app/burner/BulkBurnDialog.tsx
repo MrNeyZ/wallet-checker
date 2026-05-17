@@ -193,6 +193,14 @@ export function BulkBurnDialog({
           </div>
         )}
 
+        {/* pNFT / Core asset-changes display caveat */}
+        {state.results.some((r) => r.spec.kind === "pnft" || r.spec.kind === "core") && (
+          <div className="px-5 py-2 border-b border-[color:var(--vl-border)] bg-amber-900/20 text-[12px] text-amber-200">
+            Phantom may not show NFT asset changes for pNFT / Core burns.
+            Backend simulation passed; review batch details below before signing.
+          </div>
+        )}
+
         {/* TOP-LEVEL TOTALS */}
         <div className="px-5 py-3 border-b border-[color:var(--vl-border)] grid grid-cols-4 gap-3 text-[12px]">
           <Stat label="Confirmed" value={summary.confirmed} accent="emerald" />

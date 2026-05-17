@@ -43,7 +43,13 @@ const MAX_SPL_PER_TX = 5;
 // per-spec counts the user can see in the dialog.
 const MAX_LEGACY_PER_TX = 5;
 const MAX_CORE_PER_TX = 10;
-const MAX_PNFT_PER_TX = 5;
+// pNFT: observed backend `burnCount` lands at 4 in production (token-
+// record + auth-rules accounts inflate per-mint account count, which
+// the packet+CU trim loop cuts at 4). Matching this avoids unnecessary
+// continuation specs for the typical case (12 selected → 3 specs of 4
+// → 3 txs → 1 batched popup). Dynamic chaining still backstops if the
+// backend ever returns nextBatchCandidates for a 4-mint chunk.
+const MAX_PNFT_PER_TX = 4;
 
 // Window: number of transactions signed in a single Phantom prompt.
 // Conservative for Phase 1 — Phantom's signAllTransactions has its own
@@ -56,6 +62,19 @@ export const DEFAULT_WINDOW_SIZE = 3;
 // uses the same threshold).
 const CONFIRM_POLL_INTERVAL_MS = 1500;
 const CONFIRM_POLL_MAX_ATTEMPTS = 40; // ≈ 60s
+
+// Delay between sequential submits after a batched signAllTransactions.
+// Without this, sending 3 raw txs back-to-back can trip Helius rate limits
+// on the same window or have the leader drop later txs while still
+// processing the first. ~1s spacing keeps the wave well within validator
+// processing windows + Helius RPC budgets while still being fast.
+const SUBMIT_INTERVAL_MS = 1000;
+
+// Loop guard for dynamic chaining: per-mint attempt counter cap. The
+// backend already has its own fast-fail isolation, so this is just a
+// belt-and-braces stop if a mint keeps showing up in nextBatchCandidates
+// without ever being included.
+const MAX_ATTEMPTS_PER_MINT = 3;
 
 export type BulkBurnCategory =
   | "closeEmpty"
@@ -261,6 +280,19 @@ interface NarrowBuild {
   // know to rescan + re-run bulk burn for the remainder. Zero / absent
   // for all other builders.
   closeEmptySkipped?: number;
+  // Dynamic chaining: mints the backend deferred to a "next batch" —
+  // i.e., the user's selected mints that did NOT fit in the just-built
+  // tx (due to per-tx cap / packet size / CU budget). Phase 1 appends
+  // a continuation spec for these so the bulk session covers the full
+  // selection. Empty / absent → category done.
+  //   - legacy / pnft  → backend response `.nextBatchCandidates[].mint`
+  //   - core           → backend response `.nextBatchCandidates[].asset`
+  //   - splBurn        → derived locally by diffing requested chunk
+  //                       vs `.includedAccounts[].mint` (backend doesn't
+  //                       expose a nextBatchCandidates list for SPL)
+  //   - closeEmpty     → undefined (no per-mint tracking — see
+  //                       `closeEmptySkipped` instead)
+  nextMints?: readonly string[];
 }
 
 async function buildOne(
@@ -300,6 +332,15 @@ async function buildOne(
     if (spec.kind === "splBurn") {
       const r = await buildBurnAndCloseTxAction(wallet, spec.mints);
       if (!r.ok) return { ok: false, error: r.error };
+      // SPL backend doesn't return a nextBatchCandidates list — derive it
+      // by diffing the requested chunk against included account mints.
+      // Anything in chunk but not in includedAccounts is a candidate to
+      // retry (could be a backend trim, could be a per-mint reject —
+      // the chunk-level halt / per-mint attempt guard catches stuck loops).
+      const includedSet = new Set(
+        (r.result.includedAccounts ?? []).map((a) => a.mint),
+      );
+      const next = spec.mints.filter((m) => !includedSet.has(m));
       return {
         ok: true,
         built: {
@@ -312,12 +353,14 @@ async function buildOne(
           feePayer: r.result.feePayer,
           requiresSignatureFrom: r.result.requiresSignatureFrom,
           itemsAffected: r.result.burnCount,
+          nextMints: next.length > 0 ? next : undefined,
         },
       };
     }
     if (spec.kind === "legacyNft") {
       const r = await buildLegacyNftBurnTxAction(wallet, spec.mints);
       if (!r.ok) return { ok: false, error: r.error };
+      const next = (r.result.nextBatchCandidates ?? []).map((c) => c.mint);
       return {
         ok: true,
         built: {
@@ -330,12 +373,14 @@ async function buildOne(
           feePayer: r.result.feePayer,
           requiresSignatureFrom: r.result.requiresSignatureFrom,
           itemsAffected: r.result.burnCount,
+          nextMints: next.length > 0 ? next : undefined,
         },
       };
     }
     if (spec.kind === "pnft") {
       const r = await buildPnftBurnTxAction(wallet, spec.mints);
       if (!r.ok) return { ok: false, error: r.error };
+      const next = (r.result.nextBatchCandidates ?? []).map((c) => c.mint);
       return {
         ok: true,
         built: {
@@ -348,12 +393,14 @@ async function buildOne(
           feePayer: r.result.feePayer,
           requiresSignatureFrom: r.result.requiresSignatureFrom,
           itemsAffected: r.result.burnCount,
+          nextMints: next.length > 0 ? next : undefined,
         },
       };
     }
-    // core
+    // core — note: the BurnableCoreCandidate uses `asset` not `mint`.
     const r = await buildCoreBurnTxAction(wallet, spec.assetIds);
     if (!r.ok) return { ok: false, error: r.error };
+    const next = (r.result.nextBatchCandidates ?? []).map((c) => c.asset);
     return {
       ok: true,
       built: {
@@ -366,6 +413,7 @@ async function buildOne(
         feePayer: r.result.feePayer,
         requiresSignatureFrom: r.result.requiresSignatureFrom,
         itemsAffected: r.result.burnCount,
+        nextMints: next.length > 0 ? next : undefined,
       },
     };
   } catch (err) {
@@ -546,19 +594,32 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
     const hadSignAll = typeof provider.signAllTransactions === "function";
 
     const windowSize = Math.max(1, opts.windowSize ?? DEFAULT_WINDOW_SIZE);
-    const totalWindows = Math.ceil(queue.length / windowSize);
-    // Initial result slots — one per spec, status="building" updated as
-    // we work through them.
+    // Mutable arrays — both grow during the run as we append continuation
+    // specs derived from each build response's nextBatchCandidates. The
+    // initial partition is just a hint; the backend's response is the
+    // source of truth for what's still pending.
     const results: BulkBurnWindowEntryResult[] = queue.map((spec) => ({
       spec,
       status: "building",
     }));
+    // Per-mint attempt counter (loop guard for the dynamic-chaining path).
+    // The backend has its own fast-fail isolation for stuck mints, but a
+    // belt-and-braces stop here prevents an infinite continuation chain
+    // if a mint keeps appearing in nextBatchCandidates without ever being
+    // included.
+    const attemptsByMint = new Map<string, number>();
+    // Mints we've already seen in some build's `included*` list, used to
+    // suppress redundant continuation specs that would re-submit a mint
+    // already on its way to being burned in a sibling tx.
+    const includedSoFar = new Set<string>();
+    // Per-category continuation sequence number for cosmetic labels.
+    const contSeqByKind = new Map<BuildSpec["kind"], number>();
 
     setState({
       status: "running",
       step: "preparing",
       windowIndex: 0,
-      totalWindows,
+      totalWindows: Math.ceil(queue.length / windowSize),
       activeTxInWindow: 0,
       results,
       hadSignAll,
@@ -574,41 +635,106 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
       setState((prev) => ({ ...prev, results: [...results] }));
     };
 
+    // Pull the mint/asset list out of a spec (closeEmpty has none).
+    const specMints = (spec: BuildSpec): readonly string[] => {
+      if (spec.kind === "closeEmpty") return [];
+      if (spec.kind === "core") return spec.assetIds;
+      return spec.mints;
+    };
+
+    // Build a continuation spec from the previous spec's kind + a list of
+    // mints the backend deferred. Core uses `assetIds` rather than
+    // `mints` for the field name.
+    const makeContinuation = (
+      prevKind: BuildSpec["kind"],
+      mints: readonly string[],
+    ): BuildSpec | null => {
+      if (prevKind === "closeEmpty") return null;
+      const seq = (contSeqByKind.get(prevKind) ?? 1) + 1;
+      contSeqByKind.set(prevKind, seq);
+      const labelPrefix =
+        prevKind === "splBurn" ? "SPL burn-close"
+          : prevKind === "legacyNft" ? "Legacy NFT"
+          : prevKind === "pnft" ? "pNFT"
+          : "Core";
+      const planLabel = `${labelPrefix} batch ${seq}`;
+      if (prevKind === "core") {
+        return { kind: "core", assetIds: [...mints], planLabel };
+      }
+      return { kind: prevKind, mints: [...mints], planLabel };
+    };
+
     try {
-      for (let wi = 0; wi < totalWindows; wi++) {
+      // ── DYNAMIC WINDOW LOOP ────────────────────────────────────────
+      // Cursor advances through the queue. queue.length is RE-EVALUATED
+      // each iteration — a successful build can append continuation
+      // specs, growing the queue mid-flight. Window size remains
+      // bounded; we sign at most `windowSize` txs per Phantom popup.
+      let cursor = 0;
+      let windowIdx = 0;
+      while (cursor < queue.length) {
         if (cancelRef.current.cancelled) break;
 
-        const startIdx = wi * windowSize;
-        const endIdx = Math.min(startIdx + windowSize, queue.length);
-        const windowIndices: number[] = [];
-        for (let i = startIdx; i < endIdx; i++) windowIndices.push(i);
-
+        const startIdx = cursor;
         setState((prev) => ({
           ...prev,
-          windowIndex: wi,
+          windowIndex: windowIdx,
           step: "building",
           activeTxInWindow: 0,
         }));
 
         // ── BUILD ──────────────────────────────────────────────────
-        // Sequential — each build call can take many seconds; we don't
-        // want to fan out and saturate the backend or surface a wall of
-        // simultaneous Helius traffic.
+        // Pull up to `windowSize` specs starting at `cursor`. Because a
+        // build can append continuation specs, the queue may grow while
+        // we're filling this window — the inner condition checks
+        // queue.length each iteration so a newly-appended spec gets
+        // picked up into the SAME signing window when there's room.
         const builtForSigning: Array<{
           idx: number;
           tx: Transaction;
           built: NarrowBuild;
         }> = [];
-        for (let i = 0; i < windowIndices.length; i++) {
-          if (cancelRef.current.cancelled) {
-            for (const remIdx of windowIndices.slice(i)) {
-              updateResult(remIdx, { status: "skipped-cancel" });
+        let txInWindow = 0;
+        while (
+          cursor < queue.length &&
+          builtForSigning.length < windowSize
+        ) {
+          if (cancelRef.current.cancelled) break;
+          const idx = cursor;
+          cursor++;
+          const spec = queue[idx];
+
+          // Apply per-mint loop guard BEFORE the build. Strip mints
+          // that have already been attempted MAX_ATTEMPTS_PER_MINT
+          // times — they're treated as permanently skipped.
+          const beforeMints = specMints(spec);
+          let filteredSpec: BuildSpec = spec;
+          if (spec.kind !== "closeEmpty") {
+            const allowed = beforeMints.filter(
+              (m) => (attemptsByMint.get(m) ?? 0) < MAX_ATTEMPTS_PER_MINT,
+            );
+            if (allowed.length === 0) {
+              updateResult(idx, {
+                status: "gate-failed",
+                error: "All mints exceeded retry budget",
+              });
+              continue;
             }
-            break;
+            if (allowed.length !== beforeMints.length) {
+              filteredSpec =
+                spec.kind === "core"
+                  ? { kind: "core", assetIds: [...allowed], planLabel: spec.planLabel }
+                  : { kind: spec.kind, mints: [...allowed], planLabel: spec.planLabel };
+              results[idx] = { ...results[idx], spec: filteredSpec };
+            }
+            // Mark sent — this counts toward each mint's attempt cap.
+            for (const m of allowed) {
+              attemptsByMint.set(m, (attemptsByMint.get(m) ?? 0) + 1);
+            }
           }
-          const idx = windowIndices[i];
-          setState((prev) => ({ ...prev, activeTxInWindow: i, step: "building" }));
-          const built = await buildOne(queue[idx], wallet);
+
+          setState((prev) => ({ ...prev, activeTxInWindow: txInWindow, step: "building" }));
+          const built = await buildOne(filteredSpec, wallet);
           if (!built.ok) {
             updateResult(idx, { status: "build-failed", error: built.error });
             continue;
@@ -639,6 +765,40 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
             note,
           });
           builtForSigning.push({ idx, tx: gate.tx, built: built.built });
+          txInWindow++;
+
+          // ── DYNAMIC CHAINING ───────────────────────────────────
+          // Record this build's covered mints so they're not re-added
+          // to the queue from a sibling's nextBatchCandidates.
+          for (const m of specMints(filteredSpec)) includedSoFar.add(m);
+          // If the backend deferred mints to a next batch, append a
+          // continuation spec — but filter against mints we've already
+          // seen and against the per-mint attempt cap. The continuation
+          // joins the queue at queue.length and will be picked up by
+          // this window (if there's room) or the next one.
+          if (
+            built.built.nextMints &&
+            built.built.nextMints.length > 0 &&
+            filteredSpec.kind !== "closeEmpty"
+          ) {
+            const filteredNext = built.built.nextMints.filter(
+              (m) =>
+                !includedSoFar.has(m) &&
+                (attemptsByMint.get(m) ?? 0) < MAX_ATTEMPTS_PER_MINT,
+            );
+            if (filteredNext.length > 0) {
+              const cont = makeContinuation(filteredSpec.kind, filteredNext);
+              if (cont) {
+                queue.push(cont);
+                results.push({ spec: cont, status: "building" });
+                setState((prev) => ({
+                  ...prev,
+                  results: [...results],
+                  totalWindows: Math.ceil(queue.length / windowSize),
+                }));
+              }
+            }
+          }
         }
 
         if (builtForSigning.length === 0) {
@@ -706,11 +866,22 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
         }
 
         // ── SUBMIT ──────────────────────────────────────────────────
+        // Sequential with a ~1s gap between sends. After a batched
+        // signAllTransactions, firing all 3 raw txs back-to-back can
+        // cross Helius rate limits or land on the same leader slot in
+        // a way that gets later txs dropped. The spacing is small
+        // enough to feel synchronous to the user but reliably keeps
+        // the wave inside one validator's processing window.
         setState((prev) => ({ ...prev, step: "submitting" }));
         const submitted: Array<{ idx: number; signature: string }> = [];
         const conn = getConnection();
         for (let i = 0; i < signedTxs.length; i++) {
           if (cancelRef.current.cancelled) break;
+          if (i > 0) {
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise<void>((res) => setTimeout(res, SUBMIT_INTERVAL_MS));
+            if (cancelRef.current.cancelled) break;
+          }
           const idx = builtForSigning[i].idx;
           setState((prev) => ({ ...prev, activeTxInWindow: i, step: "submitting" }));
           try {
@@ -748,6 +919,7 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
         }
 
         if (cancelRef.current.cancelled) break;
+        windowIdx++;
         setState((prev) => ({ ...prev, step: "between-windows" }));
       }
 
