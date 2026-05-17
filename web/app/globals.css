@@ -803,6 +803,17 @@ html[data-layout="phone"] .vl-stat-strip { grid-template-columns: repeat(2, minm
 html[data-layout="phone"] .vl-burner-dash {
   grid-template-columns: 1fr;
 }
+/* Real-viewport collapse — fires regardless of `data-layout` mode. The
+   240px donut-panel floor above leaves only ~110px for the 4-up
+   `.vl-stat-strip` at narrow widths, where each `.vl-stat-value`
+   (`white-space: nowrap`, 23px) is ~120px wide and overflows its track,
+   propagating up to body → horizontal page scrollbar. Below 720px we
+   stack the donut panel over the strip just like phone-mode does, so
+   the strip gets the full content width and no value overflows. Pairs
+   with — does not replace — the data-layout="phone" rule above. */
+@media (max-width: 720px) {
+  .vl-burner-dash { grid-template-columns: 1fr; }
+}
 .vl-burner-donut-panel {
   display: flex;
   align-items: center;
@@ -1718,3 +1729,4 @@ body { padding-bottom: calc(48px + env(safe-area-inset-bottom, 0)); }
   .vl-bottomnav-link { display: none; }
   .vl-bottomnav-inner { padding-left: 12px; padding-right: 12px; }
 }
+
