@@ -74,6 +74,54 @@ const DAS_PARALLEL = 3;
 // happy-path. Sub-second calls stay silent.
 const DAS_SLOW_LOG_MS = 1000;
 
+// Single-retry backoff for 429 responses. Without this, a Helius 429 would
+// propagate as a plain HTTP-error → caller falls back to the on-chain
+// parsed-token RPC path (which also hits Helius), turning one over-quota
+// signal into a thundering re-issue across every parallel page. We parse
+// `Retry-After` (seconds), sleep abort-aware up to a hard cap, and retry
+// exactly once. If the retry also 429s, the existing fallback semantics
+// kick in unchanged — this only prevents the immediate cascade.
+const RATE_LIMIT_RETRY_CAP_MS = 10_000;
+const RATE_LIMIT_DEFAULT_MS = 2_000;
+function parseRetryAfterMs(header: string | null): number {
+  if (!header) return RATE_LIMIT_DEFAULT_MS;
+  const n = Number(header.trim());
+  if (!Number.isFinite(n) || n < 0) return RATE_LIMIT_DEFAULT_MS;
+  return Math.min(Math.floor(n * 1000), RATE_LIMIT_RETRY_CAP_MS);
+}
+function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error("aborted"));
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => { clearTimeout(t); reject(new Error("aborted")); },
+      { once: true },
+    );
+  });
+}
+async function fetchDasWithRetryOn429(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal | undefined,
+  label: string,
+): Promise<Response> {
+  const res = await fetch(url, init);
+  if (res.status !== 429) return res;
+  const waitMs = parseRetryAfterMs(res.headers.get("Retry-After"));
+  console.warn(
+    `[helius-das] 429 on ${label} — backing off ${waitMs}ms before single retry`,
+  );
+  try {
+    await abortableSleep(waitMs, signal);
+  } catch {
+    // Aborted during the backoff — return the original 429 so the caller's
+    // signal check / non-OK branch handles it without an extra fetch.
+    return res;
+  }
+  return fetch(url, init);
+}
+
 function endpoint(): string | null {
   const key = env.HELIUS_API_KEY;
   if (!key) return null;
@@ -247,17 +295,22 @@ async function fetchOneOwnerPage(
     if (signal?.aborted) {
       return { ok: false, reason: "aborted", detail: "aborted" };
     }
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "wallet-checker-core-discovery",
-        method: "getAssetsByOwner",
-        params: { ownerAddress: owner, page, limit: pageSize },
-      }),
+    const res = await fetchDasWithRetryOn429(
+      url,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "wallet-checker-core-discovery",
+          method: "getAssetsByOwner",
+          params: { ownerAddress: owner, page, limit: pageSize },
+        }),
+        signal,
+      },
       signal,
-    });
+      `getAssetsByOwner ${owner} p=${page}`,
+    );
     if (!res.ok) {
       console.warn(
         `[helius-das] getAssetsByOwner HTTP ${res.status} for ${owner} (page ${page}) — falling back to on-chain scan`,
@@ -522,17 +575,22 @@ export async function fetchAssetMetadataBatch(
 
   const settled = await runWithConcurrency(chunks, DAS_PARALLEL, async (chunk) => {
     if (signal?.aborted) throw new Error("aborted");
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "wallet-checker-das",
-        method: "getAssetBatch",
-        params: { ids: chunk },
-      }),
+    const res = await fetchDasWithRetryOn429(
+      url,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "wallet-checker-das",
+          method: "getAssetBatch",
+          params: { ids: chunk },
+        }),
+        signal,
+      },
       signal,
-    });
+      `getAssetBatch ids=${chunk.length}`,
+    );
     if (!res.ok) {
       console.warn(
         `[helius-das] HTTP ${res.status} for ${chunk.length} ids — falling back to on-chain only`,

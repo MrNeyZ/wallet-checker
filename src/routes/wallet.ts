@@ -278,12 +278,31 @@ router.post("/:address/close-empty-tx", async (req, res) => {
     return res.status(400).json({ error: parsed.error.issues[0].message });
   }
 
+  // Plumb client-disconnect (tab closed, navigation, network drop) into the
+  // builder so the in-flight scan / DAS / simulate work tears down at the
+  // same instant the browser hangs up. Without this, the builder ran to
+  // completion in the background and the simulate burned a Helius credit
+  // for a response the client already abandoned.
+  let clientClosed = false;
+  const ctl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      ctl.abort();
+    }
+  };
+  req.on("close", onClose);
+
   try {
-    const result = await buildCloseEmptyAccountsTx(parsed.data);
+    const result = await buildCloseEmptyAccountsTx(parsed.data, { signal: ctl.signal });
+    if (clientClosed) return;
     assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
+    if (clientClosed) return;
     sendCleanerError(res, err);
+  } finally {
+    req.removeListener("close", onClose);
   }
 });
 
@@ -304,12 +323,26 @@ router.post("/:address/burn-and-close-tx", async (req, res) => {
     return res.status(400).json({ error: body.error.issues[0].message });
   }
 
+  let clientClosed = false;
+  const ctl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      ctl.abort();
+    }
+  };
+  req.on("close", onClose);
+
   try {
-    const result = await buildBurnAndCloseTx(parsed.data, body.data);
+    const result = await buildBurnAndCloseTx(parsed.data, { ...body.data, signal: ctl.signal });
+    if (clientClosed) return;
     assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
+    if (clientClosed) return;
     sendCleanerError(res, err);
+  } finally {
+    req.removeListener("close", onClose);
   }
 });
 
@@ -329,12 +362,26 @@ router.post("/:address/standard-nft-burn-tx", async (req, res) => {
     return res.status(400).json({ error: body.error.issues[0].message });
   }
 
+  let clientClosed = false;
+  const ctl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      ctl.abort();
+    }
+  };
+  req.on("close", onClose);
+
   try {
-    const result = await buildStandardNftBurnTx(parsed.data, body.data);
+    const result = await buildStandardNftBurnTx(parsed.data, { ...body.data, signal: ctl.signal });
+    if (clientClosed) return;
     assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
+    if (clientClosed) return;
     sendCleanerError(res, err);
+  } finally {
+    req.removeListener("close", onClose);
   }
 });
 
@@ -357,12 +404,26 @@ router.post("/:address/legacy-nft-burn-tx", async (req, res) => {
     return res.status(400).json({ error: body.error.issues[0].message });
   }
 
+  let clientClosed = false;
+  const ctl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      ctl.abort();
+    }
+  };
+  req.on("close", onClose);
+
   try {
-    const result = await buildLegacyNftBurnTx(parsed.data, body.data);
+    const result = await buildLegacyNftBurnTx(parsed.data, { ...body.data, signal: ctl.signal });
+    if (clientClosed) return;
     assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
+    if (clientClosed) return;
     sendCleanerError(res, err);
+  } finally {
+    req.removeListener("close", onClose);
   }
 });
 
@@ -383,12 +444,26 @@ router.post("/:address/pnft-burn-tx", async (req, res) => {
     return res.status(400).json({ error: body.error.issues[0].message });
   }
 
+  let clientClosed = false;
+  const ctl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      ctl.abort();
+    }
+  };
+  req.on("close", onClose);
+
   try {
-    const result = await buildPnftBurnTx(parsed.data, body.data);
+    const result = await buildPnftBurnTx(parsed.data, { ...body.data, signal: ctl.signal });
+    if (clientClosed) return;
     assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
+    if (clientClosed) return;
     sendCleanerError(res, err);
+  } finally {
+    req.removeListener("close", onClose);
   }
 });
 
@@ -409,12 +484,26 @@ router.post("/:address/core-burn-tx", async (req, res) => {
     return res.status(400).json({ error: body.error.issues[0].message });
   }
 
+  let clientClosed = false;
+  const ctl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      ctl.abort();
+    }
+  };
+  req.on("close", onClose);
+
   try {
-    const result = await buildCoreBurnTx(parsed.data, body.data);
+    const result = await buildCoreBurnTx(parsed.data, { ...body.data, signal: ctl.signal });
+    if (clientClosed) return;
     assertBuiltTxMatchesWallet(result, parsed.data);
     res.json(result);
   } catch (err) {
+    if (clientClosed) return;
     sendCleanerError(res, err);
+  } finally {
+    req.removeListener("close", onClose);
   }
 });
 

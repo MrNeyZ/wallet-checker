@@ -80,6 +80,24 @@ function readPriorityFeeMicrolamports(): number {
   return Math.floor(n);
 }
 
+// Abort-as-Promise.race participant. When `signal` is provided, the returned
+// promise rejects with an Error("aborted") as soon as the signal fires
+// (immediately if already aborted). When `signal` is undefined, the promise
+// pends forever — the surrounding Promise.race will resolve on whichever
+// other racer settles. Used inside the builders' simulate races so a
+// client-disconnect tears the simulate down at the same instant the route
+// handler observes `req.on("close")`.
+function abortRacer(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise<never>((_, rej) => {
+    if (!signal) return;
+    if (signal.aborted) {
+      rej(new Error("aborted"));
+      return;
+    }
+    signal.addEventListener("abort", () => rej(new Error("aborted")), { once: true });
+  });
+}
+
 export interface BuildCloseEmptyTxResult {
   wallet: string;
   transactionVersion: "legacy";
@@ -102,12 +120,18 @@ export interface BuildCloseEmptyTxResult {
   warning: string;
 }
 
+export interface BuildCloseEmptyAccountsTxOptions {
+  // Abort handle wired from `req.on("close")` — see BuildBurnAndCloseTxOptions.
+  signal?: AbortSignal;
+}
+
 export async function buildCloseEmptyAccountsTx(
   address: string,
+  opts: BuildCloseEmptyAccountsTxOptions = {},
 ): Promise<BuildCloseEmptyTxResult> {
   const owner = new PublicKey(address);
   const ownerStr = owner.toBase58();
-  const scan = await scanWalletForCleanup(ownerStr);
+  const scan = await scanWalletForCleanup(ownerStr, { signal: opts.signal });
 
   // Filter empties to "safe to close": zero balance AND owner is this wallet
   // (can't close someone else's account; the scanner correctly returns owner
@@ -278,6 +302,10 @@ export interface BuildBurnAndCloseTxOptions {
   // account owned by the wallet is a candidate. Passing an explicit set is
   // the recommended path — guards against "burn everything" mistakes.
   mints?: string[];
+  // Abort handle. Route handlers wire this to `req.on("close")` so a
+  // user-cancel (tab closed, navigation, network drop) tears down the
+  // scan/DAS/simulate path instead of running to completion.
+  signal?: AbortSignal;
 }
 
 export interface BuildBurnAndCloseTxResult {
@@ -321,7 +349,7 @@ export async function buildBurnAndCloseTx(
 ): Promise<BuildBurnAndCloseTxResult> {
   const owner = new PublicKey(address);
   const ownerStr = owner.toBase58();
-  const scan = await scanWalletForCleanup(ownerStr);
+  const scan = await scanWalletForCleanup(ownerStr, { signal: opts.signal });
 
   const mintsAllowed = opts.mints && opts.mints.length > 0
     ? new Set(opts.mints)
@@ -475,6 +503,7 @@ export async function buildBurnAndCloseTx(
           20_000,
         ),
       ),
+      abortRacer(opts.signal),
     ]);
     if (sim.value.err) {
       simulationError = parseSimulationError(sim.value.err, sim.value.logs ?? []);
@@ -698,6 +727,8 @@ export interface BuildStandardNftBurnTxOptions {
   // Restrict to specific NFT mints. Without it every NonFungible token
   // owned by the wallet is a candidate (capped server-side).
   mints?: string[];
+  // Abort handle wired from `req.on("close")` — see BuildBurnAndCloseTxOptions.
+  signal?: AbortSignal;
 }
 
 export interface StandardNftBurnEntry {
@@ -735,7 +766,7 @@ export async function buildStandardNftBurnTx(
 ): Promise<BuildStandardNftBurnTxResult> {
   const owner = new PublicKey(address);
   const ownerStr = owner.toBase58();
-  const scan = await scanWalletForCleanup(ownerStr);
+  const scan = await scanWalletForCleanup(ownerStr, { signal: opts.signal });
   const splTokenProgramStr = TOKEN_PROGRAM_ID.toBase58();
   const token2022ProgramStr = TOKEN_2022_PROGRAM_ID.toBase58();
 
@@ -947,6 +978,7 @@ const LEGACY_NFT_BURN_WARNING =
 // one. Confined to burnable entries to keep the DAS call payload tight.
 async function enrichLegacyConfirmationsWithDas(
   confirmations: LegacyNftConfirmation[],
+  signal?: AbortSignal,
 ): Promise<void> {
   const ids = confirmations
     .filter((c) => c.isBurnable)
@@ -955,7 +987,7 @@ async function enrichLegacyConfirmationsWithDas(
   // allowAllInterfaces=true — legacy NFTs come back from DAS as
   // `interface: "V1_NFT"`, which the default `isSupportedAsset` allowlist
   // omits; without this the whole legacy list is imageless.
-  const dasMap = await fetchAssetMetadataBatch(ids, undefined, true);
+  const dasMap = await fetchAssetMetadataBatch(ids, signal, true);
   for (const c of confirmations) {
     const m = dasMap.get(c.mint);
     if (!m) continue;
@@ -969,6 +1001,7 @@ async function enrichLegacyConfirmationsWithDas(
 // builders share one implementation shape.
 async function enrichPnftConfirmationsWithDas(
   confirmations: { mint: string; isBurnable: boolean; name: string | null; symbol: string | null; image: string | null }[],
+  signal?: AbortSignal,
 ): Promise<void> {
   const ids = confirmations
     .filter((c) => c.isBurnable)
@@ -977,7 +1010,7 @@ async function enrichPnftConfirmationsWithDas(
   // allowAllInterfaces=true — same metadata-vs-discovery-allowlist split
   // as the legacy path (no-op for pNFTs, whose interface is allowlisted,
   // but keeps the enrichment calls consistent).
-  const dasMap = await fetchAssetMetadataBatch(ids, undefined, true);
+  const dasMap = await fetchAssetMetadataBatch(ids, signal, true);
   for (const c of confirmations) {
     const m = dasMap.get(c.mint);
     if (!m) continue;
@@ -1293,6 +1326,8 @@ async function confirmLegacyNfts(
 
 export interface BuildLegacyNftBurnTxOptions {
   mints?: string[];
+  // Abort handle wired from `req.on("close")` — see BuildBurnAndCloseTxOptions.
+  signal?: AbortSignal;
 }
 
 export interface LegacyNftBurnIncludedEntry {
@@ -1447,7 +1482,7 @@ async function buildLegacyNftBurnTxImpl(
   ownerStr: string,
   opts: BuildLegacyNftBurnTxOptions,
 ): Promise<BuildLegacyNftBurnTxResult> {
-  const scan = await scanWalletForCleanup(ownerStr);
+  const scan = await scanWalletForCleanup(ownerStr, { signal: opts.signal });
   const splTokenProgramStr = TOKEN_PROGRAM_ID.toBase58();
   const token2022ProgramStr = TOKEN_2022_PROGRAM_ID.toBase58();
   const mintsAllowed =
@@ -1537,7 +1572,7 @@ async function buildLegacyNftBurnTxImpl(
   // most candidates show as "metadata not yet loaded" in the UI. DAS
   // resolves both layers in a single batched call. Fails open: if Helius
   // is unavailable, the on-chain bytes we already extracted are kept.
-  await enrichLegacyConfirmationsWithDas(confirmations);
+  await enrichLegacyConfirmationsWithDas(confirmations, opts.signal);
 
   const burnable: LegacyNftConfirmation[] = [];
   for (const c of confirmations) {
@@ -1864,6 +1899,7 @@ async function buildLegacyNftBurnTxImpl(
             20_000,
           ),
         ),
+        abortRacer(opts.signal),
       ]);
       console.log(
         `[legacyNftBurn] simulateTransaction done owner=${ownerStr} batch=${included.length} ms=${Date.now() - simStart} err=${sim.value.err ? "yes" : "no"}`,
@@ -2382,6 +2418,8 @@ async function confirmPnfts(
 
 export interface BuildPnftBurnTxOptions {
   mints?: string[];
+  // Abort handle wired from `req.on("close")` — see BuildBurnAndCloseTxOptions.
+  signal?: AbortSignal;
 }
 
 export interface PnftBurnIncludedEntry {
@@ -2621,7 +2659,7 @@ async function buildPnftBurnTxImpl(
   ownerStr: string,
   opts: BuildPnftBurnTxOptions,
 ): Promise<BuildPnftBurnTxResult> {
-  const scan = await scanWalletForCleanup(ownerStr);
+  const scan = await scanWalletForCleanup(ownerStr, { signal: opts.signal });
   const splTokenProgramStr = TOKEN_PROGRAM_ID.toBase58();
   const token2022ProgramStr = TOKEN_2022_PROGRAM_ID.toBase58();
   const mintsAllowed =
@@ -2674,7 +2712,7 @@ async function buildPnftBurnTxImpl(
   const confirmations = await confirmPnfts(coarse);
 
   // Helius DAS enrichment — see comment in buildLegacyNftBurnTx.
-  await enrichPnftConfirmationsWithDas(confirmations);
+  await enrichPnftConfirmationsWithDas(confirmations, opts.signal);
 
   const burnable: PnftConfirmation[] = [];
   for (const c of confirmations) {
@@ -3471,6 +3509,8 @@ export interface BuildCoreBurnTxOptions {
   // Restrict to specific Core asset addresses. Without it every Core asset
   // owned by the wallet becomes a candidate (capped server-side).
   assetIds?: string[];
+  // Abort handle wired from `req.on("close")` — see BuildBurnAndCloseTxOptions.
+  signal?: AbortSignal;
 }
 
 export interface CoreBurnIncludedEntry {
@@ -3573,7 +3613,7 @@ export async function buildCoreBurnTx(
   // for consistency with the legacy/pNFT enrichment (no-op for MplCoreAsset).
   const dasMap = await fetchAssetMetadataBatch(
     candidates.map((a) => a.asset.toBase58()),
-    undefined,
+    opts.signal,
     true,
   );
   for (const a of candidates) {
