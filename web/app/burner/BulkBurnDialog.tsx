@@ -185,21 +185,16 @@ export function BulkBurnDialog({
           )}
         </div>
 
-        {/* SIGNALL FALLBACK NOTICE */}
-        {state.fellBackToSequential && (
-          <div className="px-5 py-2 border-b border-[color:var(--vl-border)] bg-amber-900/20 text-[12px] text-amber-200">
-            Your wallet does not support batched signing — falling back to one
-            Phantom popup per transaction. Still safe; just less convenient.
-          </div>
-        )}
-
-        {/* pNFT / Core asset-changes display caveat */}
-        {state.results.some((r) => r.spec.kind === "pnft" || r.spec.kind === "core") && (
-          <div className="px-5 py-2 border-b border-[color:var(--vl-border)] bg-amber-900/20 text-[12px] text-amber-200">
-            Phantom may not show NFT asset changes for pNFT / Core burns.
-            Backend simulation passed; review batch details below before signing.
-          </div>
-        )}
+        {/* SIGNING-UX NOTICE — always shown.
+            Phantom's signAllTransactions UI collapses to a fee-only batch
+            confirm with no per-tx asset diff, which is unsafe for a
+            destructive NFT burn flow. The bulk burner now signs every
+            tx one at a time so each Phantom confirm shows the actual
+            NFT changes. */}
+        <div className="px-5 py-2 border-b border-[color:var(--vl-border)] bg-amber-900/20 text-[12px] text-amber-200">
+          Phantom shows accurate NFT changes only when signing one
+          transaction at a time. Bulk burn will open one approval per batch.
+        </div>
 
         {/* TOP-LEVEL TOTALS */}
         <div className="px-5 py-3 border-b border-[color:var(--vl-border)] grid grid-cols-4 gap-3 text-[12px]">
