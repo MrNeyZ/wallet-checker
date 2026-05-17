@@ -31,6 +31,8 @@ import {
 import { fmtSol } from "@/lib/format";
 import { useBulkBurnSession } from "./useBulkBurnSession";
 import { BulkBurnDialog } from "./BulkBurnDialog";
+import { useClientLegacyBurnPrototype } from "./useClientLegacyBurnPrototype";
+import { ClientLegacyBurnDialog } from "./ClientLegacyBurnDialog";
 
 type Tab = { key: CleanerVisibleSection; label: string };
 
@@ -224,6 +226,14 @@ function BurnerBody() {
               existing per-tab Burn N button is intentionally left
               untouched. */}
           <BulkBurnUiWired />
+
+          {/* 5c — Phase B prototype: client-built Legacy NFT burn.
+              Renders nothing unless ?proto=1 is in the URL AND the
+              user has selected exactly 1 legacy NFT (no other
+              categories). Visually distinct (🧪 amber border) so it
+              cannot be confused with the production bulk path. The
+              shipping per-section + bulk flows are NOT affected. */}
+          <ClientLegacyBurnPrototypeWired />
         </>
       ) : (
         <DisconnectedCta onConnect={() => void connect()} connecting={connecting} />
@@ -828,6 +838,87 @@ function BulkBurnUiWired() {
         onCancel={session.cancel}
         onClose={session.reset}
       />
+    </>
+  );
+}
+
+// ── Phase B prototype wiring ───────────────────────────────────────
+// Gate: `?proto=1` in URL AND exactly 1 legacy NFT selected AND nothing
+// else selected (no pNFT / Core / SPL / closeEmpty). Renders an amber
+// experimental button + dialog. The hook builds the BurnV1 ix in the
+// browser using @metaplex-foundation/mpl-token-metadata and never
+// decodes a backend-built transactionBase64. The shipping bulk and
+// per-section flows are unaffected — this component is parallel.
+function ClientLegacyBurnPrototypeWired() {
+  const { connected } = useWallet();
+  const registry = useBurnSelectionRegistry();
+  const getMintsSnapshot = useBulkBurnSnapshot();
+  const [open, setOpen] = useState(false);
+
+  // ?proto=1 detection — read on every render so flipping the flag
+  // mid-session takes effect without a hard refresh. window is only
+  // available in the browser (this page is "use client").
+  const protoEnabled =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("proto") === "1";
+
+  // Selection gate: exactly 1 legacy, 0 of everything else.
+  const counts = {
+    closeEmpty: registry.closeEmpty?.selectedCount ?? 0,
+    splBurn: registry.splBurn?.selectedCount ?? 0,
+    legacyNft: registry.legacyNft?.selectedCount ?? 0,
+    pnft: registry.pnft?.selectedCount ?? 0,
+    core: registry.core?.selectedCount ?? 0,
+  };
+  const gatePassed =
+    protoEnabled &&
+    counts.legacyNft === 1 &&
+    counts.closeEmpty === 0 &&
+    counts.splBurn === 0 &&
+    counts.pnft === 0 &&
+    counts.core === 0;
+
+  // Read the single legacy mint from the bulk-burn snapshot. The
+  // snapshot is ref-backed and updated by useBulkBurnMintsPublisher in
+  // each section; reading it on demand here is cheap.
+  const snapshot = gatePassed ? getMintsSnapshot() : {};
+  const targetMint = gatePassed ? snapshot.legacyNft?.[0] ?? null : null;
+
+  const proto = useClientLegacyBurnPrototype({
+    connectedWallet: connected,
+    targetMint,
+  });
+
+  // Auto-close + reset when the user dismisses, only when not mid-run.
+  const handleClose = () => {
+    setOpen(false);
+    proto.reset();
+  };
+  const handleStart = () => {
+    void proto.start();
+  };
+
+  if (!protoEnabled) return null;
+
+  return (
+    <>
+      {gatePassed && targetMint && !open && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="fixed bottom-[120px] right-4 z-[60] vl-btn vl-btn-ghost is-sm shadow-lg border-2 border-amber-500/60 bg-amber-900/30"
+          aria-label="Experimental client-built legacy burn"
+        >
+          🧪 Client-built legacy burn
+        </button>
+      )}
+      {open && (
+        <ClientLegacyBurnDialog
+          state={proto.state}
+          onStart={handleStart}
+          onClose={handleClose}
+        />
+      )}
     </>
   );
 }
