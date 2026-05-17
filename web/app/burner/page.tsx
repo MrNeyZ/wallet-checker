@@ -33,6 +33,7 @@ import { useBulkBurnSession, type BulkBurnMode } from "./useBulkBurnSession";
 import { BulkBurnDialog } from "./BulkBurnDialog";
 import { useClientLegacyBurnPrototype } from "./useClientLegacyBurnPrototype";
 import { ClientLegacyBurnDialog } from "./ClientLegacyBurnDialog";
+import { useBurnerMode } from "@/lib/burnerModeContext";
 
 type Tab = { key: CleanerVisibleSection; label: string };
 
@@ -810,7 +811,12 @@ function BulkBurnUiWired() {
   // accurate-preview Phantom UX without thinking. Persisted to this
   // component's lifetime only (no localStorage); the user re-picks per
   // session because the trade-off is meaningful.
-  const [mode, setMode] = useState<BulkBurnMode>("safe");
+  //
+  // Lifted to the layout-level BurnerModeContext so the persistent
+  // bottom-HUD nav can toggle it from outside this component's tree.
+  // The inline Safe/Fast pill below stays — both control surfaces
+  // drive the same context value.
+  const { mode, setMode } = useBurnerMode();
   const session = useBulkBurnSession({
     targetWallet: connected,
     connectedWallet: connected,

@@ -2,7 +2,9 @@ import "./globals.css";
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { TopNav } from "./_components/TopNav";
+import { BottomNav } from "./_components/BottomNav";
 import { LayoutModeSwitcher } from "./_components/LayoutModeSwitcher";
+import { BurnerModeProvider } from "@/lib/burnerModeContext";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -56,17 +58,31 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body className="min-h-screen bg-neutral-950 text-white" style={{ fontFamily: "var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif" }}>
         <script dangerouslySetInnerHTML={{ __html: LAYOUT_MODE_BOOT }} />
-        <TopNav authEnabled={authEnabled} />
-        {/* WC v2 `.vl-layout` content wrapper. Default = centered 1480px;
-            `data-layout="pc|laptop|phone"` switches to full-width with
-            mode-specific horizontal padding (24 / 16 / 10 px) — so the
-            Burner (and every page) shares one workspace width per mode
-            instead of the old fixed 1280px centered column. Auth, TopNav,
-            providers and global shell behavior are unchanged. */}
-        <div className="vl-layout">
-          <main>{children}</main>
-        </div>
-        <LayoutModeSwitcher />
+        {/* BurnerModeProvider lifts Bulk Burner Safe/Fast signing mode
+            so the new persistent BottomNav HUD can toggle it from
+            outside the /burner page tree. Inside /burner, the existing
+            inline pill above the bulk button reads/writes the same
+            context — both controls stay in lock-step. Defaults to
+            "safe" per session (no localStorage; conservative default
+            for a destructive flow). */}
+        <BurnerModeProvider>
+          <TopNav authEnabled={authEnabled} />
+          {/* WC v2 `.vl-layout` content wrapper. Default = centered 1480px;
+              `data-layout="pc|laptop|phone"` switches to full-width with
+              mode-specific horizontal padding (24 / 16 / 10 px) — so the
+              Burner (and every page) shares one workspace width per mode
+              instead of the old fixed 1280px centered column. Auth, TopNav,
+              providers and global shell behavior are unchanged. */}
+          <div className="vl-layout">
+            <main>{children}</main>
+          </div>
+          <LayoutModeSwitcher />
+          {/* Persistent bottom HUD. Visual chrome ported 1:1 from
+              nft-live-feed BottomStatusBar; content tailored: Burner /
+              Groups tabs, footer links, and (on /burner) the Safe/Fast
+              mode pill that drives the lifted BurnerMode context. */}
+          <BottomNav />
+        </BurnerModeProvider>
       </body>
     </html>
   );
