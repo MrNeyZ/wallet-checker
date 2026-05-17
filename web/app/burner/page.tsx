@@ -20,6 +20,7 @@ import {
   CleanerRow,
   ScanRegistryProvider,
   WalletProvider,
+  useBulkBurnSnapshot,
   useBurnSelectionClearAll,
   useBurnSelectionRegistry,
   useWallet,
@@ -28,6 +29,8 @@ import {
   type CleanerVisibleSection,
 } from "../groups/[id]/cleaner";
 import { fmtSol } from "@/lib/format";
+import { useBulkBurnSession } from "./useBulkBurnSession";
+import { BulkBurnDialog } from "./BulkBurnDialog";
 
 type Tab = { key: CleanerVisibleSection; label: string };
 
@@ -212,6 +215,15 @@ function BurnerBody() {
           {/* 5 — action bar (prototype: .vl-action-bar, shown only when
               something is staged). */}
           <StickyActionBarWired tab={tab} />
+
+          {/* 5b — Bulk Burner (Phase 1 MVP). Renders nothing in resting
+              state; the floating "Bulk burn (all)" trigger appears only
+              when a cross-category selection exists. The dialog renders
+              progress + final summary. The hook owns the full state
+              machine; this component just routes UI events into it. The
+              existing per-tab Burn N button is intentionally left
+              untouched. */}
+          <BulkBurnUiWired />
         </>
       ) : (
         <DisconnectedCta onConnect={() => void connect()} connecting={connecting} />
@@ -768,6 +780,56 @@ function StickyActionBarWired({ tab }: { tab: CleanerVisibleSection }) {
   const onClear =
     clearFns.length > 0 ? () => clearFns.forEach((f) => f()) : undefined;
   return <StickyActionBar tab={tab} aggregate={aggregate} onClear={onClear} />;
+}
+
+// Phase 1 Bulk Burner wiring. Reads the cross-tab aggregate from the
+// burn-selection registry to decide visibility, and the bulk-mints
+// snapshot only at click time (passed to the hook). The dialog renders
+// progress + summary; the floating button sits ABOVE the sticky action
+// bar so it doesn't overlap the per-tab Burn N button.
+function BulkBurnUiWired() {
+  const { connected } = useWallet();
+  const registry = useBurnSelectionRegistry();
+  const getMintsSnapshot = useBulkBurnSnapshot();
+  // Cross-category total — includes closeEmpty's emptyCount.
+  const totalSelected = (Object.values(registry) as Array<
+    { selectedCount: number } | undefined
+  >).reduce((s, e) => s + (e?.selectedCount ?? 0), 0);
+  const includeCloseEmpty = (registry.closeEmpty?.selectedCount ?? 0) > 0;
+  const session = useBulkBurnSession({
+    targetWallet: connected,
+    connectedWallet: connected,
+    getMintsSnapshot,
+    includeCloseEmpty,
+  });
+  const isRunning =
+    session.state.status === "running" ||
+    session.state.status === "done" ||
+    session.state.status === "cancelled" ||
+    session.state.status === "failed";
+  // Floating button — visible only when something is selected AND the
+  // dialog isn't open (the dialog has its own cancel/close controls).
+  const showButton =
+    !isRunning && totalSelected > 0 && session.state.status === "idle";
+  return (
+    <>
+      {showButton && (
+        <button
+          type="button"
+          onClick={() => void session.start()}
+          aria-label={`Bulk burn (${totalSelected} items across categories)`}
+          className="fixed bottom-[68px] right-4 z-[60] vl-btn vl-btn-secondary is-sm shadow-lg"
+        >
+          Bulk burn · {totalSelected}
+        </button>
+      )}
+      <BulkBurnDialog
+        state={session.state}
+        onCancel={session.cancel}
+        onClose={session.reset}
+      />
+    </>
+  );
 }
 
 function DisconnectedCta({

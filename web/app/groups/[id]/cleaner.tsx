@@ -159,6 +159,17 @@ export interface BurnSelectionEntry {
   clearSelection?: () => void;
 }
 
+// Snapshot of selected mint addresses per section. Read at the moment
+// the Bulk Burner button is clicked — NOT tracked in render state, so
+// publishing into this map doesn't trigger any rerender. Keys map to
+// the same BurnSectionKey union as the rendered registry. closeEmpty
+// has no per-mint selection model (the build endpoint operates on
+// every empty token account) and is not represented here.
+export type BulkBurnMintsSnapshot = Partial<Record<
+  Exclude<BurnSectionKey, "closeEmpty">,
+  readonly string[]
+>>;
+
 interface BurnSelectionRegistryCtx {
   registry: Partial<Record<BurnSectionKey, BurnSelectionEntry>>;
   publish: (key: BurnSectionKey, entry: BurnSelectionEntry | null) => void;
@@ -169,6 +180,17 @@ interface BurnSelectionRegistryCtx {
   // cleanup never fires; without this, stale entries persist until
   // each section publishes new data for the new wallet.
   clearAll: () => void;
+  // Bulk-Burner-only: ref-backed mint publishers. Sections call
+  // `publishMints` from a useEffect alongside their existing render-path
+  // publisher. Writes go to a ref so they NEVER trigger rerenders or
+  // interact with the render-path diff above — keeps the publish-loop
+  // fix at lines ~270 intact. Bulk session reads `getMintsSnapshot()`
+  // exactly once when the user clicks "Bulk burn".
+  publishMints: (
+    key: Exclude<BurnSectionKey, "closeEmpty">,
+    mints: readonly string[],
+  ) => void;
+  getMintsSnapshot: () => BulkBurnMintsSnapshot;
 }
 const BurnSelectionCtx = createContext<BurnSelectionRegistryCtx | null>(null);
 
@@ -176,6 +198,12 @@ export function BurnSelectionProvider({ children }: { children: ReactNode }) {
   const [registry, setRegistry] = useState<
     Partial<Record<BurnSectionKey, BurnSelectionEntry>>
   >({});
+  // Ref-only — never read during render. Holds the current per-section
+  // selected-mint array (or asset-id array for Core). The Bulk Burner
+  // hook reads this via getMintsSnapshot() at click time; nothing else
+  // touches it. Wallet-identity clearAll resets it too so a switched
+  // account never inherits prior selection.
+  const mintsRef = useRef<BulkBurnMintsSnapshot>({});
   const publish = useCallback(
     (key: BurnSectionKey, entry: BurnSelectionEntry | null) => {
       setRegistry((prev) => {
@@ -206,14 +234,40 @@ export function BurnSelectionProvider({ children }: { children: ReactNode }) {
   // that fires before any selection landed doesn't trigger a phantom
   // render of the whole subtree.
   const clearAll = useCallback(() => {
+    // Bulk-burn mint snapshot is always cleared alongside the rendered
+    // registry — a wallet switch must drop every prior-account mint
+    // before the bulk button could possibly fire against the new account.
+    mintsRef.current = {};
     setRegistry((prev) => {
       for (const _ in prev) return {};
       return prev;
     });
   }, []);
+  const publishMints = useCallback(
+    (key: Exclude<BurnSectionKey, "closeEmpty">, mints: readonly string[]) => {
+      // Empty mints -> drop the entry rather than store an empty array,
+      // so a snapshot reader sees `undefined` for "nothing selected"
+      // instead of an empty array which would falsely pass length checks
+      // in some downstream consumers.
+      if (mints.length === 0) {
+        if (mintsRef.current[key] !== undefined) {
+          const next = { ...mintsRef.current };
+          delete next[key];
+          mintsRef.current = next;
+        }
+        return;
+      }
+      mintsRef.current = { ...mintsRef.current, [key]: mints };
+    },
+    [],
+  );
+  const getMintsSnapshot = useCallback(
+    (): BulkBurnMintsSnapshot => ({ ...mintsRef.current }),
+    [],
+  );
   const value = useMemo(
-    () => ({ registry, publish, clearAll }),
-    [registry, publish, clearAll],
+    () => ({ registry, publish, clearAll, publishMints, getMintsSnapshot }),
+    [registry, publish, clearAll, publishMints, getMintsSnapshot],
   );
   return (
     <BurnSelectionCtx.Provider value={value}>{children}</BurnSelectionCtx.Provider>
@@ -229,6 +283,35 @@ export function useBurnSelectionRegistry(): Partial<
 > {
   const ctx = useContext(BurnSelectionCtx);
   return ctx?.registry ?? {};
+}
+
+// Bulk-Burner-only publisher hook. Each section calls this in a useEffect
+// after its `selectedMints` state changes. Writes go through the
+// ref-backed registry so they NEVER trigger a rerender on consumers. The
+// no-provider case is a no-op so the existing /groups/[id] view (which
+// doesn't mount a BurnSelectionProvider today) keeps working unchanged.
+export function useBulkBurnMintsPublisher(
+  key: Exclude<BurnSectionKey, "closeEmpty">,
+  mints: readonly string[],
+): void {
+  const ctx = useContext(BurnSelectionCtx);
+  // Stringify-key for the dep array so a fresh-but-equal array reference
+  // (very common — Array.from(set) on every render) doesn't re-fire the
+  // effect. The publish itself is idempotent, but skipping a no-op write
+  // keeps the ref hot-path tight.
+  const stable = mints.length === 0 ? "" : `${mints.length}:${[...mints].sort().join(",")}`;
+  useEffect(() => {
+    ctx?.publishMints(key, mints);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx, key, stable]);
+}
+
+// Bulk-Burner read hook. Returns a snapshot function. The bulk session
+// hook calls this once at click time to lock in the current selection.
+// Returns a no-op snapshot when no provider is mounted.
+export function useBulkBurnSnapshot(): () => BulkBurnMintsSnapshot {
+  const ctx = useContext(BurnSelectionCtx);
+  return ctx?.getMintsSnapshot ?? (() => ({}));
 }
 
 // Stable no-op kept at module scope so the hook's return reference is
@@ -3016,6 +3099,7 @@ function CleanerDetails({
     burn.candidates.length,
     clearSplSelection,
   );
+  useBulkBurnMintsPublisher("splBurn", Array.from(selectedMints));
 
   return (
     <ReclaimSummaryCtx.Provider value={reclaimCtx}>
@@ -4930,6 +5014,7 @@ function LegacyNftBurnSection({
     candidates ? candidates.burnable.length : null,
     clearLegacySelection,
   );
+  useBulkBurnMintsPublisher("legacyNft", Array.from(selectedMints));
 
   // Toggle every mint in a collection group at once. If `selectAll` is
   // true, ensure all are in the selection set; otherwise remove all.
@@ -6725,6 +6810,7 @@ function PnftBurnSection({
     candidates ? candidates.burnable.length : null,
     clearPnftSelection,
   );
+  useBulkBurnMintsPublisher("pnft", Array.from(selectedMints));
 
   const toggleGroupSelected = useCallback(
     (ids: string[], selectAll: boolean): void => {
@@ -7413,6 +7499,7 @@ function CoreBurnSection({
     candidates ? candidates.burnable.length : null,
     clearCoreSelection,
   );
+  useBulkBurnMintsPublisher("core", Array.from(selectedAssets));
 
   const toggleGroupSelected = useCallback(
     (ids: string[], selectAll: boolean): void => {
