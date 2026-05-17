@@ -285,25 +285,30 @@ export function useBurnSelectionRegistry(): Partial<
   return ctx?.registry ?? {};
 }
 
-// Bulk-Burner-only publisher hook. Each section calls this in a useEffect
-// after its `selectedMints` state changes. Writes go through the
-// ref-backed registry so they NEVER trigger a rerender on consumers. The
-// no-provider case is a no-op so the existing /groups/[id] view (which
-// doesn't mount a BurnSelectionProvider today) keeps working unchanged.
+// Bulk-Burner-only publisher hook. Each section calls this with its
+// per-section `selectedMints` Set; the hook publishes the array form
+// into the ref-backed registry whenever the Set identity changes.
+//
+// Phase 1 used a `[...mints].sort().join(",")` dep, which was O(n log n)
+// + a large string allocation per render — for a wallet with 200-300
+// burnable NFTs this dominated render time during a scan. The fix
+// leans on the fact that each `setSelectedMints(prev => new Set(prev))`
+// call in the sections produces a fresh Set instance — so the Set's
+// reference identity is itself a perfect change signal, with zero
+// per-render work. The Array.from conversion is moved inside the
+// effect, so the O(n) copy runs only on real selection changes.
+//
+// Writes go through the ref-backed registry so they NEVER trigger a
+// rerender on consumers. No-provider case is a no-op so the existing
+// /groups/[id] view (no BurnSelectionProvider today) keeps working.
 export function useBulkBurnMintsPublisher(
   key: Exclude<BurnSectionKey, "closeEmpty">,
-  mints: readonly string[],
+  mints: ReadonlySet<string>,
 ): void {
   const ctx = useContext(BurnSelectionCtx);
-  // Stringify-key for the dep array so a fresh-but-equal array reference
-  // (very common — Array.from(set) on every render) doesn't re-fire the
-  // effect. The publish itself is idempotent, but skipping a no-op write
-  // keeps the ref hot-path tight.
-  const stable = mints.length === 0 ? "" : `${mints.length}:${[...mints].sort().join(",")}`;
   useEffect(() => {
-    ctx?.publishMints(key, mints);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ctx, key, stable]);
+    ctx?.publishMints(key, Array.from(mints));
+  }, [ctx, key, mints]);
 }
 
 // Bulk-Burner read hook. Returns a snapshot function. The bulk session
@@ -1583,6 +1588,50 @@ export function CleanerRow({
     pnft: visibleSection === "nfts",
     core: visibleSection === "core",
   }));
+  // First-visit auto-expand for compact (/burner) tabs. The seed above
+  // only opens whichever section matches the *initial* `visibleSection`;
+  // when the user later clicks Core / Tokens for the first time, the
+  // matching accordion stays collapsed (an extra click to expand reads
+  // as broken). This ref records each tab the first time it becomes
+  // visible and opens its section once. After that first auto-open,
+  // a manual collapse stays collapsed even if the user switches away
+  // and back — because the tab is already in the ref, the effect
+  // short-circuits and never re-applies. Compact-only so the original
+  // /groups/[id]?tab=cleaner view (where visibleSection is always
+  // "all") is unaffected; the initial seed below also includes the
+  // mount-time `visibleSection` so the section the useState seed
+  // already expanded isn't re-asserted on mount.
+  const autoOpenedTabsRef = useRef<Set<CleanerVisibleSection>>(
+    new Set<CleanerVisibleSection>([visibleSection]),
+  );
+  useEffect(() => {
+    if (!compact) return;
+    if (autoOpenedTabsRef.current.has(visibleSection)) return;
+    autoOpenedTabsRef.current.add(visibleSection);
+    setSectionOpen((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      switch (visibleSection) {
+        case "nfts":
+          // NFTs tab renders both Legacy and pNFT — open both so the
+          // first visit doesn't show two collapsed accordions.
+          if (!prev.legacy) { next.legacy = true; changed = true; }
+          if (!prev.pnft)   { next.pnft   = true; changed = true; }
+          break;
+        case "core":
+          if (!prev.core) { next.core = true; changed = true; }
+          break;
+        case "tokens":
+          if (!prev.spl)  { next.spl  = true; changed = true; }
+          break;
+        // "empty" — close-empty card lives outside SectionOpenState
+        //           (no accordion), so this case is a deliberate no-op.
+        // "all"   — non-compact only; the `compact` gate above already
+        //           short-circuits before we reach this switch.
+      }
+      return changed ? next : prev;
+    });
+  }, [visibleSection, compact]);
   // Push per-wallet scan results up to the section so the group overview
   // tile can aggregate. Updates on every successful (re)scan.
   const { setScan } = useScanRegistry();
@@ -2923,8 +2972,24 @@ function CleanerDetails({
   // true so the original `/groups/[id]?tab=cleaner` view, which never
   // changes `visibleSection`, mounts everything immediately just like
   // before.)
+  //
+  // In compact (`/burner`) mode, seed the set with EVERY tab so all
+  // sections mount and fire their discovery on initial render — that
+  // way Core / Tokens / Empty counts are ready as soon as the user
+  // clicks their tabs, instead of triggering a fresh scan-on-click.
+  // Default-mode (/groups/[id]?tab=cleaner) keeps `visibleSection ===
+  // "all"`, where every `liveX` short-circuits on `showAll` anyway, so
+  // the existing lazy-activation behaviour is preserved there. Each
+  // section still owns its own in-flight discovery state, so even
+  // though they mount in parallel the backend's per-wallet scan cache
+  // (10 min TTL) and 2-concurrent RPC throttle keep this from
+  // multiplying credit cost — same flight that the existing default-
+  // mode view already triggers on first paint.
   const [activated, setActivated] = useState<Set<CleanerVisibleSection>>(
-    () => new Set<CleanerVisibleSection>(["all", visibleSection]),
+    () =>
+      isCompact
+        ? new Set<CleanerVisibleSection>(["all", "nfts", "core", "tokens", "empty"])
+        : new Set<CleanerVisibleSection>(["all", visibleSection]),
   );
   useEffect(() => {
     setActivated((prev) => {
@@ -3099,7 +3164,7 @@ function CleanerDetails({
     burn.candidates.length,
     clearSplSelection,
   );
-  useBulkBurnMintsPublisher("splBurn", Array.from(selectedMints));
+  useBulkBurnMintsPublisher("splBurn", selectedMints);
 
   return (
     <ReclaimSummaryCtx.Provider value={reclaimCtx}>
@@ -5014,7 +5079,7 @@ function LegacyNftBurnSection({
     candidates ? candidates.burnable.length : null,
     clearLegacySelection,
   );
-  useBulkBurnMintsPublisher("legacyNft", Array.from(selectedMints));
+  useBulkBurnMintsPublisher("legacyNft", selectedMints);
 
   // Toggle every mint in a collection group at once. If `selectAll` is
   // true, ensure all are in the selection set; otherwise remove all.
@@ -6810,7 +6875,7 @@ function PnftBurnSection({
     candidates ? candidates.burnable.length : null,
     clearPnftSelection,
   );
-  useBulkBurnMintsPublisher("pnft", Array.from(selectedMints));
+  useBulkBurnMintsPublisher("pnft", selectedMints);
 
   const toggleGroupSelected = useCallback(
     (ids: string[], selectAll: boolean): void => {
@@ -7499,7 +7564,7 @@ function CoreBurnSection({
     candidates ? candidates.burnable.length : null,
     clearCoreSelection,
   );
-  useBulkBurnMintsPublisher("core", Array.from(selectedAssets));
+  useBulkBurnMintsPublisher("core", selectedAssets);
 
   const toggleGroupSelected = useCallback(
     (ids: string[], selectAll: boolean): void => {

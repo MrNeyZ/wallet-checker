@@ -35,7 +35,13 @@ import type { BulkBurnMintsSnapshot } from "../groups/[id]/cleaner";
 // frontend cap here merely produces an extra batch with zero items — wasted
 // build call but not a correctness bug.
 const MAX_SPL_PER_TX = 5;
-const MAX_LEGACY_PER_TX = 8;
+// Legacy: backend's effective per-tx cap is 5 in practice (the response
+// returns `maxPerTx: 6` but `burnCount` lands at 5 due to packet+CU fit
+// after the trim loop). With Phase 1 NOT chaining `nextBatchCandidates`,
+// sending more than 5 per spec silently drops the overflow. Match the
+// backend's effective cap so the partition produces deterministic
+// per-spec counts the user can see in the dialog.
+const MAX_LEGACY_PER_TX = 5;
 const MAX_CORE_PER_TX = 10;
 const MAX_PNFT_PER_TX = 5;
 
@@ -661,13 +667,19 @@ export function useBulkBurnSession(opts: UseBulkBurnSessionOpts): {
         }
         let signedTxs: Transaction[] = [];
         try {
-          if (hadSignAll && provider.signAllTransactions) {
+          // Phantom's signAllTransactions UI collapses to a fee-only
+          // batch-confirm screen even for length-1 arrays (no per-tx
+          // simulation, no asset-change preview). For a single-tx
+          // window, signTransaction gives Phantom's full UI with
+          // asset diffs — the same screen the per-section Burn N flow
+          // uses today. Guard length > 1 so we only invoke the batched
+          // API when it actually saves popups.
+          if (hadSignAll && provider.signAllTransactions && builtForSigning.length > 1) {
             signedTxs = await provider.signAllTransactions(builtForSigning.map((e) => e.tx));
           } else {
-            // Fallback: one popup per tx. Still better than today only
-            // when window>1 because we batch the SUBMIT+CONFIRM under
-            // one user gesture, but at least the user sees an honest
-            // sequence of popups instead of an unexplained loop.
+            // Sequential path: one popup per tx. Hit when (a) wallet
+            // lacks signAllTransactions OR (b) the window has exactly
+            // 1 tx and we deliberately route to the single-tx UI.
             for (const e of builtForSigning) {
               if (cancelRef.current.cancelled) break;
               // eslint-disable-next-line no-await-in-loop
