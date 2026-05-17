@@ -291,7 +291,7 @@ router.post("/:address/close-empty-tx", async (req, res) => {
       ctl.abort();
     }
   };
-  req.on("close", onClose);
+  res.on("close", onClose);
 
   try {
     const result = await buildCloseEmptyAccountsTx(parsed.data, { signal: ctl.signal });
@@ -302,7 +302,7 @@ router.post("/:address/close-empty-tx", async (req, res) => {
     if (clientClosed) return;
     sendCleanerError(res, err);
   } finally {
-    req.removeListener("close", onClose);
+    res.removeListener("close", onClose);
   }
 });
 
@@ -331,7 +331,7 @@ router.post("/:address/burn-and-close-tx", async (req, res) => {
       ctl.abort();
     }
   };
-  req.on("close", onClose);
+  res.on("close", onClose);
 
   try {
     const result = await buildBurnAndCloseTx(parsed.data, { ...body.data, signal: ctl.signal });
@@ -342,7 +342,7 @@ router.post("/:address/burn-and-close-tx", async (req, res) => {
     if (clientClosed) return;
     sendCleanerError(res, err);
   } finally {
-    req.removeListener("close", onClose);
+    res.removeListener("close", onClose);
   }
 });
 
@@ -370,7 +370,7 @@ router.post("/:address/standard-nft-burn-tx", async (req, res) => {
       ctl.abort();
     }
   };
-  req.on("close", onClose);
+  res.on("close", onClose);
 
   try {
     const result = await buildStandardNftBurnTx(parsed.data, { ...body.data, signal: ctl.signal });
@@ -381,7 +381,7 @@ router.post("/:address/standard-nft-burn-tx", async (req, res) => {
     if (clientClosed) return;
     sendCleanerError(res, err);
   } finally {
-    req.removeListener("close", onClose);
+    res.removeListener("close", onClose);
   }
 });
 
@@ -412,7 +412,7 @@ router.post("/:address/legacy-nft-burn-tx", async (req, res) => {
       ctl.abort();
     }
   };
-  req.on("close", onClose);
+  res.on("close", onClose);
 
   try {
     const result = await buildLegacyNftBurnTx(parsed.data, { ...body.data, signal: ctl.signal });
@@ -423,7 +423,7 @@ router.post("/:address/legacy-nft-burn-tx", async (req, res) => {
     if (clientClosed) return;
     sendCleanerError(res, err);
   } finally {
-    req.removeListener("close", onClose);
+    res.removeListener("close", onClose);
   }
 });
 
@@ -452,7 +452,7 @@ router.post("/:address/pnft-burn-tx", async (req, res) => {
       ctl.abort();
     }
   };
-  req.on("close", onClose);
+  res.on("close", onClose);
 
   try {
     const result = await buildPnftBurnTx(parsed.data, { ...body.data, signal: ctl.signal });
@@ -463,7 +463,7 @@ router.post("/:address/pnft-burn-tx", async (req, res) => {
     if (clientClosed) return;
     sendCleanerError(res, err);
   } finally {
-    req.removeListener("close", onClose);
+    res.removeListener("close", onClose);
   }
 });
 
@@ -492,7 +492,7 @@ router.post("/:address/core-burn-tx", async (req, res) => {
       ctl.abort();
     }
   };
-  req.on("close", onClose);
+  res.on("close", onClose);
 
   try {
     const result = await buildCoreBurnTx(parsed.data, { ...body.data, signal: ctl.signal });
@@ -503,7 +503,7 @@ router.post("/:address/core-burn-tx", async (req, res) => {
     if (clientClosed) return;
     sendCleanerError(res, err);
   } finally {
-    req.removeListener("close", onClose);
+    res.removeListener("close", onClose);
   }
 });
 
