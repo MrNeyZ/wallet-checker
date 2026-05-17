@@ -7,7 +7,6 @@
 // `active` prop.
 
 import Link from "next/link";
-import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { logoutAction } from "../login/actions";
 
@@ -26,15 +25,14 @@ export function TopNav({ authEnabled }: { authEnabled: boolean }) {
     <header className="vl-topnav">
       <div className="vl-topnav-inner">
         <div className="vl-topnav-left">
-          <Link href="/groups" className="vl-topnav-logo" aria-label="VictoryLabs">
-            <Image
-              src="/brand/victorylabs.png"
-              alt="VictoryLabs"
-              width={125}
-              height={38}
-              priority
-              draggable={false}
-            />
+          {/* Typography-only VictoryLabs wordmark — italic Playfair "V"
+              + "L" lockup, ported 1:1 from nft-live-feed TopNav
+              (frontend/src/soloist/shared.tsx:849-861). The link carries
+              the accessible name; the lockup itself is aria-hidden. */}
+          <Link href="/groups" className="vl-topnav-logo" aria-label="VictoryLabs — home">
+            <div className="vl-logo" aria-hidden="true">
+              <span className="v">Victory</span><span className="l">Labs</span>
+            </div>
           </Link>
           <nav className="vl-topnav-tabs" aria-label="Primary">
             {TABS.map((t) => (

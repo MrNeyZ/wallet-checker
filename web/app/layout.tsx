@@ -1,6 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono, Playfair_Display } from "next/font/google";
 import { TopNav } from "./_components/TopNav";
 import { BottomNav } from "./_components/BottomNav";
 import { LayoutModeSwitcher } from "./_components/LayoutModeSwitcher";
@@ -22,6 +22,19 @@ const jetBrainsMono = JetBrains_Mono({
   display: "swap",
   weight: ["400", "500", "600", "700"],
   variable: "--font-jetbrains-mono",
+});
+
+// Playfair Display italic — used by the TopNav VictoryLabs wordmark
+// (`.vl-logo`). Same weights/style as nft-live-feed/frontend/src/app/layout.tsx
+// so the wordmark looks identical across both apps. Exposed as the
+// CSS variable `--font-playfair-display`; `--vl-font-serif` in
+// globals.css references it.
+const playfairDisplay = Playfair_Display({
+  subsets: ["latin"],
+  style: "italic",
+  weight: ["600", "800"],
+  display: "swap",
+  variable: "--font-playfair-display",
 });
 
 export const metadata: Metadata = {
@@ -52,7 +65,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     // otherwise be flagged as an attribute mismatch on <html>.
     <html
       lang="en"
-      className={`${inter.variable} ${jetBrainsMono.variable} dark`}
+      className={`${inter.variable} ${jetBrainsMono.variable} ${playfairDisplay.variable} dark`}
       data-layout="laptop"
       suppressHydrationWarning
     >

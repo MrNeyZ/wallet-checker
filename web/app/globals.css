@@ -44,8 +44,23 @@
   --vl-red: #ef7878;
   --vl-amber: #fbbf24;
   --vl-font-mono: var(--font-jetbrains-mono), 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
-  --vl-font-serif: 'Playfair Display', Georgia, serif;
+  /* Serif used by the TopNav VictoryLabs wordmark (`.vl-logo`). Mirrors
+     nft-live-feed: leading `var(--font-playfair-display)` is the
+     next/font/google face wired in layout.tsx; the rest are fallbacks. */
+  --vl-font-serif: var(--font-playfair-display), 'Playfair Display', Georgia, serif;
   --vl-motion: 0.18s;
+  /* Shell tokens — top + bottom HUD chrome anchors. Drive the same
+     edge-gap + bar height across both bars per viewport tier, matching
+     nft-live-feed/frontend/src/app/globals.css:28-30 + 95 + 125-126. */
+  --shell-x:       24px;
+  --shell-height:  48px;
+}
+html[data-layout="pc"]    { --shell-x: 40px; }
+html[data-layout="phone"] { --shell-x: 12px; --shell-height: 44px; }
+/* Viewport-width safety net for narrow viewports where data-layout hasn't
+   propagated (matches nft-live-feed's @media (max-width: 768px) trim). */
+@media (max-width: 768px) {
+  :root { --shell-x: 12px; --shell-height: 44px; }
 }
 
 html, body {
@@ -103,13 +118,17 @@ body {
   z-index: 100;
 }
 .vl-topnav-inner {
+  /* Viewport-anchored chrome — matches nft-live-feed's full-bleed top bar
+     (frontend/src/soloist/shared.tsx:828-838). Both bars share `--shell-x`
+     so the side gutters line up across PC (40), laptop (24), and
+     phone (12) tiers. `--shell-height` drives bar height (48 laptop /
+     44 phone) so top + bottom feel like one coherent shell. */
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 44px;
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 0 20px;
+  height: var(--shell-height, 48px);
+  width: 100%;
+  padding: 0 var(--shell-x, 24px);
   gap: 12px;
 }
 .vl-topnav-left { display: flex; align-items: center; gap: 32px; }
@@ -127,6 +146,40 @@ body {
   user-select: none;
   -webkit-user-drag: none;
 }
+/* Typography-only VictoryLabs wordmark. Ported 1:1 from
+   nft-live-feed/frontend/src/app/globals.css:222-257 — italic Playfair
+   serif "V" + "L" lockup, optical -1px lift, scaleX 0.97, purple bloom
+   text-shadow on the "V". The leading `var(--font-playfair-display)` in
+   `--vl-font-serif` loads via next/font/google (see web/app/layout.tsx). */
+.vl-logo {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  user-select: none;
+  transform: translateY(-1px);
+}
+.vl-logo .v {
+  font-family: var(--vl-font-serif);
+  font-style: italic;
+  font-weight: 800;
+  font-size: 24px;
+  letter-spacing: -0.5px;
+  color: #ae92ee;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.40),
+    0 0 16px rgba(158, 134, 216, 0.33);
+  transform: scaleX(0.97);
+  transform-origin: 100% 50%;
+}
+.vl-logo .l {
+  font-family: var(--vl-font-serif);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--vl-fg);
+  margin-left: 1px;
+  letter-spacing: -0.2px;
+}
 .vl-topnav-tabs {
   display: flex;
   align-items: center;
@@ -134,27 +187,40 @@ body {
   position: relative;
 }
 .vl-topnav-tab {
+  /* Tab styling ported from nft-live-feed inline styles
+     (frontend/src/soloist/shared.tsx:910-923). Same padding, font-size,
+     weight, letter-spacing, border-radius, idle/hover/active colors. */
   position: relative;
   z-index: 1;
-  padding: 5px 16px;
+  padding: 4px 16px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.5px;
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   border: none;
-  color: #55556e;
+  color: #4f4f66;
   text-decoration: none;
-  transition: color var(--vl-motion) ease-out, background var(--vl-motion) ease-out;
+  transition: color 160ms ease-out, background 160ms ease-out;
   cursor: pointer;
 }
-.vl-topnav-tab:hover { color: #aaaabf; }
+.vl-topnav-tab:hover { color: #b4b4c8; background: rgba(168,144,232,0.08); }
 .vl-topnav-tab.is-active {
-  color: var(--vl-purple-2);
-  background: linear-gradient(180deg, rgba(128,104,216,0.14) 0%, rgba(128,104,216,0.04) 100%);
-  box-shadow: 0 0 12px rgba(128,104,216,0.15), inset 0 0 0 1px rgba(128,104,216,0.12);
+  /* Active capsule mirrors nft-live-feed's sliding-indicator span
+     (frontend/src/soloist/shared.tsx:885-897). Soft purple gradient,
+     hairline inset border, tight lift-shadow + faint glow, top sheen.
+     We paint it on the tab itself rather than animating a separate span
+     — visual parity at rest; no sliding animation. */
+  color: #e7e0f6;
+  background: linear-gradient(180deg, rgba(130,106,216,0.16) 0%, rgba(112,92,196,0.05) 100%);
+  box-shadow:
+    0 2px 8px rgba(118,94,210,0.14),
+    0 0 14px rgba(140,116,232,0.10),
+    inset 0 0 0 1px rgba(168,144,232,0.20),
+    inset 0 1px 0 rgba(255,255,255,0.05);
 }
+.vl-topnav-tab.is-active:hover { background: linear-gradient(180deg, rgba(130,106,216,0.16) 0%, rgba(112,92,196,0.05) 100%); }
 .vl-topnav-logout {
   background: transparent;
   border: 1px solid var(--vl-border);
@@ -1309,6 +1375,14 @@ html[data-layout="phone"]  .vl-layout { max-width: none; padding-left: 10px; pad
 
 /* Layout-mode visibility helpers — match the v2 mocks. */
 html[data-layout="phone"] .vl-topnav-tabs { display: none; }
+/* Viewport-width safety net — mirrors nft-live-feed
+   (frontend/src/app/globals.css:295-312). At <768px the topnav's
+   logo + tabs + logout don't fit; hiding the tabs row matches LF's
+   trim (the bottom HUD still carries the Burner/Groups tabs on the
+   wallet-checker side) and prevents page-level horizontal overflow. */
+@media (max-width: 768px) {
+  .vl-topnav-tabs { display: none; }
+}
 @media (max-width: 720px) {
   .hide-mobile { display: none !important; }
 }
@@ -1616,16 +1690,17 @@ html[data-layout="phone"]  .vl-nft-rows { grid-template-columns: repeat(2, minma
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
 .vl-bottomnav-inner {
+  /* Viewport-anchored — matches nft-live-feed bottom-status
+     (frontend/src/soloist/shared.tsx:1264-1275). Shares `--shell-x` with
+     the TopNav so both bars maintain the same edge gutter. Height is
+     content-driven (no fixed height) so the 7px vertical padding +
+     intrinsic content height reads as one coherent shell with the top
+     bar; matches LF spec exactly. */
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* Match the TopNav inner gutter so both bars line up on every
-     viewport tier. */
-  padding: 7px 24px;
-  height: 38px;
+  padding: 7px var(--shell-x, 24px);
   width: 100%;
-  max-width: 1280px;
-  margin: 0 auto;
   font-size: 11px;
   font-family: var(--vl-font-mono);
   gap: 12px;
@@ -1670,40 +1745,73 @@ html[data-layout="phone"]  .vl-nft-rows { grid-template-columns: repeat(2, minma
   transition: color var(--vl-motion);
 }
 .vl-bottomnav-link:hover { color: #aaaabf; }
+/* Mode pill — visual language ported 1:1 from nft-live-feed's Fees/Sound
+   toggles (frontend/src/soloist/shared.tsx:1298-1372). Each button is its
+   own bordered + recessed pill with a 6×6 status dot. Unlike the original
+   grouped wrapper, we keep the existing two-button container — Safe/Fast
+   are mutually-exclusive so the pair reads cleanly without an outer module. */
 .vl-bottomnav-mode {
   display: inline-flex;
   align-items: center;
-  border: 1px solid var(--vl-border);
-  border-radius: 4px;
+  gap: 8px;
+  /* Outer wrapper recedes — recessed look matches LF's `groupModule`
+     (shared.tsx:1229-1237): faint dark fill, hairline rim, inset top
+     shadow + a soft bottom sheen. */
+  padding: 1px 9px;
+  border-radius: 5px;
   background: rgba(0,0,0,0.20);
-  overflow: hidden;
-  box-shadow: inset 0 1px 2px rgba(0,0,0,0.26);
+  border: 1px solid rgba(255,255,255,0.05);
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.26),
+    inset 0 -1px 0 rgba(255,255,255,0.022);
 }
 .vl-bottomnav-mode-btn {
-  padding: 2px 10px;
+  /* Pill geometry: nft-live-feed Fees toggle exact —
+     `padding: 1px 10px; font-size: 10px; font-weight: 700;
+      letter-spacing: 0.4px; text-transform: uppercase`. */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 10px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.4px;
   text-transform: uppercase;
-  background: transparent;
-  border: none;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 4px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
   cursor: pointer;
-  transition: all var(--vl-motion);
-  color: #8f8fa8;
+  transition: all 0.12s;
+  color: #9494ac;
 }
-.vl-bottomnav-mode-btn + .vl-bottomnav-mode-btn {
-  border-left: 1px solid var(--vl-border);
+/* Status dot — sits before the label, color flips with state.
+   Mirrors LF's inline `<span>` dot in shared.tsx:1329-1332. */
+.vl-bottomnav-mode-btn::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #52526a;
 }
-.vl-bottomnav-mode-btn.is-off:hover { color: var(--vl-fg-1); background: rgba(168,144,232,0.06); }
-.vl-bottomnav-mode-btn.is-safe {
-  color: #62cb93;
-  background: rgba(79, 182, 125, 0.18);
-}
+.vl-bottomnav-mode-btn.is-off:hover { background: rgba(255,255,255,0.065); }
+/* Active (selected) state — purple-tinted fill + brighter rim + brighter
+   label, matching LF's "Fees ON" / "Sound ON" visual. The Safe/Fast
+   semantic is carried by the labels themselves; chrome is unified. */
+.vl-bottomnav-mode-btn.is-safe,
 .vl-bottomnav-mode-btn.is-fast {
-  color: #ef7878;
-  background: rgba(239, 120, 120, 0.18);
+  color: #d0c8e4;
+  background: rgba(168,144,232,0.18);
+  border: 1px solid rgba(168,144,232,0.55);
 }
+.vl-bottomnav-mode-btn.is-safe::before,
+.vl-bottomnav-mode-btn.is-fast::before {
+  background: #a890e8;
+}
+.vl-bottomnav-mode-btn.is-safe:hover,
+.vl-bottomnav-mode-btn.is-fast:hover { background: rgba(168,144,232,0.235); }
 
 /* Page-bottom clearance — every route gets enough padding so the
    sticky `.vl-action-bar` (bulk action surface), the floating
